@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import Sidebar from "@/components/Sidebar";
+import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Historical Recipes",
@@ -8,7 +10,12 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru">
-      <body>{children}</body>
+      <body>
+        <div className="app-layout">
+          <Sidebar />
+          <main className="main-content">{children}</main>
+        </div>
+      </body>
     </html>
   );
 }
