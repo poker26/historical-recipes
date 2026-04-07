@@ -1,1 +1,0 @@
-import { main } from './main_script.js'; main();
