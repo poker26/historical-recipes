@@ -18,10 +18,14 @@ def get_client() -> Minio:
             access_key=settings.minio_access_key,
             secret_key=settings.minio_secret_key,
             secure=settings.minio_secure,
+            region="us-east-1",
         )
         # Ensure bucket exists
-        if not _client.bucket_exists(settings.minio_bucket):
-            _client.make_bucket(settings.minio_bucket)
+        try:
+            if not _client.bucket_exists(settings.minio_bucket):
+                _client.make_bucket(settings.minio_bucket)
+        except S3Error:
+            pass  # Bucket may already exist or we lack create permissions
     return _client
 
 
