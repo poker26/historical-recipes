@@ -26,6 +26,7 @@
 | **Хранилище файлов** | MinIO (S3-compatible) | PDF, изображения, промежуточные файлы |
 | **Embeddings** | BGE-M3 (self-hosted) | Dense (1024d) + Sparse векторы |
 | **OCR** | Tesseract + Gemini/Qwen | Распознавание сканов |
+| **Пре/пост-OCR** | OpenCV (Pillow) | Подготовка изображений, очистка результатов |
 | **Деплой** | Docker Compose | Оркестрация контейнеров на VDS |
 
 ## Архитектура системы
@@ -64,7 +65,7 @@
 
 **Статусы книги:**
 ```
-uploaded → ocr_pending → ocr_done → normalized → parsed → indexed → verified
+uploaded → preprocessing → ocr_pending → ocr_done → postprocessing → normalized → parsed → indexed → verified
 ```
 
 **API:**
@@ -72,6 +73,8 @@ uploaded → ocr_pending → ocr_done → normalized → parsed → indexed → 
 - `GET /api/books` — список книг с фильтрами по статусу
 - `GET /api/books/{id}` — детали книги + история обработки
 - `POST /api/books/{id}/process` — запуск обработки (триггер n8n workflow)
+- `POST /api/books/{id}/preprocess` — запуск пре-OCR обработки изображений
+- `GET /api/books/{id}/pages` — просмотр страниц с OCR confidence
 - `GET /api/books/{id}/chunks` — просмотр распознанных фрагментов
 - `PATCH /api/books/{id}/chunks/{chunk_id}` — ручное редактирование чанка
 
@@ -90,16 +93,31 @@ books (
   updated_at TIMESTAMPTZ
 )
 
+book_pages (
+  id UUID PRIMARY KEY,
+  book_id UUID REFERENCES books,
+  page_number INTEGER,
+  image_path TEXT,          -- путь к странице в MinIO (после split PDF)
+  preprocessed_path TEXT,   -- путь к обработанному изображению
+  raw_text TEXT,            -- текст после OCR
+  ocr_confidence FLOAT,    -- средняя уверенность Tesseract (0-100)
+  needs_review BOOLEAN,    -- true если confidence < порога
+  dpi INTEGER,             -- разрешение изображения
+  status TEXT              -- 'uploaded', 'preprocessed', 'ocr_done', 'reviewed'
+)
+
 book_chunks (
   id UUID PRIMARY KEY,
   book_id UUID REFERENCES books,
   chunk_index INTEGER,
   raw_text TEXT,           -- исходный текст после OCR
+  cleaned_text TEXT,       -- текст после пост-OCR очистки
   normalized_text TEXT,    -- нормализованный текст
   chunk_type TEXT,         -- 'recipe', 'intro', 'chapter_header', 'other'
   page_start INTEGER,
   page_end INTEGER,
-  status TEXT              -- 'raw', 'normalized', 'reviewed'
+  layout_zone TEXT,        -- 'body', 'header', 'footnote', 'margin_note'
+  status TEXT              -- 'raw', 'cleaned', 'normalized', 'reviewed'
 )
 
 processing_log (
@@ -249,8 +267,19 @@ n8n остаётся оркестратором пайплайнов. Тяжёл
 ```
 Webhook trigger (от FastAPI)
   → Скачать PDF из MinIO
-  → OCR (Tesseract / Gemini для сканов)
-  → Нормализация текста (FastAPI: /api/normalize)
+  → Пре-OCR (FastAPI: /api/books/{id}/preprocess)
+      → Split PDF → страницы
+      → OpenCV: binarize, deskew, denoise, scale to 300 DPI
+      → Сохранить обработанные изображения в MinIO
+  → OCR (FastAPI: /api/books/{id}/ocr)
+      → Tesseract (rus) → текст + confidence
+      → Страницы с confidence < 60% → Gemini/Qwen fallback
+  → Пост-OCR (FastAPI: /api/books/{id}/postprocess)
+      → Очистка артефактов, склейка слов
+      → Спеллчек по словарям
+      → Layout detection, разбиение на чанки
+      → Confidence routing (auto / review / manual)
+  → Нормализация текста (FastAPI: /api/books/{id}/normalize)
   → Парсинг рецептов (FastAPI: /api/recipes/parse)
   → Индексация (FastAPI: /api/indexing/book/{id})
   → Обновить статус книги (FastAPI: PATCH /api/books/{id})
@@ -270,12 +299,86 @@ TG Trigger → Set vars → AI Agent (с tool: FastAPI /api/search) → TG Respo
 - **n8n**: оркестрация, триггеры, Telegram, AI Agent, визуальные пайплайны
 - **FastAPI**: бизнес-логика, парсеры, словари, работа с БД, индексация
 
-## Обработка дореволюционных текстов
+## OCR-пайплайн
+
+### Пре-OCR (подготовка изображений)
+
+Критично для старых сканов. Без этого Tesseract выдаёт мусор на пожелтевшей бумаге.
+
+```
+PDF страница (изображение)
+  │
+  ├─ 1. Определение DPI → масштабирование до 300 DPI
+  │     Tesseract оптимален именно на этом разрешении
+  │
+  ├─ 2. Бинаризация (adaptive threshold)
+  │     Жёлтый/серый фон старых сканов → чистое ч/б
+  │
+  ├─ 3. Deskew (выравнивание наклона)
+  │     Сканы часто под углом 1-3°, это ломает OCR
+  │
+  ├─ 4. Удаление шума (morphological operations)
+  │     Пятна, точки от старой бумаги
+  │
+  ├─ 5. Удаление рамок/полей
+  │     Тёмные края сканов, тени от переплёта
+  │
+  └─ 6. Усиление контраста
+        Для выцветшего текста (CLAHE)
+```
+
+**Реализация:** OpenCV + Pillow, ~50 строк кода в `services/preprocessor.py`
+
+**Хранение:** обработанные изображения → MinIO (`books/{id}/preprocessed/`)
+
+### OCR
+
+```
+Обработанное изображение
+  │
+  ├─ Tesseract (lang=rus+rus_old) → текст + confidence per word
+  │
+  └─ Gemini/Qwen (fallback для сложных страниц с confidence < 60%)
+        Multimodal LLM лучше справляется с нестандартными шрифтами
+```
+
+### Пост-OCR (очистка текста)
+
+```
+Сырой текст после OCR
+  │
+  ├─ 1. Удаление артефактов
+  │     Лишние |, \n, управляющие символы
+  │
+  ├─ 2. Склейка разорванных слов
+  │     "ощ ущ аю тся" → "ощущается" (частая ошибка Tesseract)
+  │
+  ├─ 3. Спеллчек по словарю
+  │     Сверка с dictionary_terms: "золотиикъ" → "золотникъ"
+  │     Особенно важно для названий растений и мер
+  │
+  ├─ 4. Layout detection (определение зон)
+  │     Заголовок / тело рецепта / сноска / маргиналия
+  │     По шрифту, отступам, позиции на странице
+  │
+  ├─ 5. Определение границ рецептов
+  │     По нумерации (**, §, №), заголовкам, отступам
+  │     Автоматическое разбиение на чанки
+  │
+  └─ 6. Confidence routing
+        confidence ≥ 80% → автоматический пайплайн
+        60-80% → пометка для быстрой проверки
+        < 60% → на ручную проверку или retry через Gemini
+```
+
+**Реализация:** `services/postprocessor.py` + `services/layout_detector.py`
+
+## Нормализация дореволюционных текстов
 
 ### Пайплайн нормализации:
 
 ```
-Исходный текст (до 1917)
+Очищенный текст (после пост-OCR)
   │
   ├─ 1. Орфографическая нормализация (dictionary: orthography)
   │     ѣ → е, i → и, ъ (конец слов) → удалить, ѳ → ф
@@ -323,15 +426,19 @@ historical-recipes/
 │   │   │   ├── search.py
 │   │   │   └── indexing.py
 │   │   ├── services/          # Бизнес-логика
-│   │   │   ├── ocr.py
-│   │   │   ├── normalizer.py  # нормализация текстов
-│   │   │   ├── parser.py      # парсинг рецептов (из n8n Code nodes)
-│   │   │   ├── embedder.py    # BGE-M3 клиент
-│   │   │   ├── qdrant.py      # Qdrant клиент
-│   │   │   └── minio.py       # MinIO клиент
+│   │   │   ├── preprocessor.py  # пре-OCR обработка изображений (OpenCV)
+│   │   │   ├── ocr.py           # Tesseract + Gemini fallback
+│   │   │   ├── postprocessor.py # пост-OCR очистка текста
+│   │   │   ├── layout_detector.py # определение зон страницы
+│   │   │   ├── normalizer.py    # нормализация старинных текстов
+│   │   │   ├── parser.py        # парсинг рецептов (из n8n Code nodes)
+│   │   │   ├── spellchecker.py  # спеллчек по словарям проекта
+│   │   │   ├── embedder.py      # BGE-M3 клиент
+│   │   │   ├── qdrant.py        # Qdrant клиент
+│   │   │   └── minio.py         # MinIO клиент
 │   │   └── utils/
-│   │       ├── text.py        # утилиты для текста
-│   │       └── measures.py    # конвертация мер
+│   │       ├── text.py          # утилиты для текста
+│   │       └── measures.py      # конвертация мер
 │   ├── tests/
 │   ├── requirements.txt
 │   ├── Dockerfile
