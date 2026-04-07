@@ -17,7 +17,7 @@ from app.models.book import Book, BookPage, BookChunk, ProcessingLog
 from app.services import minio as minio_svc
 from app.services.preprocessor import split_pdf_to_pages, preprocess_page
 from app.services.ocr import ocr_page, ocr_page_with_fallback
-from app.services.postprocessor import clean_ocr_text, join_broken_words, detect_chunk_boundaries, split_into_chunks
+from app.services.postprocessor import clean_ocr_text, detect_chunk_boundaries, split_into_chunks
 from app.services.normalizer import normalize_orthography, full_normalize
 from app.services.parser import parse_recipes
 
@@ -172,9 +172,8 @@ async def postprocess_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db
     if not full_text.strip():
         raise HTTPException(status_code=400, detail="No OCR text available")
 
-    # Clean and join broken words
+    # Clean OCR artifacts
     cleaned = clean_ocr_text(full_text)
-    cleaned = join_broken_words(cleaned)
 
     # Detect boundaries and split into chunks
     boundaries = detect_chunk_boundaries(cleaned)
