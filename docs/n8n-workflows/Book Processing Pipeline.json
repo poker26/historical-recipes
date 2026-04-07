@@ -57,13 +57,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// Filter only image pages that need OCR\nconst splitResult = $json;\nconst bookId = $('Set Variables').first().json.book_id;\nconst apiBase = $('Set Variables').first().json.api_base;\n\nconst imagePages = splitResult.pages.filter(p => p.page_type === 'image');\n\nconsole.log(`Total pages: ${splitResult.total_pages}`);\nconsole.log(`Text pages (already extracted): ${splitResult.text_pages}`);\nconsole.log(`Image pages (need OCR): ${splitResult.image_pages}`);\n\nreturn imagePages.map(p => ({\n  json: {\n    book_id: bookId,\n    api_base: apiBase,\n    page_number: p.page_number,\n    page_type: p.page_type\n  }\n}));"
+        "jsCode": "// Route image pages to OCR loop (output 0) or skip to postprocess (output 1)\nconst splitResult = $json;\nconst bookId = $('Set Variables').first().json.book_id;\nconst apiBase = $('Set Variables').first().json.api_base;\n\nconst imagePages = splitResult.pages.filter(p => p.page_type === 'image');\n\nconsole.log(`Total pages: ${splitResult.total_pages}`);\nconsole.log(`Text pages (already extracted): ${splitResult.text_pages}`);\nconsole.log(`Image pages (need OCR): ${splitResult.image_pages}`);\n\nif (imagePages.length > 0) {\n  // Output 0: image pages → Loop Pages; Output 1: empty\n  return [\n    imagePages.map(p => ({\n      json: {\n        book_id: bookId,\n        api_base: apiBase,\n        page_number: p.page_number,\n        page_type: p.page_type\n      }\n    })),\n    []\n  ];\n} else {\n  // Output 0: empty (no loop); Output 1: signal → Postprocess\n  return [\n    [],\n    [{ json: { book_id: bookId, api_base: apiBase, skip_ocr: true } }]\n  ];\n}",
+        "numberOutputs": 2
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [660, 0],
       "id": "a1000001-0000-0000-0000-000000000004",
-      "name": "Filter Image Pages"
+      "name": "Route Pages"
     },
     {
       "parameters": {
@@ -178,16 +179,6 @@
       "position": [1980, 300],
       "id": "a1000001-0000-0000-0000-000000000013",
       "name": "Respond to Webhook"
-    },
-    {
-      "parameters": {
-        "jsCode": "// Check if there are image pages to process\nconst items = $input.all();\nif (items.length === 0) {\n  // No image pages — skip OCR loop, go straight to postprocess\n  return [{ json: { skip_ocr: true, book_id: $('Set Variables').first().json.book_id, api_base: $('Set Variables').first().json.api_base } }];\n}\nreturn items;"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [660, 300],
-      "id": "a1000001-0000-0000-0000-000000000014",
-      "name": "Check Has Image Pages"
     }
   ],
   "connections": {
@@ -217,23 +208,25 @@
       "main": [
         [
           {
-            "node": "Filter Image Pages",
+            "node": "Route Pages",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Filter Image Pages": {
+    "Route Pages": {
       "main": [
         [
           {
             "node": "Loop Pages",
             "type": "main",
             "index": 0
-          },
+          }
+        ],
+        [
           {
-            "node": "Check Has Image Pages",
+            "node": "Postprocess",
             "type": "main",
             "index": 0
           }
@@ -285,17 +278,6 @@
         [
           {
             "node": "Loop Pages",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Has Image Pages": {
-      "main": [
-        [
-          {
-            "node": "Postprocess",
             "type": "main",
             "index": 0
           }

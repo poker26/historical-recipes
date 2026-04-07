@@ -113,13 +113,22 @@ def parse_recipes(text: str) -> list[ParsedRecipe]:
         if not name or len(name) < 3:
             continue
 
+        category = detect_category(chunk["text"])
+        ingredients = extract_ingredients(chunk["text"])
+
+        # Skip non-recipe chunks: bibliography entries, author lists, etc.
+        # Real recipes have category keywords OR ingredients OR substantial text
+        chunk_text = chunk["text"]
+        if category == "другое" and not ingredients and len(chunk_text) < 150:
+            continue
+
         recipe = ParsedRecipe(
             name=name,
-            text=chunk["text"],
-            category=detect_category(chunk["text"]),
+            text=chunk_text,
+            category=category,
             number=chunk.get("number", 0),
             source_pattern=chunk.get("pattern", ""),
-            ingredients=extract_ingredients(chunk["text"]),
+            ingredients=ingredients,
         )
         recipes.append(recipe)
 
