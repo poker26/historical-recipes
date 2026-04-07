@@ -158,19 +158,28 @@ async def delete_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 @router.post("/{book_id}/process")
 async def process_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Trigger the full processing pipeline via n8n webhook."""
+    import httpx
+    from app.config import settings
+
     result = await db.execute(select(Book).where(Book.id == book_id))
     book = result.scalar_one_or_none()
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
 
-    # TODO: trigger n8n webhook
-    # async with httpx.AsyncClient() as client:
-    #     await client.post(f"{settings.n8n_base_url}/webhook/book-process", json={"book_id": str(book_id)})
-
     book.status = "processing"
     log = ProcessingLog(book_id=book_id, step="pipeline", status="started")
     db.add(log)
     await db.commit()
+
+    # Trigger n8n webhook (fire-and-forget)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"{settings.n8n_base_url}/webhook/book-process",
+                json={"book_id": str(book_id)},
+            )
+    except Exception:
+        pass  # n8n may not be configured yet — don't block UI
 
     return {"status": "processing", "book_id": str(book_id)}
 

@@ -132,20 +132,20 @@ export const api = {
     if (params?.status) q.set("status", params.status);
     if (params?.domain) q.set("domain", params.domain);
     const qs = q.toString();
-    return apiFetch<Book[]>(`/api/books${qs ? `?${qs}` : ""}`);
+    return apiFetch<Book[]>(`/api/books/${qs ? `?${qs}` : ""}`);
   },
-  getBook: (id: string) => apiFetch<BookDetail>(`/api/books/${id}`),
+  getBook: (id: string) => apiFetch<BookDetail>(`/api/books/${id}/`),
   uploadBook: (formData: FormData) => apiUpload<Book>("/api/books/upload", formData),
-  deleteBook: (id: string) => apiFetch<{ status: string }>(`/api/books/${id}`, { method: "DELETE" }),
+  deleteBook: (id: string) => apiFetch<{ status: string }>(`/api/books/${id}/`, { method: "DELETE" }),
   processBook: (id: string) => apiFetch<{ status: string }>(`/api/books/${id}/process`, { method: "POST" }),
-  getPages: (bookId: string) => apiFetch<BookPage[]>(`/api/books/${bookId}/pages`),
-  getChunks: (bookId: string) => apiFetch<BookChunk[]>(`/api/books/${bookId}/chunks`),
+  getPages: (bookId: string) => apiFetch<BookPage[]>(`/api/books/${bookId}/pages/`),
+  getChunks: (bookId: string) => apiFetch<BookChunk[]>(`/api/books/${bookId}/chunks/`),
   updateChunk: (bookId: string, chunkId: string, data: Partial<BookChunk>) =>
-    apiFetch<BookChunk>(`/api/books/${bookId}/chunks/${chunkId}`, {
+    apiFetch<BookChunk>(`/api/books/${bookId}/chunks/${chunkId}/`, {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
-  getLogs: (bookId: string) => apiFetch<ProcessingLog[]>(`/api/books/${bookId}/logs`),
+  getLogs: (bookId: string) => apiFetch<ProcessingLog[]>(`/api/books/${bookId}/logs/`),
 
   // Recipes
   listRecipes: (params?: { category?: string; book_id?: string; q?: string }) => {
@@ -154,33 +154,33 @@ export const api = {
     if (params?.book_id) qs.set("book_id", params.book_id);
     if (params?.q) qs.set("q", params.q);
     const s = qs.toString();
-    return apiFetch<Recipe[]>(`/api/recipes${s ? `?${s}` : ""}`);
+    return apiFetch<Recipe[]>(`/api/recipes/${s ? `?${s}` : ""}`);
   },
-  getRecipe: (id: string) => apiFetch<Recipe>(`/api/recipes/${id}`),
+  getRecipe: (id: string) => apiFetch<Recipe>(`/api/recipes/${id}/`),
 
   // Plants
-  listPlants: (q?: string) => apiFetch<Plant[]>(`/api/plants${q ? `?q=${q}` : ""}`),
-  getPlant: (id: string) => apiFetch<Plant>(`/api/plants/${id}`),
+  listPlants: (q?: string) => apiFetch<Plant[]>(`/api/plants/${q ? `?q=${q}` : ""}`),
+  getPlant: (id: string) => apiFetch<Plant>(`/api/plants/${id}/`),
 
   // Dictionaries
   listTerms: (category?: string) =>
-    apiFetch<DictionaryTerm[]>(`/api/dictionaries${category ? `?category=${category}` : ""}`),
-  lookupTerm: (term: string) => apiFetch<DictionaryTerm[]>(`/api/dictionaries/lookup?term=${term}`),
+    apiFetch<DictionaryTerm[]>(`/api/dictionaries/${category ? `?category=${category}` : ""}`),
+  lookupTerm: (term: string) => apiFetch<DictionaryTerm[]>(`/api/dictionaries/lookup/?term=${term}`),
   createTerm: (data: Omit<DictionaryTerm, "id">) =>
-    apiFetch<DictionaryTerm>("/api/dictionaries", { method: "POST", body: JSON.stringify(data) }),
+    apiFetch<DictionaryTerm>("/api/dictionaries/", { method: "POST", body: JSON.stringify(data) }),
   deleteTerm: (id: string) =>
-    apiFetch<{ status: string }>(`/api/dictionaries/${id}`, { method: "DELETE" }),
+    apiFetch<{ status: string }>(`/api/dictionaries/${id}/`, { method: "DELETE" }),
 
   // Search
   search: (query: string, mode = "hybrid", collection?: string, limit = 10) =>
-    apiFetch<SearchResponse>("/api/search", {
+    apiFetch<SearchResponse>("/api/search/", {
       method: "POST",
       body: JSON.stringify({ query, mode, collection, limit }),
     }),
 
   // Indexing
   indexBook: (bookId: string) =>
-    apiFetch<{ status: string; indexed: number }>(`/api/indexing/book/${bookId}`, { method: "POST" }),
+    apiFetch<{ status: string; indexed: number }>(`/api/indexing/book/${bookId}/`, { method: "POST" }),
   deindexBook: (bookId: string) =>
-    apiFetch<{ status: string }>(`/api/indexing/book/${bookId}`, { method: "DELETE" }),
+    apiFetch<{ status: string }>(`/api/indexing/book/${bookId}/`, { method: "DELETE" }),
 };
