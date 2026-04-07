@@ -14,11 +14,13 @@ class Settings(BaseSettings):
 
     # Qdrant (self-hosted)
     qdrant_url: str = "http://qdrant:6333"
+    qdrant_api_key: str = ""
     qdrant_collection_recipes: str = "recipes"
     qdrant_collection_herbalism: str = "herbalism"
 
     # BGE-M3 (self-hosted embeddings)
     bge_m3_url: str = "http://bge-m3:8100"
+    bge_m3_port: int = 8100
     bge_m3_timeout: float = 60.0
 
     # OpenRouter (LLM gateway)

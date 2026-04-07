@@ -14,8 +14,11 @@ from app.config import settings
 async def _request(method: str, path: str, json: dict | None = None) -> dict:
     """Make HTTP request to Qdrant."""
     url = f"{settings.qdrant_url}{path}"
+    headers = {}
+    if settings.qdrant_api_key:
+        headers["api-key"] = settings.qdrant_api_key
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.request(method, url, json=json)
+        response = await client.request(method, url, json=json, headers=headers)
         response.raise_for_status()
         return response.json()
 
