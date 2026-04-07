@@ -19,7 +19,6 @@ app = FastAPI(
     description="API для работы с коллекцией старинных рецептов настоек и травников",
     version="0.1.0",
     lifespan=lifespan,
-    redirect_slashes=False,
 )
 
 app.add_middleware(
