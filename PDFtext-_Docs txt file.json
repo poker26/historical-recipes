@@ -1,0 +1,273 @@
+{
+  "name": "PDFtext->Docs txt file",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -608,
+        -400
+      ],
+      "id": "006bae5d-7f1b-4d9e-a632-ed71c3ed8054",
+      "name": "When clicking ‘Test workflow’"
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "https://drive.google.com/file/d/1xzkS7edDz8lJgqFgSj0GeF9Ccam6mtA1/view?usp=sharing",
+          "mode": "url"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -368,
+        -400
+      ],
+      "id": "a0e5de86-c348-4eeb-835a-c18b85dc0aea",
+      "name": "Google Drive",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "O4yQLXxWjnB79xTw",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        -128,
+        -400
+      ],
+      "id": "00cce2a6-d56c-4b55-a2a2-eecfb3676690",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Ты профессиональный корректор текстов на русском языке. Тебе поступает текст {{ $json.text }} в котором содержатся лишние знаки \" \" (пробел). Например, слово \"ощущается\" записано как \"ощ ущ аю тся\" и так далее.\nПроанализируй весь текст и откорректируй его, убрав лишние пробелы.\nВ ответе дай только исправленный текст и больше ничего, никаких своих комментариев",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.9,
+      "position": [
+        -160,
+        -64
+      ],
+      "id": "5588d482-61e4-49bf-bce1-5fefcd33caeb",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": "qwen/qwen3-vl-235b-a22b-instruct",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        -368,
+        160
+      ],
+      "id": "7267ed5b-ebfe-4589-8bf5-d5030e1f7571",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "Ma7nMcQJsTPnqMkx",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "243242",
+        "contextWindowLength": 1
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -176,
+        192
+      ],
+      "id": "19d2250e-461e-4158-b708-bc241d087de0",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "https://docs.google.com/document/d/1Pi6St9XMxXIIa7dafeVTigYX8kT7If54P7bvGKE-arg/edit?usp=sharing",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{$json.output}}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        240,
+        -64
+      ],
+      "id": "c5cdbbf9-406b-40c5-abb6-68aca6a249a8",
+      "name": "Google Docs",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "iRxMjkSHacWOXXF6",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -448,
+        -80
+      ],
+      "id": "bd6a26f4-fa6a-41f7-af8a-315b4b436290",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Извлекаем и очищаем текст из PDF структуры\nfunction extractTextFromPDF(pdfData) {\n  let text = pdfData.text || '';\n  \n  // Минимальная очистка текста от артефактов OCR\n  text = text\n    // Убираем только явные множественные пробелы (2 и более)\n    .replace(/  +/g, ' ')\n    // Убираем пробелы в начале и конце строк\n    .replace(/^\\s+|\\s+$/gm, '')\n    // Объединяем разорванные строки только если они явно разорваны (строка заканчивается буквой, а следующая начинается с маленькой)\n    .replace(/([а-яё])\\n([а-яё])/g, '$1 $2')\n    // Убираем избыточные переносы строк (3 и более)\n    .replace(/\\n{3,}/g, '\\n\\n')\n    // Убираем пробелы в начале и конце всего текста\n    .trim();\n  \n  return text;\n}\n\n// Извлекаем метаданные из PDF\nfunction extractPDFMetadata(pdfData) {\n  const info = pdfData.info || {};\n  const metadata = pdfData.metadata || {};\n  \n  return {\n    totalPages: pdfData.numpages || 0,\n    renderedPages: pdfData.numrender || 0,\n    producer: info.Producer || metadata['pdf:producer'] || 'Unknown',\n    creationDate: info.CreationDate || null,\n    modificationDate: info.ModDate || null,\n    format: metadata['dc:format'] || 'application/pdf',\n    documentId: metadata['xapmm:documentid'] || null\n  };\n}\n\n// Функция для разбивки текста на chunks\nfunction chunkText(text, maxTokens = 6000) {\n  // Приблизительно 1 токен = 0.75 слова для русского языка\n  const maxWords = Math.floor(maxTokens * 0.75);\n  const words = text.split(/\\s+/);\n  const chunks = [];\n  \n  let currentChunk = [];\n  let currentWordCount = 0;\n  \n  for (const word of words) {\n    // Если добавление слова превысит лимит, сохраняем текущий chunk\n    if (currentWordCount + 1 > maxWords && currentChunk.length > 0) {\n      chunks.push(currentChunk.join(' '));\n      currentChunk = [word];\n      currentWordCount = 1;\n    } else {\n      currentChunk.push(word);\n      currentWordCount++;\n    }\n  }\n  \n  // Добавляем последний chunk если он не пустой\n  if (currentChunk.length > 0) {\n    chunks.push(currentChunk.join(' '));\n  }\n  \n  return chunks;\n}\n\n// Функция для подсчета приблизительного количества токенов\nfunction estimateTokenCount(text) {\n  // Приблизительная оценка: 1 токен ≈ 0.75 слова для русского языка\n  const words = text.split(/\\s+/).length;\n  return Math.ceil(words / 0.75);\n}\n\n// Основная логика\nconst pdfData = $input.all()[0].json;\nconst fullText = extractTextFromPDF(pdfData);\nconst metadata = extractPDFMetadata(pdfData);\n\n// Проверяем, что текст был извлечен\nif (!fullText || fullText.length === 0) {\n  throw new Error('Не удалось извлечь текст из PDF файла');\n}\n\nconsole.log(`Извлечено ${fullText.length} символов из PDF (${metadata.totalPages} страниц)`);\n\n// Разбиваем на chunks\nconst chunks = chunkText(fullText, 6000); // Оставляем запас для промпта и ответа\n\n// Создаем результат\nconst result = chunks.map((chunk, index) => ({\n  chunkIndex: index + 1,\n  totalChunks: chunks.length,\n  text: chunk,\n  estimatedTokens: estimateTokenCount(chunk),\n  wordCount: chunk.split(/\\s+/).length,\n  characterCount: chunk.length,\n  // PDF метаданные\n  sourceType: 'PDF',\n  documentId: metadata.documentId || $json.documentId || 'unknown',\n  documentTitle: $json.documentTitle || `PDF Document (${metadata.totalPages} pages)`,\n  totalPages: metadata.totalPages,\n  producer: metadata.producer,\n  creationDate: metadata.creationDate,\n  // Дополнительная информация для отладки\n  originalTextLength: fullText.length,\n  compressionRatio: Math.round((chunk.length / fullText.length) * 100)\n}));\n\nconsole.log(`Создано ${result.length} фрагментов текста`);\n\nreturn result;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        112,
+        -400
+      ],
+      "id": "1c57f28e-3ae5-4e54-af12-5f205a3d95dd",
+      "name": "Split text to chunks"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Test workflow’": {
+      "main": [
+        [
+          {
+            "node": "Google Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Drive": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Split text to chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Google Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Docs": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split text to chunks": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "905346b9-2eb3-4c6c-a1c5-60db1d6aa59e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "37c1bec5477bc5881c36f29ac7b9dab276628a9c7b18952c9c8961bf5c12fae5"
+  },
+  "id": "ajYIDoEiHUbZ63dQ",
+  "tags": []
+}

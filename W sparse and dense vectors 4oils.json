@@ -1,0 +1,398 @@
+{
+  "name": "W sparse and dense vectors 4oils",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -928,
+        -416
+      ],
+      "id": "10c58200-c8b5-47e8-9259-7740af4bf8e7",
+      "name": "When clicking ‘Test workflow’"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Code Node: Подготовка одного рецепта для OpenAI Embeddings\n// Размещается после Split In Batches, перед HTTP Request к OpenAI\n\nconst recipe = $input.first().json;\n\n\n// Создаем текст для эмбеддинга\nconst fullText = `Рецепт: ${recipe.name}\\n\\nСодержание: ${recipe.content}`;\n\n// Ограничиваем размер текста (OpenAI имеет лимит ~8191 токенов)\n// Примерно 1 токен = 4 символа, оставляем запас\nconst MAX_CHARS = 7000; // ~1750 токенов\n\nlet embeddingText;\nif (fullText.length <= MAX_CHARS) {\n  embeddingText = fullText;\n  console.log(`Текст помещается: ${fullText.length} символов`);\n} else {\n  // Обрезаем по границе слов\n  const truncated = fullText.substring(0, MAX_CHARS);\n  const lastSpaceIndex = truncated.lastIndexOf(' ');\n  \n  // Если последний пробел не слишком далеко, обрезаем по нему\n  if (lastSpaceIndex > MAX_CHARS * 0.9) {\n    embeddingText = truncated.substring(0, lastSpaceIndex) + '...';\n  } else {\n    embeddingText = truncated + '...';\n  }\n  \n  console.log(`Текст обрезан: ${fullText.length} → ${embeddingText.length} символов`);\n}\n\n// Возвращаем данные для OpenAI\nreturn [{\n  json: {\n    model: \"text-embedding-3-small\",\n    input: embeddingText,\n    // Сохраняем оригинальные данные рецепта для следующего шага\n    recipe_data: {\n      id: recipe.id,\n      number: recipe.number,\n      name: recipe.name,\n      content: recipe.content,\n      full_text: recipe.full_text,\n      sparse_vectors: recipe.sparse_vectors,\n      // Добавляем информацию об обрезке\n      was_truncated: fullText.length > MAX_CHARS,\n      original_length: fullText.length,\n      embedding_length: embeddingText.length\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        -80
+      ],
+      "id": "a57fdb6d-450c-4cbb-963b-61636c7599a1",
+      "name": "Code1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "name",
+              "value": "model"
+            },
+            {
+              "name": "model",
+              "value": "text-embedding-3-small"
+            },
+            {
+              "name": "input",
+              "value": "={{ $json.input }}"
+            },
+            {}
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1
+            }
+          }
+        }
+      },
+      "id": "7b74a9a3-1e03-4e07-bc22-9a5117cc91d8",
+      "name": "Create Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -256,
+        -80
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "JSSpwT48veDfeDPX",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Расширенный парсер рецептов для всех типов (водки, ликёры, масла, бальзамы, благовонные воды)\nconsole.log('=== РАСШИРЕННЫЙ ПАРСИНГ ВСЕХ ТИПОВ РЕЦЕПТОВ ===');\n\n// Функция обработки словарей (без изменений)\nfunction processVocabularies(vocabularyData) {\n  console.log('⏳ Обрабатываем словари...');\n  \n  if (!Array.isArray(vocabularyData) || vocabularyData.length === 0) {\n    throw new Error('Словари пусты или неверного формата');\n  }\n  \n  const vocabularies = {};\n  const categoryStats = {};\n  \n  for (const row of vocabularyData) {\n    const { category, term, term_index, weight_multiplier } = row;\n    \n    if (!category || !term || term_index === undefined) {\n      throw new Error(`Некорректные данные: ${JSON.stringify(row)}`);\n    }\n    \n    if (!vocabularies[category]) {\n      vocabularies[category] = { terms: [], weights: [] };\n      categoryStats[category] = 0;\n    }\n    \n    vocabularies[category].terms[term_index] = term;\n    vocabularies[category].weights[term_index] = parseFloat(weight_multiplier);\n    categoryStats[category]++;\n  }\n  \n  const requiredCategories = ['ingredients', 'spices_herbs', 'techniques', 'categories', 'measurements'];\n  const missingCategories = requiredCategories.filter(cat => !vocabularies[cat] || vocabularies[cat].terms.length === 0);\n  \n  if (missingCategories.length > 0) {\n    throw new Error(`Отсутствуют категории: ${missingCategories.join(', ')}`);\n  }\n  \n  console.log('✓ Статистика словарей:');\n  Object.entries(categoryStats).forEach(([category, count]) => {\n    console.log(`  ${category}: ${count} терминов`);\n  });\n  \n  return vocabularies;\n}\n\n// Функция генерации sparse vectors с учетом типа рецепта\nfunction generateSparseVectors(recipeText, recipeName, category, vocabularies) {\n  const result = {};\n  \n  Object.keys(vocabularies).forEach(cat => {\n    result[cat] = { indices: [], values: [] };\n  });\n  \n  const text = (recipeText + ' ' + recipeName).toLowerCase();\n  \n  Object.keys(vocabularies).forEach(cat => {\n    const categoryData = vocabularies[cat];\n    \n    categoryData.terms.forEach((term, index) => {\n      if (!term) return;\n      \n      const normalizedTerm = term.toLowerCase();\n      if (text.includes(normalizedTerm)) {\n        const regex = new RegExp(normalizedTerm.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), 'gi');\n        const frequency = (text.match(regex) || []).length;\n        \n        let weight = frequency * (categoryData.weights[index] || 1.0);\n        \n        // Применяем весовые коэффициенты по типу рецепта\n        if (category === 'ликёр' && (cat === 'spices_herbs' || cat === 'techniques')) {\n          weight *= 1.3;\n        } else if (category === 'благовонная_вода' && cat === 'spices_herbs') {\n          weight *= 1.5;\n        } else if (category === 'ароматическое_масло' && cat === 'ingredients') {\n          weight *= 1.4;\n        } else if (category === 'бальзам' && cat === 'techniques') {\n          weight *= 1.2;\n        }\n        \n        result[cat].indices.push(index);\n        result[cat].values.push(weight);\n      }\n    });\n  });\n  \n  return result;\n}\n\n// Парсинг благовонных вод (§ 441-483)\nfunction parsePerfumeWaters(text, vocabularies, startRecipeNumber) {\n  console.log('\\n--- Парсинг благовонных вод ---');\n  const recipes = [];\n  let nextRecipeNumber = startRecipeNumber;\n  \n  // Паттерн для благовонных вод: § номер.\\nномер. Название.\\nФранцузское название.\\n\\nСодержание\n  const perfumePattern = /§\\s*(\\d+)\\.\\s*\\n(\\d+)\\.\\s*([^\\n]+?)\\.\\s*\\n([^\\n]*?)\\.?\\s*\\n\\s*\\n([\\s\\S]*?)(?=§\\s*\\d+\\.|$)/g;\n  \n  let match;\n  while ((match = perfumePattern.exec(text)) !== null) {\n    const paragraphNumber = parseInt(match[1]);\n    const recipeNumber = parseInt(match[2]);\n    let name = match[3].trim();\n    const frenchName = match[4].trim();\n    let content = match[5].trim();\n    \n    // Проверяем, что это действительно рецепт\n    if (content.length > 100 && \n        (content.includes('Возьми') || content.includes('К приготовлению') || content.includes('настаивать'))) {\n      \n      // Нормализуем название\n      if (!name.toLowerCase().includes('вода')) {\n        name = `Вода ${name}`;\n      }\n      \n      recipes.push({\n        id: `recipe_${nextRecipeNumber}`,\n        number: nextRecipeNumber,\n        name: name,\n        french_name: frenchName,\n        content: content,\n        full_text: `${name}\\n${frenchName ? frenchName + '\\n' : ''}\\n${content}`,\n        source_pattern: 'perfume_water',\n        category: 'благовонная_вода',\n        source_book: 'perfume',\n        original_paragraph: paragraphNumber,\n        original_recipe_number: recipeNumber,\n        sparse_vectors: generateSparseVectors(content, name, 'благовонная_вода', vocabularies)\n      });\n      \n      console.log(`  ✓ ${name} (§${paragraphNumber}.${recipeNumber})`);\n      nextRecipeNumber++;\n    }\n  }\n  \n  console.log(`Найдено ${recipes.length} благовонных вод`);\n  return { recipes, nextRecipeNumber };\n}\n\n// Парсинг ароматических масел (§ 484-575)\nfunction parseAromaticOils(text, vocabularies, startRecipeNumber) {\n  console.log('\\n--- Парсинг ароматических масел ---');\n  const recipes = [];\n  let nextRecipeNumber = startRecipeNumber;\n  \n  // Паттерн для простых масел: § номер.\\nНазвание.\\n\\nСодержание\n  const oilSimplePattern = /§\\s*(\\d+)\\.\\s*\\n([^\\n]+?)\\.\\s*\\n\\s*\\n([\\s\\S]*?)(?=§\\s*\\d+\\.|$)/g;\n  \n  let match;\n  while ((match = oilSimplePattern.exec(text)) !== null) {\n    const paragraphNumber = parseInt(match[1]);\n    let name = match[2].trim();\n    let content = match[3].trim();\n    \n    // Пропускаем заголовки глав и коротки записи\n    if (name.includes('ГЛАВА') || name.includes('О приготовлении') || content.length < 100) {\n      continue;\n    }\n    \n    // Проверяем, что это рецепт масла\n    if ((name.toLowerCase().includes('масло') || name.toLowerCase().includes('oleum')) &&\n        content.length > 80 && \n        (content.includes('Возьми') || content.includes('растолки') || content.includes('перегони'))) {\n      \n      recipes.push({\n        id: `recipe_${nextRecipeNumber}`,\n        number: nextRecipeNumber,\n        name: name,\n        content: content,\n        full_text: `${name}\\n\\n${content}`,\n        source_pattern: 'aromatic_oil',\n        category: 'ароматическое_масло',\n        source_book: 'oils',\n        original_paragraph: paragraphNumber,\n        sparse_vectors: generateSparseVectors(content, name, 'ароматическое_масло', vocabularies)\n      });\n      \n      console.log(`  ✓ ${name} (§${paragraphNumber})`);\n      nextRecipeNumber++;\n    }\n  }\n  \n  console.log(`Найдено ${recipes.length} ароматических масел`);\n  return { recipes, nextRecipeNumber };\n}\n\n// Парсинг нумерованных рецептов (масла ликёрные и бальзамы)\nfunction parseNumberedRecipes(text, vocabularies, startRecipeNumber) {\n  console.log('\\n--- Парсинг нумерованных рецептов (ликёрные масла и бальзамы) ---');\n  const recipes = [];\n  let nextRecipeNumber = startRecipeNumber;\n  \n  // Паттерн для нумерованных рецептов: § номер.\\nномер. Название.\\n\\nСодержание\n  const numberedPattern = /§\\s*(\\d+)\\.\\s*\\n(\\d+)\\.\\s*([^\\n]+?)\\.\\s*\\n\\s*\\n([\\s\\S]*?)(?=§\\s*\\d+\\.|$)/g;\n  \n  let match;\n  while ((match = numberedPattern.exec(text)) !== null) {\n    const paragraphNumber = parseInt(match[1]);\n    const recipeNumber = parseInt(match[2]);\n    let name = match[3].trim();\n    let content = match[4].trim();\n    \n    // Проверяем, что это действительно рецепт\n    if (content.length > 100 && \n        (content.includes('Возьми') || content.includes('Возьмите') || content.includes('растолки'))) {\n      \n      let category, sourceBook;\n      \n      // Определяем тип рецепта по названию и содержимому\n      if (name.toLowerCase().includes('масло')) {\n        category = 'ликёрное_масло';\n        sourceBook = 'liqueur_oils';\n      } else if (name.toLowerCase().includes('бальзам')) {\n        category = 'бальзам';\n        sourceBook = 'balsams';\n      } else {\n        // По умолчанию, если неясно\n        category = 'ароматическое_масло';\n        sourceBook = 'oils';\n      }\n      \n      recipes.push({\n        id: `recipe_${nextRecipeNumber}`,\n        number: nextRecipeNumber,\n        name: name,\n        content: content,\n        full_text: `${name}\\n\\n${content}`,\n        source_pattern: 'numbered_recipe',\n        category: category,\n        source_book: sourceBook,\n        original_paragraph: paragraphNumber,\n        original_recipe_number: recipeNumber,\n        sparse_vectors: generateSparseVectors(content, name, category, vocabularies)\n      });\n      \n      console.log(`  ✓ ${name} (${category}, §${paragraphNumber}.${recipeNumber})`);\n      nextRecipeNumber++;\n    }\n  }\n  \n  console.log(`Найдено ${recipes.length} нумерованных рецептов`);\n  return { recipes, nextRecipeNumber };\n}\n\n// Основная функция парсинга (расширенная)\nasync function parseAllHistoricalRecipes(text, vocabularies) {\n  const allRecipes = [];\n  \n  console.log('\\nНачинаем полный парсинг всех типов рецептов...');\n  console.log(`📄 Общая длина текста: ${text.length} символов`);\n  \n  // ДИАГНОСТИКА контента\n  const diagnostics = {\n    hasStarredPatterns: !!text.match(/\\*\\*\\d+\\./),\n    hasSectionPatterns: !!text.match(/§\\s*\\d+\\./),\n    hasPerfumeSection: !!text.match(/О приготовлении душистых.*вод/i),\n    hasOilSection: !!text.match(/О приготовлении разных масел/i),\n    hasBalsamSection: !!text.match(/О приготовлении бальзамов/i),\n    starredCount: (text.match(/\\*\\*\\d+\\./g) || []).length,\n    sectionCount: (text.match(/§\\s*\\d+\\./g) || []).length\n  };\n  \n  console.log('🔍 Диагностика содержимого:');\n  Object.entries(diagnostics).forEach(([key, value]) => {\n    console.log(`  ${key}: ${value}`);\n  });\n  \n  let nextRecipeNumber = 1;\n  \n  try {\n    // 1. Парсим рецепты водок (как и раньше)\n    console.log('\\n--- Ищем рецепты водок ---');\n    const vodkaPattern = /\\*\\*(\\d+)\\.\\s*([^*\\n]+?)\\*\\*([\\s\\S]*?)(?=\\*\\*\\d+\\.|$)/g;\n    let match;\n    let foundVodkaCount = 0;\n    \n    while ((match = vodkaPattern.exec(text)) !== null) {\n      const number = parseInt(match[1]);\n      const name = match[2].trim().replace(/\\.$/, '');\n      let content = match[3].trim().replace(/^\\s*\\n+/, '');\n      \n      const isChapterHeader = name.includes('ГЛАВА') || name.includes('§') || content.length < 50;\n      \n      if (!isChapterHeader && name.length > 3 && content.length > 30) {\n        allRecipes.push({\n          id: `recipe_${number}`,\n          number: number,\n          name: name,\n          content: content,\n          full_text: `${name}\\n\\n${content}`,\n          source_pattern: 'starred_number_title',\n          category: 'водка',\n          source_book: 'original',\n          sparse_vectors: generateSparseVectors(content, name, 'водка', vocabularies)\n        });\n        \n        foundVodkaCount++;\n        if (foundVodkaCount <= 5) {\n          console.log(`  Водка ${number}: \"${name}\"`);\n        }\n        nextRecipeNumber = Math.max(nextRecipeNumber, number + 1);\n      }\n    }\n    console.log(`✓ Найдено ${foundVodkaCount} рецептов водок`);\n\n    // 2. Парсим французские ликёры (как и раньше, но сокращенно)\n    console.log('\\n--- Ищем французские ликёры ---');\n    let foundFrenchCount = 0;\n    \n    const frenchSections = text.split(/(?=§\\s*\\d+\\.)/);\n    for (let i = 0; i < frenchSections.length; i++) {\n      const section = frenchSections[i];\n      if (section.length < 200) continue;\n      \n      const recipePattern = /^(\\d+)\\.\\s*([^\\n]+?)\\.?\\s*\\n([\\s\\S]*?)(?=^\\d+\\.|$)/gm;\n      let recipeMatch;\n      \n      while ((recipeMatch = recipePattern.exec(section)) !== null) {\n        const recipeNumber = parseInt(recipeMatch[1]);\n        let nameAndFrench = recipeMatch[2].trim();\n        let content = recipeMatch[3].trim();\n        \n        // Простая проверка на ликёр\n        const hasIngredients = content.match(/(?:Возьми|французской водки|настаивать)/i);\n        const isTableOfContents = content.length < 80;\n        \n        if (hasIngredients && !isTableOfContents && content.length > 50) {\n          let displayName = nameAndFrench.startsWith('Вода ') ? \n            nameAndFrench.replace('Вода ', 'Ликёр ') : `Ликёр ${nameAndFrench}`;\n          \n          allRecipes.push({\n            id: `recipe_${nextRecipeNumber}`,\n            number: nextRecipeNumber,\n            name: displayName,\n            content: content,\n            full_text: `${displayName}\\n\\n${content}`,\n            source_pattern: 'french_section',\n            category: 'ликёр',\n            source_book: 'french',\n            original_recipe_number: recipeNumber,\n            sparse_vectors: generateSparseVectors(content, displayName, 'ликёр', vocabularies)\n          });\n          \n          foundFrenchCount++;\n          nextRecipeNumber++;\n        }\n      }\n    }\n    console.log(`✓ Найдено ${foundFrenchCount} французских ликёров`);\n    \n    // 3. НОВОЕ: Парсим благовонные воды\n    const perfumeResult = parsePerfumeWaters(text, vocabularies, nextRecipeNumber);\n    allRecipes.push(...perfumeResult.recipes);\n    nextRecipeNumber = perfumeResult.nextRecipeNumber;\n    \n    // 4. НОВОЕ: Парсим ароматические масла\n    const oilResult = parseAromaticOils(text, vocabularies, nextRecipeNumber);\n    allRecipes.push(...oilResult.recipes);\n    nextRecipeNumber = oilResult.nextRecipeNumber;\n    \n    // 5. НОВОЕ: Парсим нумерованные рецепты (ликёрные масла и бальзамы)\n    const numberedResult = parseNumberedRecipes(text, vocabularies, nextRecipeNumber);\n    allRecipes.push(...numberedResult.recipes);\n    \n  } catch (parseError) {\n    console.error('✗ Ошибка парсинга:', parseError.message);\n  }\n  \n  return allRecipes;\n}\n\n// Основная функция\ntry {\n  // Получаем данные от Merge узла\n  const allInputs = $input.all();\n  \n  console.log(`Получено элементов от Merge узла: ${allInputs.length}`);\n  \n  if (allInputs.length < 400) {\n    return [{ json: { \n      error: `Недостаточно данных от Merge узла. Получено: ${allInputs.length}, ожидалось ~486`,\n      status: 'failed'\n    }}];\n  }\n  \n  // Разделяем данные: ищем элемент с большим текстом\n  let vocabularyData = [];\n  let textData = null;\n  \n  for (const item of allInputs) {\n    if (item?.json) {\n      // Если это текстовые данные (большой объем текста)\n      if (item.json.data && typeof item.json.data === 'string' && item.json.data.length > 50000) {\n        textData = item.json.data;\n        console.log(`Найден текст: ${textData.length} символов`);\n      }\n      // Если это словарный термин\n      else if (item.json.category && item.json.term && item.json.term_index !== undefined) {\n        vocabularyData.push(item.json);\n      }\n    }\n  }\n  \n  console.log(`Словарей: ${vocabularyData.length}, текст: ${textData ? 'найден' : 'НЕ НАЙДЕН'}`);\n  \n  // Валидация данных\n  if (vocabularyData.length === 0) {\n    return [{ json: { \n      error: 'Словари не найдены в данных от Merge узла',\n      status: 'failed'\n    }}];\n  }\n  \n  if (!textData) {\n    return [{ json: { \n      error: 'Текстовые данные не найдены в данных от Merge узла',\n      status: 'failed'\n    }}];\n  }\n  \n  // Обрабатываем словари\n  console.log('\\n=== ОБРАБОТКА СЛОВАРЕЙ ===');\n  const vocabularies = processVocabularies(vocabularyData);\n  \n  // Парсим все рецепты\n  console.log('\\n=== ПОЛНЫЙ ПАРСИНГ РЕЦЕПТОВ ===');\n  const allRecipes = await parseAllHistoricalRecipes(textData, vocabularies);\n  \n  if (allRecipes.length === 0) {\n    return [{ json: { \n      error: 'Рецепты не найдены',\n      status: 'completed_no_results'\n    }}];\n  }\n  \n  // Сортируем и считаем статистику\n  allRecipes.sort((a, b) => a.number - b.number);\n  \n  const categoryStats = {};\n  const sourceStats = {};\n  \n  allRecipes.forEach(recipe => {\n    categoryStats[recipe.category] = (categoryStats[recipe.category] || 0) + 1;\n    sourceStats[recipe.source_book] = (sourceStats[recipe.source_book] || 0) + 1;\n  });\n  \n  console.log('\\n=== ИТОГОВАЯ СТАТИСТИКА ===');\n  console.log(`Обработано рецептов: ${allRecipes.length}`);\n  console.log('По типам:');\n  Object.entries(categoryStats).forEach(([cat, count]) => {\n    console.log(`  ${cat}: ${count} рецептов`);\n  });\n  console.log('По источникам:');\n  Object.entries(sourceStats).forEach(([source, count]) => {\n    console.log(`  ${source}: ${count} рецептов`);\n  });\n  \n  // Проверяем sparse vectors\n  const vectorStats = {};\n  const requiredCategories = ['categories', 'ingredients', 'measurements', 'spices_herbs', 'techniques'];\n  \n  requiredCategories.forEach(category => {\n    vectorStats[category] = 0;\n  });\n  \n  allRecipes.forEach(recipe => {\n    Object.keys(recipe.sparse_vectors).forEach(category => {\n      if (vectorStats[category] !== undefined) {\n        vectorStats[category] += recipe.sparse_vectors[category].indices.length;\n      }\n    });\n  });\n  \n  console.log('Статистика sparse vectors:');\n  Object.entries(vectorStats).forEach(([category, count]) => {\n    console.log(`  ${category}: ${count} совпадений`);\n  });\n  \n  console.log('\\n✅ ПОЛНЫЙ ПАРСИНГ ЗАВЕРШЕН УСПЕШНО');\n  \n  return allRecipes.map(recipe => ({ json: recipe }));\n  \n} catch (globalError) {\n  console.error('✗ КРИТИЧЕСКАЯ ОШИБКА:', globalError.message);\n  console.error('Stack:', globalError.stack);\n  return [{ json: { \n    error: 'Critical parsing error',\n    message: globalError.message,\n    stack: globalError.stack,\n    status: 'failed',\n    timestamp: new Date().toISOString()\n  }}];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        32,
+        -400
+      ],
+      "id": "34370412-e6ff-48c9-8a66-329c13c0206d",
+      "name": "Right Parser"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -688,
+        -128
+      ],
+      "id": "204ee56e-3932-4c44-b6b4-65189eb9b395",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Code Node: Объединение sparse и dense векторов (ИСПРАВЛЕННЫЙ)\n// Убираем function declaration, выполняем код напрямую\n\n// Получаем данные запроса и ответ OpenAI\nconst openaiResponse = $input.last().json; // Ответ от OpenAI\n\n// Извлекаем эмбеддинг\nif (!openaiResponse.data || !Array.isArray(openaiResponse.data) || openaiResponse.data.length === 0) {\n  throw new Error('Некорректный ответ от OpenAI');\n}\n\nconst embedding = openaiResponse.data[0].embedding;\nif (!Array.isArray(embedding)) {\n  throw new Error('Эмбеддинг не является массивом');\n}\n\nconst recipe = $('Code1').first().json.recipe_data;\n\n// Подготавливаем sparse векторы\nconst sparseVectors = {};\nif (recipe.sparse_vectors) {\n  Object.keys(recipe.sparse_vectors).forEach(category => {\n    const sparse = recipe.sparse_vectors[category];\n    if (sparse && sparse.indices && sparse.values && sparse.indices.length > 0) {\n      sparseVectors[category] = {\n        indices: sparse.indices,\n        values: sparse.values\n      };\n    }\n  });\n}\n\nconst uniqueId = recipe.number * 1000 + Date.now() % 1000;\n\n\n// Создаем point для Qdrant\nconst point = {\n  id:  Math.abs(uniqueId),  // ИСПРАВЛЕНО: используем числовой ID вместо строки\n  vector: {\n    dense: embedding,\n    ...sparseVectors\n  },\n  payload: {\n    recipe_id: recipe.id,  // Сохраняем оригинальный строковый ID в payload\n    recipe_number: recipe.number,\n    recipe_name: recipe.name,\n    content: recipe.content,\n    full_text: recipe.full_text,\n    content_length: recipe.content?.length || 0,\n    name_lower: recipe.name?.toLowerCase() || '',\n    has_ingredients: !!sparseVectors.ingredients,\n    has_spices_herbs: !!sparseVectors.spices_herbs,\n    has_techniques: !!sparseVectors.techniques,\n    has_measurements: !!sparseVectors.measurements,\n    is_vodka: recipe.name?.toLowerCase().includes('водка') || false,\n    is_rozolia: recipe.name?.toLowerCase().includes('розолия') || false,\n    is_ratafia: recipe.name?.toLowerCase().includes('ратафия') || false,\n    created_at: new Date().toISOString(),\n    vector_dimension: embedding.length,\n    sparse_categories: Object.keys(sparseVectors)\n  }\n};\n\nconsole.log(`✅ Point создан для рецепта ${recipe.id} с числовым ID ${recipe.number}`);\n\n// Возвращаем point для загрузки в Qdrant\nreturn [{\n  json: {\n    points: [point]  // Qdrant ожидает массив points\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -16,
+        -80
+      ],
+      "id": "7e99c7ad-81af-4432-a7f1-df70b4287a0e",
+      "name": "Combining vectors"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://b0897818-5a6a-4f5c-9a85-24ca0c19122f.europe-west3-0.gcp.cloud.qdrant.io/collections/distill_hybrid/points?wait=true",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "qdrantApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "points",
+              "value": "={{ $json.points }}"
+            }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        208,
+        -80
+      ],
+      "id": "2fd556c6-1c05-4f6d-8b9f-73dc9219508c",
+      "name": "HTTP Request",
+      "credentials": {
+        "qdrantApi": {
+          "id": "9rSFir23j1vzegBC",
+          "name": "QdrantApi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "https://drive.google.com/file/d/1_yhgyUrIah9huKJEAmjqZA5zVzlkqw-_/view?usp=sharing",
+          "mode": "url"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -720,
+        -416
+      ],
+      "id": "a8c50a5a-262b-47d2-91a9-beca040f2a6b",
+      "name": "Google Drive",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "dmKlKEho4qbUPP1t",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        -544,
+        -416
+      ],
+      "id": "33ee38f8-10e0-4d96-a79c-9d3d2fc679a5",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "url": "https://xkwgspqwebfeteoblayu.supabase.co/rest/v1/recipe_vocabularies",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "select",
+              "value": "*"
+            },
+            {
+              "name": "order",
+              "value": "category,term_index"
+            },
+            {
+              "name": "limit",
+              "value": "2000"
+            },
+            {}
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -336,
+        -544
+      ],
+      "id": "25984a8e-1717-4b84-a05b-2f351ff5a4fa",
+      "name": "HTTP Request1",
+      "credentials": {
+        "supabaseApi": {
+          "id": "ulPNGWrmQ6YdHiNG",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        -160,
+        -400
+      ],
+      "id": "f95f80c7-530e-459c-95d5-55d47f29438e",
+      "name": "Merge"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Test workflow’": {
+      "main": [
+        [
+          {
+            "node": "Google Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code1": {
+      "main": [
+        [
+          {
+            "node": "Create Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Embedding": {
+      "main": [
+        [
+          {
+            "node": "Combining vectors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Right Parser": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Code1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combining vectors": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Drive": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "HTTP Request1": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Right Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "e5df1b38-fe7b-442f-a721-5072c9735c9c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "37c1bec5477bc5881c36f29ac7b9dab276628a9c7b18952c9c8961bf5c12fae5"
+  },
+  "id": "gnHfkevTRJ6zYNdg",
+  "tags": []
+}

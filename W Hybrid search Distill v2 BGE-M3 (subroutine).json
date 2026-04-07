@@ -1,0 +1,183 @@
+{
+  "name": "W Hybrid search Distill v2 BGE-M3 (subroutine)",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "AgentInput"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "c147f86f-8e1a-44c5-af08-84a9e75acc37",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a15ae0da-cde7-432a-8579-7956ea36125e",
+              "name": "userQuery",
+              "value": "={{ $json.AgentInput }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        272,
+        0
+      ],
+      "id": "85b14df2-ca58-46bd-bdd2-ea74eeedff30",
+      "name": "Set variables"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.17.0.1:8100/embed/qdrant",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ texts: [$json.userQuery] }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        512,
+        0
+      ],
+      "id": "b0772ab1-f3ba-46c8-8724-c0f44b0d5070",
+      "name": "Get BGE-M3 vectors"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Подготовка prefetch запросов для гибридного поиска\n// BGE-M3 возвращает и dense, и sparse в одном ответе\nconst response = $input.first().json;\nconst dense = response.results[0].dense;\nconst sparse = response.results[0].sparse;\n\nconsole.log(`Dense: ${dense.length} dims, Sparse: ${sparse.indices.length} tokens`);\n\nconst prefetchQueries = [\n  {\n    query: dense,\n    using: \"dense\",\n    limit: 20\n  },\n  {\n    query: {\n      indices: sparse.indices,\n      values: sparse.values\n    },\n    using: \"sparse\",\n    limit: 20\n  }\n];\n\nreturn {\n  json: {\n    prefetchQueries: prefetchQueries,\n    totalPrefetches: prefetchQueries.length\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        0
+      ],
+      "id": "5182a175-d253-4c05-886e-7f53c4356d33",
+      "name": "Prepare Hybrid Query"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://gopa.begemot26.ru/collections/distill_hybrid_v2/points/query",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "qdrantApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n   \"prefetch\": $json.prefetchQueries ,\n  \"query\": {\n    \"fusion\": \"rrf\"\n  },\n  \"limit\": 10,\n  \"with_payload\": true,\n  \"with_vector\": false\n}\n}}",
+        "options": {
+          "allowUnauthorizedCerts": false
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        992,
+        0
+      ],
+      "id": "51074175-d23d-49d4-abef-6f05aff263de",
+      "name": "HTTP Request",
+      "credentials": {
+        "qdrantApi": {
+          "id": "MYQGISZlE1T71Bbb",
+          "name": "QdrantApi account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Set variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set variables": {
+      "main": [
+        [
+          {
+            "node": "Get BGE-M3 vectors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get BGE-M3 vectors": {
+      "main": [
+        [
+          {
+            "node": "Prepare Hybrid Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Hybrid Query": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "db70860f-3d92-4d6f-8258-c65a29fc8e49",
+  "meta": {
+    "instanceId": "37c1bec5477bc5881c36f29ac7b9dab276628a9c7b18952c9c8961bf5c12fae5"
+  },
+  "id": "60XTGDYWgPoY7qiu",
+  "tags": []
+}

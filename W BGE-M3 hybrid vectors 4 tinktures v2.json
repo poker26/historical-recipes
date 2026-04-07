@@ -1,0 +1,292 @@
+{
+  "name": "W BGE-M3 hybrid vectors 4 tinktures v2",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "4c43d0bc-e0b2-4718-b76a-2d70f1b5a5d0",
+      "name": "When clicking ‘Test workflow’"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Подготовка рецепта для BGE-M3 эмбеддинга\nconst recipe = $input.first().json;\n\nconst fullText = `Рецепт: ${recipe.name}\\n\\nСодержание: ${recipe.content}`;\n\nconst MAX_CHARS = 16000; // BGE-M3 поддерживает 8192 токена\n\nlet embeddingText;\nif (fullText.length <= MAX_CHARS) {\n  embeddingText = fullText;\n} else {\n  const truncated = fullText.substring(0, MAX_CHARS);\n  const lastSpaceIndex = truncated.lastIndexOf(' ');\n  if (lastSpaceIndex > MAX_CHARS * 0.9) {\n    embeddingText = truncated.substring(0, lastSpaceIndex) + '...';\n  } else {\n    embeddingText = truncated + '...';\n  }\n  console.log(`Текст обрезан: ${fullText.length} → ${embeddingText.length}`);\n}\n\nreturn [{\n  json: {\n    embed_text: embeddingText,\n    recipe_data: {\n      id: recipe.id,\n      number: recipe.number,\n      name: recipe.name,\n      content: recipe.content,\n      full_text: recipe.full_text,\n      category: recipe.category || '',\n      source_book: recipe.source_book || '',\n      source_pattern: recipe.source_pattern || '',\n      was_truncated: fullText.length > MAX_CHARS,\n      original_length: fullText.length,\n      embedding_length: embeddingText.length\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        336
+      ],
+      "id": "72ce4101-c492-421c-a701-f8785b483cbf",
+      "name": "Code1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.17.0.1:8100/embed/qdrant",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ texts: [$json.embed_text] }) }}",
+        "options": {}
+      },
+      "id": "224f914a-91b0-4565-ab26-25b4a9bfa93d",
+      "name": "Create Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        672,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Полный парсер исторических рецептов (BGE-M3 версия — без ручных sparse vectors)\nconsole.log('=== ПОЛНЫЙ ПАРСЕР ИСТОРИЧЕСКИХ РЕЦЕПТОВ (BGE-M3) ===');\n\n// Парсинг эссенций, эликсиров и тинктур\nfunction parseElixirsAndTinctures(text, startRecipeNumber) {\n  console.log('\\n--- Парсинг эссенций, эликсиров и тинктур ---');\n  const recipes = [];\n  let nextRecipeNumber = startRecipeNumber;\n  \n  const numberedPattern = /§\\s*(\\d+)\\.\\s*\\n(\\d+)\\.\\s*([^\\n]+?)\\.\\s*\\n\\s*\\n([\\s\\S]*?)(?=§\\s*\\d+\\.|$)/g;\n  \n  let match;\n  while ((match = numberedPattern.exec(text)) !== null) {\n    const paragraphNumber = parseInt(match[1]);\n    const recipeNumber = parseInt(match[2]);\n    let name = match[3].trim();\n    let content = match[4].trim();\n    \n    if (name.includes('ГЛАВА') || name.includes('ОТДЕЛЕНИЕ') || \n        content.length < 50 || content.includes('Стр.')) {\n      continue;\n    }\n    \n    let category = 'настойка';\n    if (name.toLowerCase().includes('эссенция') || name.toLowerCase().includes('квинтэссенция')) {\n      category = 'эссенция';\n    } else if (name.toLowerCase().includes('эликсир')) {\n      category = 'эликсир';\n    } else if (name.toLowerCase().includes('тинктура')) {\n      category = 'тинктура';\n    } else if (name.toLowerCase().includes('капли') || name.toLowerCase().includes('жизненные')) {\n      category = 'жизненные_капли';\n    } else if (name.toLowerCase().includes('вода') && !name.toLowerCase().includes('раневая')) {\n      category = 'лечебная_вода';\n    }\n    \n    if (content.length > 60 && \n        (content.includes('Возьми') || content.includes('настаивай') || content.includes('перегони'))) {\n      \n      recipes.push({\n        id: `recipe_${nextRecipeNumber}`,\n        number: nextRecipeNumber,\n        name: name,\n        content: content,\n        full_text: `${name}\\n\\n${content}`,\n        source_pattern: 'elixir_numbered',\n        category: category,\n        source_book: 'tinctures',\n        original_paragraph: paragraphNumber,\n        original_recipe_number: recipeNumber\n      });\n      \n      console.log(`  ✓ ${name} (${category}, §${paragraphNumber}.${recipeNumber})`);\n      nextRecipeNumber++;\n    }\n  }\n  \n  // Простые рецепты без двойной нумерации\n  const simplePattern = /§\\s*(\\d+)\\.\\s*\\n([^\\n]+?)\\.\\s*\\n\\s*\\n([\\s\\S]*?)(?=§\\s*\\d+\\.|$)/g;\n  \n  let simpleMatch;\n  while ((simpleMatch = simplePattern.exec(text)) !== null) {\n    const paragraphNumber = parseInt(simpleMatch[1]);\n    let name = simpleMatch[2].trim();\n    let content = simpleMatch[3].trim();\n    \n    if (recipes.some(r => r.original_paragraph === paragraphNumber) ||\n        name.includes('ГЛАВА') || name.includes('ОТДЕЛЕНИЕ') || \n        content.length < 50) {\n      continue;\n    }\n    \n    let category = 'настойка';\n    if (name.toLowerCase().includes('эссенция')) {\n      category = 'эссенция';\n    } else if (name.toLowerCase().includes('эликсир')) {\n      category = 'эликсир';\n    } else if (name.toLowerCase().includes('тинктура')) {\n      category = 'тинктура';\n    }\n    \n    if (content.length > 60 && \n        (content.includes('Возьми') || content.includes('настаивай') || content.includes('перегони'))) {\n      \n      recipes.push({\n        id: `recipe_${nextRecipeNumber}`,\n        number: nextRecipeNumber,\n        name: name,\n        content: content,\n        full_text: `${name}\\n\\n${content}`,\n        source_pattern: 'elixir_simple',\n        category: category,\n        source_book: 'tinctures',\n        original_paragraph: paragraphNumber\n      });\n      \n      console.log(`  ✓ ${name} (${category}, §${paragraphNumber})`);\n      nextRecipeNumber++;\n    }\n  }\n  \n  console.log(`Найдено ${recipes.length} рецептов эссенций, эликсиров и тинктур`);\n  return { recipes, nextRecipeNumber };\n}\n\n// Парсинг благовонных вод\nfunction parsePerfumeWaters(text, startRecipeNumber) {\n  console.log('\\n--- Парсинг благовонных вод ---');\n  const recipes = [];\n  let nextRecipeNumber = startRecipeNumber;\n  \n  const perfumePattern = /§\\s*(\\d+)\\.\\s*\\n(\\d+)\\.\\s*([^\\n]+?)\\.\\s*\\n([^\\n]*?)\\.?\\s*\\n\\s*\\n([\\s\\S]*?)(?=§\\s*\\d+\\.|$)/g;\n  \n  let match;\n  while ((match = perfumePattern.exec(text)) !== null) {\n    const paragraphNumber = parseInt(match[1]);\n    const recipeNumber = parseInt(match[2]);\n    let name = match[3].trim();\n    const frenchName = match[4].trim();\n    let content = match[5].trim();\n    \n    if (content.length > 100 && \n        (content.includes('Возьми') || content.includes('К приготовлению') || content.includes('настаивать'))) {\n      \n      if (!name.toLowerCase().includes('вода')) {\n        name = `Вода ${name}`;\n      }\n      \n      recipes.push({\n        id: `recipe_${nextRecipeNumber}`,\n        number: nextRecipeNumber,\n        name: name,\n        french_name: frenchName,\n        content: content,\n        full_text: `${name}\\n${frenchName ? frenchName + '\\n' : ''}\\n${content}`,\n        source_pattern: 'perfume_water',\n        category: 'благовонная_вода',\n        source_book: 'perfume',\n        original_paragraph: paragraphNumber,\n        original_recipe_number: recipeNumber\n      });\n      \n      console.log(`  ✓ ${name} (§${paragraphNumber}.${recipeNumber})`);\n      nextRecipeNumber++;\n    }\n  }\n  \n  console.log(`Найдено ${recipes.length} благовонных вод`);\n  return { recipes, nextRecipeNumber };\n}\n\n// Парсинг ароматических масел\nfunction parseAromaticOils(text, startRecipeNumber) {\n  console.log('\\n--- Парсинг ароматических масел ---');\n  const recipes = [];\n  let nextRecipeNumber = startRecipeNumber;\n  \n  const oilSimplePattern = /§\\s*(\\d+)\\.\\s*\\n([^\\n]+?)\\.\\s*\\n\\s*\\n([\\s\\S]*?)(?=§\\s*\\d+\\.|$)/g;\n  \n  let match;\n  while ((match = oilSimplePattern.exec(text)) !== null) {\n    const paragraphNumber = parseInt(match[1]);\n    let name = match[2].trim();\n    let content = match[3].trim();\n    \n    if (name.includes('ГЛАВА') || name.includes('О приготовлении') || content.length < 100) {\n      continue;\n    }\n    \n    if ((name.toLowerCase().includes('масло') || name.toLowerCase().includes('oleum')) &&\n        content.length > 80 && \n        (content.includes('Возьми') || content.includes('растолки') || content.includes('перегони'))) {\n      \n      recipes.push({\n        id: `recipe_${nextRecipeNumber}`,\n        number: nextRecipeNumber,\n        name: name,\n        content: content,\n        full_text: `${name}\\n\\n${content}`,\n        source_pattern: 'aromatic_oil',\n        category: 'ароматическое_масло',\n        source_book: 'oils',\n        original_paragraph: paragraphNumber\n      });\n      \n      console.log(`  ✓ ${name} (§${paragraphNumber})`);\n      nextRecipeNumber++;\n    }\n  }\n  \n  console.log(`Найдено ${recipes.length} ароматических масел`);\n  return { recipes, nextRecipeNumber };\n}\n\n// Основная функция парсинга\nasync function parseCompleteHistoricalCollection(textData) {\n  const allRecipes = [];\n  let nextRecipeNumber = 1;\n  \n  console.log('\\n=== НАЧИНАЕМ ПОЛНЫЙ ПАРСИНГ КОЛЛЕКЦИИ ===');\n  \n  const texts = Array.isArray(textData) ? textData : [textData];\n  \n  for (let i = 0; i < texts.length; i++) {\n    const text = texts[i];\n    console.log(`\\n--- Обработка текста ${i + 1} (${text.length} символов) ---`);\n    \n    try {\n      // 1. Водки\n      if (text.includes('**')) {\n        console.log('\\nПарсинг водок...');\n        const vodkaPattern = /\\*\\*(\\d+)\\.\\s*([^*\\n]+?)\\*\\*([\\s\\S]*?)(?=\\*\\*\\d+\\.|$)/g;\n        let match;\n        let foundVodkaCount = 0;\n        \n        while ((match = vodkaPattern.exec(text)) !== null) {\n          const number = parseInt(match[1]);\n          const name = match[2].trim().replace(/\\.$/, '');\n          let content = match[3].trim().replace(/^\\s*\\n+/, '');\n          \n          const isChapterHeader = name.includes('ГЛАВА') || name.includes('§') || content.length < 50;\n          \n          if (!isChapterHeader && name.length > 3 && content.length > 30) {\n            allRecipes.push({\n              id: `recipe_${number}`,\n              number: number,\n              name: name,\n              content: content,\n              full_text: `${name}\\n\\n${content}`,\n              source_pattern: 'starred_number_title',\n              category: 'водка',\n              source_book: 'original'\n            });\n            \n            foundVodkaCount++;\n            nextRecipeNumber = Math.max(nextRecipeNumber, number + 1);\n          }\n        }\n        console.log(`✓ Найдено ${foundVodkaCount} рецептов водок`);\n      }\n      \n      // 2. Французские ликёры\n      if (text.includes('§') && !text.includes('эссенция') && !text.includes('тинктура')) {\n        console.log('\\nПарсинг французских ликёров...');\n        let foundFrenchCount = 0;\n        \n        const frenchSections = text.split(/(?=§\\s*\\d+\\.)/);\n        for (let section of frenchSections) {\n          if (section.length < 200) continue;\n          \n          const recipePattern = /^(\\d+)\\.\\s*([^\\n]+?)\\.?\\s*\\n([\\s\\S]*?)(?=^\\d+\\.|$)/gm;\n          let recipeMatch;\n          \n          while ((recipeMatch = recipePattern.exec(section)) !== null) {\n            const recipeNumber = parseInt(recipeMatch[1]);\n            let nameAndFrench = recipeMatch[2].trim();\n            let content = recipeMatch[3].trim();\n            \n            const hasIngredients = content.match(/(?:Возьми|французской водки|настаивать)/i);\n            const isTableOfContents = content.length < 80;\n            \n            if (hasIngredients && !isTableOfContents && content.length > 50) {\n              let displayName = nameAndFrench.startsWith('Вода ') ? \n                nameAndFrench.replace('Вода ', 'Ликёр ') : `Ликёр ${nameAndFrench}`;\n              \n              allRecipes.push({\n                id: `recipe_${nextRecipeNumber}`,\n                number: nextRecipeNumber,\n                name: displayName,\n                content: content,\n                full_text: `${displayName}\\n\\n${content}`,\n                source_pattern: 'french_section',\n                category: 'ликёр',\n                source_book: 'french',\n                original_recipe_number: recipeNumber\n              });\n              \n              foundFrenchCount++;\n              nextRecipeNumber++;\n            }\n          }\n        }\n        console.log(`✓ Найдено ${foundFrenchCount} французских ликёров`);\n      }\n      \n      // 3. Благовонные воды\n      if (text.includes('О приготовлении душистых')) {\n        const perfumeResult = parsePerfumeWaters(text, nextRecipeNumber);\n        allRecipes.push(...perfumeResult.recipes);\n        nextRecipeNumber = perfumeResult.nextRecipeNumber;\n      }\n      \n      // 4. Ароматические масла\n      if (text.includes('О приготовлении разных масел')) {\n        const oilResult = parseAromaticOils(text, nextRecipeNumber);\n        allRecipes.push(...oilResult.recipes);\n        nextRecipeNumber = oilResult.nextRecipeNumber;\n      }\n      \n      // 5. Эссенции, эликсиры и тинктуры\n      if (text.includes('эссенций, эликсиров и тинктур') || \n          text.includes('Эссенция') || text.includes('Эликсир') || text.includes('Тинктура')) {\n        const elixirResult = parseElixirsAndTinctures(text, nextRecipeNumber);\n        allRecipes.push(...elixirResult.recipes);\n        nextRecipeNumber = elixirResult.nextRecipeNumber;\n      }\n      \n    } catch (parseError) {\n      console.error(`✗ Ошибка парсинга текста ${i + 1}:`, parseError.message);\n    }\n  }\n  \n  return allRecipes;\n}\n\n// Основная функция\ntry {\n  const allInputs = $input.all();\n  console.log(`Получено элементов от Merge узла: ${allInputs.length}`);\n  \n  let textDataArray = [];\n  \n  for (const item of allInputs) {\n    if (item?.json) {\n      if (item.json.data && typeof item.json.data === 'string' && item.json.data.length > 50000) {\n        textDataArray.push(item.json.data);\n        console.log(`Найден текст: ${item.json.data.length} символов`);\n      }\n    }\n  }\n  \n  console.log(`Текстов: ${textDataArray.length}`);\n  \n  if (textDataArray.length === 0) {\n    return [{ json: { \n      error: 'Текстовые данные не найдены',\n      status: 'failed'\n    }}];\n  }\n  \n  // Парсим все рецепты (без словарей — sparse vectors генерирует BGE-M3)\n  const allRecipes = await parseCompleteHistoricalCollection(textDataArray);\n  \n  if (allRecipes.length === 0) {\n    return [{ json: { \n      error: 'Рецепты не найдены',\n      status: 'completed_no_results'\n    }}];\n  }\n  \n  allRecipes.sort((a, b) => a.number - b.number);\n  \n  const categoryStats = {};\n  allRecipes.forEach(recipe => {\n    categoryStats[recipe.category] = (categoryStats[recipe.category] || 0) + 1;\n  });\n  \n  console.log('\\n=== ИТОГОВАЯ СТАТИСТИКА ===');\n  console.log(`Обработано рецептов: ${allRecipes.length}`);\n  Object.entries(categoryStats).forEach(([cat, count]) => {\n    console.log(`  ${cat}: ${count} рецептов`);\n  });\n  \n  console.log('\\n✅ ПОЛНЫЙ ПАРСИНГ КОЛЛЕКЦИИ ЗАВЕРШЕН');\n  \n  return allRecipes.map(recipe => ({ json: recipe }));\n  \n} catch (globalError) {\n  console.error('✗ КРИТИЧЕСКАЯ ОШИБКА:', globalError.message);\n  return [{ json: { \n    error: 'Critical parsing error',\n    message: globalError.message,\n    status: 'failed'\n  }}];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        16
+      ],
+      "id": "106605c9-dced-45bf-bb5c-514211b7de01",
+      "name": "Right Parser"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        240,
+        288
+      ],
+      "id": "4aa8f69d-f43c-4741-ad4b-1b0c36302986",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Объединение dense + sparse от BGE-M3 для Qdrant\nconst bgeResponse = $input.last().json;\nconst recipe = $('Code1').first().json.recipe_data;\n\n// Извлекаем dense и sparse из BGE-M3 ответа\nconst result = bgeResponse.results[0];\nconst denseVector = result.dense;\nconst sparseVector = result.sparse; // {indices: [...], values: [...]}\n\nif (!Array.isArray(denseVector)) {\n  throw new Error('Dense вектор не найден в ответе BGE-M3');\n}\n\nconst uniqueId = recipe.number * 10000 + Date.now() % 10000;\n\nconst point = {\n  id: Math.abs(uniqueId),\n  vector: {\n    dense: denseVector,\n    sparse: sparseVector\n  },\n  payload: {\n    recipe_id: recipe.id,\n    recipe_number: recipe.number,\n    recipe_name: recipe.name,\n    content: recipe.content,\n    full_text: recipe.full_text,\n    category: recipe.category || '',\n    source: 'tinktures',\n    source_book: recipe.source_book || '',\n    source_pattern: recipe.source_pattern || '',\n    content_length: recipe.content?.length || 0,\n    created_at: new Date().toISOString(),\n    vector_dimension: denseVector.length,\n    sparse_token_count: sparseVector?.indices?.length || 0\n  }\n};\n\nconsole.log(`✅ Point: ${recipe.name} (dense=${denseVector.length}d, sparse=${sparseVector?.indices?.length || 0} tokens)`);\n\nreturn [{\n  json: {\n    points: [point]\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        336
+      ],
+      "id": "d5698c3a-bfff-4aaf-bf25-c96f0c828537",
+      "name": "Combining vectors"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://gopa.begemot26.ru/collections/distill_hybrid_v2/points?wait=true",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "qdrantApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "points",
+              "value": "={{ $json.points }}"
+            }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1136,
+        336
+      ],
+      "id": "5350cdc1-60d1-4627-bf47-795a824764fe",
+      "name": "HTTP Request",
+      "credentials": {
+        "qdrantApi": {
+          "id": "MYQGISZlE1T71Bbb",
+          "name": "QdrantApi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "https://drive.google.com/file/d/1NH3tf-dpmLOv_lAtaDwsg7W6Dr1kGwPG/view?usp=drive_link",
+          "mode": "url"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        208,
+        0
+      ],
+      "id": "47a34474-03c5-4ac0-a814-e40c8550fc6d",
+      "name": "Google Drive",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "dmKlKEho4qbUPP1t",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        384,
+        0
+      ],
+      "id": "48d92f01-2424-4b67-9b4f-805fb236cb0a",
+      "name": "Extract from File"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Test workflow’": {
+      "main": [
+        [
+          {
+            "node": "Google Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code1": {
+      "main": [
+        [
+          {
+            "node": "Create Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Embedding": {
+      "main": [
+        [
+          {
+            "node": "Combining vectors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Right Parser": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Code1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combining vectors": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Drive": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Right Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "96c2d1fe-3ee2-43f1-88ed-f30c3a04470c",
+  "meta": {
+    "instanceId": "37c1bec5477bc5881c36f29ac7b9dab276628a9c7b18952c9c8961bf5c12fae5"
+  },
+  "id": "DQjQVdC3UyDuNdKx",
+  "tags": []
+}

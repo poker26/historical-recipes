@@ -1,0 +1,357 @@
+{
+  "name": "W Stritter BGE-M3 hybrid v2",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        32,
+        -160
+      ],
+      "id": "36c7abe3-cc79-4599-8b00-cddd396cb4ef",
+      "name": "When clicking 'Test workflow'"
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "https://drive.google.com/file/d/1bpWfH6fGfRf7P_Koqaie2JA96I1sfYYn/view?usp=sharing",
+          "mode": "url"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        320,
+        -160
+      ],
+      "id": "93b9f652-cc6a-4923-9d61-8ea887388020",
+      "name": "Google Drive1",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "O4yQLXxWjnB79xTw",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "fromJson",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        576,
+        -160
+      ],
+      "id": "b11e5ab7-adf8-40d8-99c4-b5e451d9168f",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Минимальный рабочий код для вашей структуры\nconst recipes = $input.first().json.data.recipes;\n\nreturn recipes.map((recipe, index) => ({\n  json: recipe,\n  pairedItem: { item: index }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        -160
+      ],
+      "id": "bcd71cbe-70b9-4d2d-b408-498ace77adf4",
+      "name": "Split into items"
+    },
+    {
+      "parameters": {
+        "options": {
+          "reset": false
+        }
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        48,
+        192
+      ],
+      "id": "c00fc735-7f59-4a74-9b9f-35eb2986721e",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare recipe text: собираем полный текст из структурированного рецепта\n// и сопоставляем с полным текстом из второго файла\n\nfunction toTranslit(text) {\n  const map = {\n    'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e',\n    'ж':'zh','з':'z','и':'i','й':'j','к':'k','л':'l','м':'m',\n    'н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u',\n    'ф':'f','х':'h','ц':'c','ч':'ch','ш':'sh','щ':'shch',\n    'ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'\n  };\n  return text.toLowerCase().split('').map(char => map[char] || char).join('');\n}\n\nfunction calculateSimilarity(str1, str2) {\n  const longer = str1.length > str2.length ? str1 : str2;\n  const shorter = str1.length > str2.length ? str2 : str1;\n  if (longer.length === 0) return 1.0;\n  let matches = 0;\n  for (let i = 0; i < Math.min(shorter.length, longer.length); i++) {\n    if (shorter[i] === longer[i]) matches++;\n  }\n  return matches / longer.length;\n}\n\nconst recipe = $('Loop Over Items').first().json;\nconst recipesArray = $input.first().json.data.recipes_full_text;\n\nconst recipeId = (recipe.id || '').trim();\nconst recipeTranslit = toTranslit(recipeId).replace(/_+/g, '_');\n\nlet textRecipe = null;\nlet bestMatchScore = 0;\nlet bestMatchRecipe = null;\n\nfor (const r of recipesArray) {\n  if (!r.id) continue;\n  const rId = r.id.trim().toLowerCase();\n  const rTranslit = toTranslit(rId).replace(/_+/g, '_');\n  \n  if (rTranslit === recipeTranslit) {\n    textRecipe = r;\n    break;\n  }\n  \n  if (rTranslit.includes(recipeTranslit) || recipeTranslit.includes(rTranslit)) {\n    const matchLength = Math.min(rTranslit.length, recipeTranslit.length);\n    if (matchLength > bestMatchScore) {\n      bestMatchScore = matchLength;\n      bestMatchRecipe = r;\n    }\n  }\n  \n  const similarity = calculateSimilarity(rTranslit, recipeTranslit);\n  if (similarity > 0.8 && similarity > bestMatchScore) {\n    bestMatchScore = similarity;\n    bestMatchRecipe = r;\n  }\n}\n\nif (!textRecipe && bestMatchRecipe) {\n  textRecipe = bestMatchRecipe;\n}\n\nconst embeddingText = textRecipe?.full_text || `${recipe.name || ''} ${recipe.category || ''}`;\n\n// Извлекаем метаданные из структурированного рецепта\nlet volume = null;\nlet strength = null;\nif (recipe.preparation && recipe.preparation.description) {\n  const desc = recipe.preparation.description;\n  const volumeMatch = desc.match(/(\\d+(?:\\.\\d+)?)\\s*(дкл|л)/i);\n  const strengthMatch = desc.match(/(\\d+(?:\\.\\d+)?)\\s*°?\\s*(?:по\\s+)?Траллесу/i);\n  if (volumeMatch) volume = parseFloat(volumeMatch[1]);\n  if (strengthMatch) strength = parseFloat(strengthMatch[1]);\n}\n\nreturn [{\n  json: {\n    embed_text: embeddingText,\n    recipe_data: {\n      id: recipe.id || 'unknown',\n      name: recipe.name || 'Без названия',\n      category: recipe.category || '',\n      year: recipe.year || null,\n      quality: recipe.quality || '',\n      volume: volume,\n      strength: strength,\n      infusion_time: recipe.infusion_time || '',\n      ingredients_count: (recipe.ingredients || []).length + (recipe.infusion_ingredients || []).length,\n      process_steps: (recipe.process || []).length,\n      full_text: embeddingText,\n      text_found: !!textRecipe\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        528
+      ],
+      "id": "b420e4c1-535f-42f7-a948-290efa0fa541",
+      "name": "Prepare recipe text",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "https://drive.google.com/file/d/1RnSi2WA2nz_4PvQXlolGmmS0vcremMON/view?usp=drive_link",
+          "mode": "url"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        576,
+        528
+      ],
+      "id": "0e7b1b8c-8c77-43fc-9c1c-23e7c10ff892",
+      "name": "Google Drive2",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "O4yQLXxWjnB79xTw",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "fromJson",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        736,
+        528
+      ],
+      "id": "0b780dff-b443-449c-9e19-b261cc7505fd",
+      "name": "Extract from File1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.17.0.1:8100/embed/qdrant",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ texts: [$json.embed_text] }) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1
+            }
+          }
+        }
+      },
+      "id": "4e9b9d9e-7206-4d44-830c-8b69b31b6c55",
+      "name": "Create Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1056,
+        528
+      ],
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combining vectors: BGE-M3 dense + sparse → Qdrant point\nconst response = $input.last().json;\nconst recipe = $('Prepare recipe text').first().json.recipe_data;\n\nconst dense = response.results[0].dense;\nconst sparse = response.results[0].sparse;\n\nconsole.log(`Рецепт: ${recipe.name}`);\nconsole.log(`Dense: ${dense.length} dims, Sparse: ${sparse.indices.length} tokens`);\n\nconst pointId = Math.abs(Date.now() % 1000000000 + Math.floor(Math.random() * 10000));\n\nconst point = {\n  id: pointId,\n  vector: {\n    dense: dense,\n    sparse: sparse\n  },\n  payload: {\n    recipe_id: recipe.id,\n    recipe_name: recipe.name,\n    category: recipe.category,\n    year: recipe.year,\n    quality: recipe.quality,\n    volume: recipe.volume,\n    strength: recipe.strength,\n    infusion_time: recipe.infusion_time,\n    ingredients_count: recipe.ingredients_count,\n    process_steps: recipe.process_steps,\n    content: recipe.full_text,\n    full_text: recipe.full_text,\n    content_length: recipe.full_text?.length || 0,\n    name_lower: recipe.name?.toLowerCase() || '',\n    text_found: recipe.text_found,\n    created_at: new Date().toISOString(),\n    vector_dimension: dense.length,\n    sparse_token_count: sparse.indices.length,\n    source: 'stritter_historical_recipes'\n  }\n};\n\nconsole.log(`✅ Point создан: ID=${pointId}, рецепт \"${recipe.name}\"`);\n\nreturn [{ json: { points: [point] } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        528
+      ],
+      "id": "7fed79c9-5a9c-4c04-a15f-451071781c32",
+      "name": "Combining vectors"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://gopa.begemot26.ru/collections/distill_hybrid_v2/points?wait=true",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "qdrantApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: $json.points }) }}",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1504,
+        528
+      ],
+      "id": "5cddd196-47c9-4ba8-84ac-4b6cf3c5d530",
+      "name": "HTTP Request",
+      "credentials": {
+        "qdrantApi": {
+          "id": "MYQGISZlE1T71Bbb",
+          "name": "QdrantApi account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking 'Test workflow'": {
+      "main": [
+        [
+          {
+            "node": "Google Drive1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Drive1": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Split into items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split into items": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Google Drive2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Drive2": {
+      "main": [
+        [
+          {
+            "node": "Extract from File1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File1": {
+      "main": [
+        [
+          {
+            "node": "Prepare recipe text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare recipe text": {
+      "main": [
+        [
+          {
+            "node": "Create Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Embedding": {
+      "main": [
+        [
+          {
+            "node": "Combining vectors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combining vectors": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "471b1bd1-7298-48c6-bb9c-704e31a4fef9",
+  "meta": {
+    "instanceId": "37c1bec5477bc5881c36f29ac7b9dab276628a9c7b18952c9c8961bf5c12fae5"
+  },
+  "id": "nCXgbX7Pxt72hb3s",
+  "tags": []
+}

@@ -1,0 +1,216 @@
+{
+  "name": "W!!! Hybrid search Distill AI Agent w2",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -624,
+        -448
+      ],
+      "id": "f755a0b5-d1ac-4524-8e27-bc80f7239a53",
+      "name": "When chat message received",
+      "webhookId": "ce6ff13b-2fe9-4dcb-b3dc-3570d397c16e"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a15ae0da-cde7-432a-8579-7956ea36125e",
+              "name": "userQuery",
+              "value": "= {{ $json.chatInput }}",
+              "type": "string"
+            },
+            {
+              "id": "301daffb-0306-4a19-b47b-b8975c588272",
+              "name": "sessionId",
+              "value": "= {{ $json.sessionId }}",
+              "type": "string"
+            },
+            {
+              "id": "b18356d8-ea69-450f-9c62-bd4dbcd6c6cc",
+              "name": "qdrantURL",
+              "value": "https://b0897818-5a6a-4f5c-9a85-24ca0c19122f.europe-west3-0.gcp.cloud.qdrant.io",
+              "type": "string"
+            },
+            {
+              "id": "f1dd3ff5-2d8e-400e-a185-9a4477b7fa66",
+              "name": "collectionName",
+              "value": "distill_hybrid",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -448,
+        -448
+      ],
+      "id": "02a19c7c-646b-4c64-bcf6-b6eed68b214f",
+      "name": "Set variables"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Ты помощник дистиллятора, винокура и аптекаря. Помимо общих знаний, в твоем распоряжении векторная база данных старинных рецептов, по которой можно искать с использованием инструмента Perform hybrid search.\n\nПроанализируй запрос пользователя {{ $json.userQuery }}. Сначала выполни поиск по векторной базе с использованием Perform hybrid search и ответь пользователю, используя найденные результаты\n\nОтвечай как винокур, аптекарь и травник. Не используй в ответе технические термины\n",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.9,
+      "position": [
+        -224,
+        -448
+      ],
+      "id": "6f538f29-0f30-4e9e-8382-f7e6986f93b6",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": "qwen/qwen3-235b-a22b-2507",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        -576,
+        -240
+      ],
+      "id": "a6096211-511d-47f2-910f-192cd90027b7",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "Ma7nMcQJsTPnqMkx",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -416,
+        -240
+      ],
+      "id": "feafbd40-709c-4e5b-925f-532436ae49ec",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "description": "Вызывай этот инструмент, чтобы выполнить гибридный поиск по базе данных distill_hybrid",
+        "workflowId": {
+          "__rl": true,
+          "value": "=bfL3aHsnmlkaP6zS",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "AgentInput": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('AgentInput', ``, 'string') }}"
+          },
+          "matchingColumns": [
+            "AgentInput"
+          ],
+          "schema": [
+            {
+              "id": "AgentInput",
+              "displayName": "AgentInput",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        -288,
+        -240
+      ],
+      "id": "06c45dc2-c6eb-4ebb-8297-185f7cde220b",
+      "name": "Perform hybrid search"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Set variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set variables": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Perform hybrid search": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "ae07e99c-3cf5-4011-ab7e-a0c91e432f78",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "37c1bec5477bc5881c36f29ac7b9dab276628a9c7b18952c9c8961bf5c12fae5"
+  },
+  "id": "li9Ty33susgZ66DT",
+  "tags": []
+}

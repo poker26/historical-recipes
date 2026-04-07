@@ -1,0 +1,262 @@
+{
+  "name": "W liqueurs_v2 BGE-M3 hybrid",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "5aeb3452-2e9e-4834-834e-299ea39782af",
+      "name": "When clicking 'Test workflow'"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "documentURL": "https://docs.google.com/document/d/18t_kAXmds__ydNLbrWXVxEhSneKy5rMepeuum8B4mjU/edit?usp=sharing"
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        304,
+        0
+      ],
+      "id": "b70d3300-3e55-439f-a9d5-aac4751064d6",
+      "name": "Google Docs",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "iRxMjkSHacWOXXF6",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Полный парсер для всех исторических рецептов (водки + ликёры)\nconsole.log('=== ПАРСИНГ ВСЕХ РЕЦЕПТОВ (ВОДКИ + ЛИКЁРЫ) ===');\n\ntry {\n  const inputData = $input.first();\n  \n  if (!inputData?.json?.content) {\n    return [{ json: { error: 'No content field found' } }];\n  }\n  \n  const fullText = inputData.json.content;\n  console.log(`Полный текст: ${fullText.length} символов`);\n  \n  function parseAllHistoricalRecipes(text) {\n    const recipes = [];\n    \n    console.log('Начинаем парсинг всех исторических рецептов...');\n    \n    try {\n      // Ищем рецепты водок (паттерн **номер. название**)\n      const vodkaPattern = /\\*\\*(\\d+)\\.\\s*([^*\\n]+?)\\*\\*([\\s\\S]*?)(?=\\*\\*\\d+\\.|$)/g;\n      let match;\n      let foundVodkaCount = 0;\n      \n      console.log('Ищем рецепты водок...');\n      while ((match = vodkaPattern.exec(text)) !== null) {\n        const number = parseInt(match[1]);\n        const name = match[2].trim().replace(/\\.$/, '');\n        let content = match[3].trim();\n        \n        content = content.replace(/^\\s*\\n+/, '');\n        \n        const isChapterHeader = name.includes('ГЛАВА') || \n                               name.includes('§') || \n                               content.length < 50;\n        \n        if (!isChapterHeader && name.length > 3 && content.length > 30) {\n          recipes.push({\n            id: `recipe_${number}`,\n            number: number,\n            name: name,\n            content: content,\n            full_text: `${name}\\n\\n${content}`,\n            source_pattern: 'starred_number_title',\n            category: 'водка'\n          });\n          \n          foundVodkaCount++;\n          if (foundVodkaCount <= 5) {\n            console.log(`  Водка ${number}: \"${name}\" (${content.length} символов)`);\n          }\n        }\n      }\n      \n      console.log(`Найдено ${foundVodkaCount} рецептов водок`);\n      \n      // Теперь ищем ликёры\n      console.log('Ищем рецепты ликёров...');\n      let nextRecipeNumber = Math.max(...recipes.map(r => r.number), 209) + 1;\n      let foundLiqueurCount = 0;\n      \n      const liqueurPattern1 = /\\*\\*(\\d+)\\)\\s*([^*]+?)\\.\\*\\*\\s*([\\s\\S]*?)(?=\\*\\*\\d+[.\\))]|§\\s*\\d+\\.|$)/g;\n      let match1;\n      \n      while ((match1 = liqueurPattern1.exec(text)) !== null) {\n        const origNumber = parseInt(match1[1]);\n        let name = match1[2].trim();\n        let content = match1[3].trim();\n        \n        const hasIngredients = content.match(/(?:Возьмите|Состав|Набор):/i);\n        \n        if (hasIngredients && content.length > 50) {\n          name = name.replace(/^Ликёр\\s*/i, '');\n          \n          recipes.push({\n            id: `recipe_${nextRecipeNumber}`,\n            number: nextRecipeNumber,\n            name: `Ликёр ${name}`,\n            content: content,\n            full_text: `Ликёр ${name}\\n\\n${content}`,\n            source_pattern: 'paragraph_liqueur',\n            category: 'ликёр',\n            original_number: origNumber\n          });\n          \n          foundLiqueurCount++;\n          if (foundLiqueurCount <= 10) {\n            console.log(`  Ликёр ${nextRecipeNumber}: \"${name}\"`);\n          }\n          nextRecipeNumber++;\n        }\n      }\n      \n      const liqueurPattern2 = /\\*\\*(\\d+)\\.\\s*([^*]+?)\\.\\*\\*\\s*([\\s\\S]*?)(?=\\*\\*\\d+[.\\))]|§\\s*\\d+\\.|$)/g;\n      let match2;\n      \n      while ((match2 = liqueurPattern2.exec(text)) !== null) {\n        const origNumber = parseInt(match2[1]);\n        let name = match2[2].trim();\n        let content = match2[3].trim();\n        \n        if (recipes.find(r => r.original_number === origNumber)) {\n          continue;\n        }\n        \n        const hasIngredients = content.match(/(?:Возьмите|Состав|Набор):/i);\n        \n        if (hasIngredients && content.length > 50 && name.toLowerCase().includes('ликёр')) {\n          name = name.replace(/^Ликёр\\s*/i, '');\n          \n          recipes.push({\n            id: `recipe_${nextRecipeNumber}`,\n            number: nextRecipeNumber,\n            name: `Ликёр ${name}`,\n            content: content,\n            full_text: `Ликёр ${name}\\n\\n${content}`,\n            source_pattern: 'liqueur_dot_pattern',\n            category: 'ликёр',\n            original_number: origNumber\n          });\n          \n          foundLiqueurCount++;\n          if (foundLiqueurCount <= 10) {\n            console.log(`  Ликёр ${nextRecipeNumber}: \"${name}\"`);\n          }\n          nextRecipeNumber++;\n        }\n      }\n      \n      console.log(`Найдено ${foundLiqueurCount} рецептов ликёров`);\n      \n      // Дополнительный поиск для оставшихся рецептов водок\n      if (foundVodkaCount < 200) {\n        console.log('Ищем дополнительные рецепты водок...');\n        \n        const lines = text.split('\\n');\n        let currentRecipe = null;\n        let recipeContent = [];\n        let additionalVodkaCount = 0;\n        \n        for (let i = 0; i < lines.length; i++) {\n          const line = lines[i].trim();\n          \n          const numberMatch = line.match(/^(\\d+)\\.\\s*(.+?)\\.?\\s*$/);\n          \n          if (numberMatch) {\n            const number = parseInt(numberMatch[1]);\n            const name = numberMatch[2].trim();\n            \n            if (currentRecipe && recipeContent.length > 0) {\n              const content = recipeContent.join('\\n').trim();\n              if (content.length > 50 && !recipes.some(r => r.number === currentRecipe.number)) {\n                const category = content.toLowerCase().includes('ликёр') || \n                               currentRecipe.name.toLowerCase().includes('ликёр') ? 'ликёр' : 'водка';\n                \n                if (category === 'водка') {\n                  recipes.push({\n                    id: `recipe_${currentRecipe.number}`,\n                    number: currentRecipe.number,\n                    name: currentRecipe.name,\n                    content: content,\n                    full_text: `${currentRecipe.name}\\n\\n${content}`,\n                    source_pattern: 'plain_number_title',\n                    category: category\n                  });\n                  \n                  additionalVodkaCount++;\n                  if (additionalVodkaCount <= 5) {\n                    console.log(`  Доп. водка ${currentRecipe.number}: \"${currentRecipe.name}\"`);\n                  }\n                }\n              }\n            }\n            \n            if (number >= 1 && number <= 350 && name.length > 3) {\n              currentRecipe = {\n                number: number,\n                name: name\n              };\n              recipeContent = [];\n            } else {\n              currentRecipe = null;\n            }\n            \n          } else if (currentRecipe && line.length > 0) {\n            recipeContent.push(line);\n          }\n        }\n        \n        if (currentRecipe && recipeContent.length > 0) {\n          const content = recipeContent.join('\\n').trim();\n          if (content.length > 50 && !recipes.some(r => r.number === currentRecipe.number)) {\n            const category = content.toLowerCase().includes('ликёр') || \n                           currentRecipe.name.toLowerCase().includes('ликёр') ? 'ликёр' : 'водка';\n            \n            if (category === 'водка') {\n              recipes.push({\n                id: `recipe_${currentRecipe.number}`,\n                number: currentRecipe.number,\n                name: currentRecipe.name,\n                content: content,\n                full_text: `${currentRecipe.name}\\n\\n${content}`,\n                source_pattern: 'plain_number_title',\n                category: category\n              });\n            }\n          }\n        }\n        \n        console.log(`Найдено дополнительно ${additionalVodkaCount} рецептов водок`);\n      }\n      \n    } catch (parseError) {\n      console.log('Ошибка парсинга:', parseError.message);\n    }\n    \n    return recipes;\n  }\n  \n  // Парсим все рецепты\n  const allRecipes = parseAllHistoricalRecipes(fullText);\n  console.log(`НАЙДЕНО РЕЦЕПТОВ: ${allRecipes.length}`);\n  \n  if (allRecipes.length === 0) {\n    console.log('=== НЕ НАЙДЕНО РЕЦЕПТОВ ===');\n    return [{ json: { \n      error: 'No recipes found',\n      document_length: fullText.length,\n      text_sample: fullText.substring(0, 2000)\n    }}];\n  }\n  \n  allRecipes.sort((a, b) => a.number - b.number);\n  \n  console.log('=== ПАРСИНГ ЗАВЕРШЕН ===');\n  console.log(`Обработано рецептов: ${allRecipes.length}`);\n  \n  return allRecipes.map(recipe => ({ json: recipe }));\n  \n} catch (globalError) {\n  console.log('КРИТИЧЕСКАЯ ОШИБКА:', globalError.message);\n  return [{ json: { \n    error: 'Critical parsing error',\n    message: globalError.message,\n    stack: globalError.stack\n  }}];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ],
+      "id": "caa35580-218d-49a9-9bcf-be681703d116",
+      "name": "Right Parser"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        192,
+        208
+      ],
+      "id": "49da2d4f-7d65-4ef1-9572-0987d350b774",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Code1: Подготовка текста для BGE-M3 embed/qdrant\nconst recipe = $input.first().json;\n\nconst fullText = `Рецепт: ${recipe.name}\\n\\nСодержание: ${recipe.content}`;\n\n// BGE-M3 поддерживает до 8192 токенов — лимит больше чем у OpenAI\nconst MAX_CHARS = 16000;\nlet embeddingText = fullText;\n\nif (fullText.length > MAX_CHARS) {\n  const truncated = fullText.substring(0, MAX_CHARS);\n  const lastSpace = truncated.lastIndexOf(' ');\n  embeddingText = lastSpace > MAX_CHARS * 0.9\n    ? truncated.substring(0, lastSpace) + '...'\n    : truncated + '...';\n  console.log(`Текст обрезан: ${fullText.length} → ${embeddingText.length} символов`);\n}\n\nreturn [{\n  json: {\n    embed_text: embeddingText,\n    recipe_data: {\n      id: recipe.id,\n      number: recipe.number,\n      name: recipe.name,\n      content: recipe.content,\n      full_text: recipe.full_text,\n      category: recipe.category || ''\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        432,
+        256
+      ],
+      "id": "fb81ef3b-822b-4cca-bd65-55d26bc3b4b7",
+      "name": "Code1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.17.0.1:8100/embed/qdrant",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ texts: [$json.embed_text] }) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1
+            }
+          }
+        }
+      },
+      "id": "7b6d9d62-e46d-4dac-8e00-767b9fbf1322",
+      "name": "Create Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        624,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combining vectors: BGE-M3 dense + sparse → Qdrant point\nconst response = $input.last().json;\nconst recipe = $('Code1').first().json.recipe_data;\n\n// Извлекаем dense и sparse из ответа /embed/qdrant\nconst dense = response.results[0].dense;\nconst sparse = response.results[0].sparse;\n\nconsole.log(`Рецепт: ${recipe.name}`);\nconsole.log(`Dense: ${dense.length} dims, Sparse: ${sparse.indices.length} tokens`);\n\nconst point = {\n  id: Math.abs(recipe.number * 10000 + Date.now() % 10000),\n  vector: {\n    dense: dense,\n    sparse: sparse\n  },\n  payload: {\n    recipe_id: recipe.id,\n    recipe_number: recipe.number,\n    recipe_name: recipe.name,\n    content: recipe.content,\n    full_text: recipe.full_text,\n    category: recipe.category || '',\n    content_length: recipe.content?.length || 0,\n    name_lower: recipe.name?.toLowerCase() || '',\n    is_vodka: (recipe.category === 'водка') || false,\n    is_liqueur: (recipe.category === 'ликёр') || false,\n    created_at: new Date().toISOString(),\n    vector_dimension: dense.length,\n    sparse_token_count: sparse.indices.length\n  }\n};\n\nconsole.log(`✅ Point создан: ID=${point.id}, рецепт \"${recipe.name}\"`);\n\nreturn [{ json: { points: [point] } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        864,
+        256
+      ],
+      "id": "5f1c5ae7-356b-4b5c-9505-b25df47a0153",
+      "name": "Combining vectors"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://gopa.begemot26.ru/collections/distill_hybrid_v2/points?wait=true",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "qdrantApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: $json.points }) }}",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1088,
+        256
+      ],
+      "id": "0cd35d7a-348b-4727-b107-ce352d02ca40",
+      "name": "HTTP Request",
+      "credentials": {
+        "qdrantApi": {
+          "id": "MYQGISZlE1T71Bbb",
+          "name": "QdrantApi account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking 'Test workflow'": {
+      "main": [
+        [
+          {
+            "node": "Google Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Docs": {
+      "main": [
+        [
+          {
+            "node": "Right Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code1": {
+      "main": [
+        [
+          {
+            "node": "Create Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Embedding": {
+      "main": [
+        [
+          {
+            "node": "Combining vectors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Right Parser": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Code1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combining vectors": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "9b22ede3-4100-4f78-9c82-3e329c26aa43",
+  "meta": {
+    "instanceId": "37c1bec5477bc5881c36f29ac7b9dab276628a9c7b18952c9c8961bf5c12fae5"
+  },
+  "id": "lg5dRc5syLeEXdl3",
+  "tags": []
+}

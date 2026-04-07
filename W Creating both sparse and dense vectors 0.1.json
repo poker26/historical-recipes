@@ -1,0 +1,290 @@
+{
+  "name": "W Creating both sparse and dense vectors 0.1",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -800,
+        -336
+      ],
+      "id": "8997e656-cdbf-4652-9241-c8e602a3cf2a",
+      "name": "When clicking ‘Test workflow’"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "documentURL": "https://docs.google.com/document/d/1XO0_BqH-e4B-_F4hrzKKuaX6w8CR2IARgvAsfjQnAKA/edit?usp=sharing"
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        -624,
+        -336
+      ],
+      "id": "a59c1a31-bfb3-4cfb-95f5-6c0961224c55",
+      "name": "Google Docs",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "iRxMjkSHacWOXXF6",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Code Node: Подготовка одного рецепта для OpenAI Embeddings\n// Размещается после Split In Batches, перед HTTP Request к OpenAI\n\nconst recipe = $input.first().json;\n\n\n// Создаем текст для эмбеддинга\nconst fullText = `Рецепт: ${recipe.name}\\n\\nСодержание: ${recipe.content}`;\n\n// Ограничиваем размер текста (OpenAI имеет лимит ~8191 токенов)\n// Примерно 1 токен = 4 символа, оставляем запас\nconst MAX_CHARS = 7000; // ~1750 токенов\n\nlet embeddingText;\nif (fullText.length <= MAX_CHARS) {\n  embeddingText = fullText;\n  console.log(`Текст помещается: ${fullText.length} символов`);\n} else {\n  // Обрезаем по границе слов\n  const truncated = fullText.substring(0, MAX_CHARS);\n  const lastSpaceIndex = truncated.lastIndexOf(' ');\n  \n  // Если последний пробел не слишком далеко, обрезаем по нему\n  if (lastSpaceIndex > MAX_CHARS * 0.9) {\n    embeddingText = truncated.substring(0, lastSpaceIndex) + '...';\n  } else {\n    embeddingText = truncated + '...';\n  }\n  \n  console.log(`Текст обрезан: ${fullText.length} → ${embeddingText.length} символов`);\n}\n\n// Возвращаем данные для OpenAI\nreturn [{\n  json: {\n    model: \"text-embedding-3-small\",\n    input: embeddingText,\n    // Сохраняем оригинальные данные рецепта для следующего шага\n    recipe_data: {\n      id: recipe.id,\n      number: recipe.number,\n      name: recipe.name,\n      content: recipe.content,\n      full_text: recipe.full_text,\n      sparse_vectors: recipe.sparse_vectors,\n      // Добавляем информацию об обрезке\n      was_truncated: fullText.length > MAX_CHARS,\n      original_length: fullText.length,\n      embedding_length: embeddingText.length\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        -80
+      ],
+      "id": "190c0257-28d8-4322-87e8-a3fbe554f575",
+      "name": "Code1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.17.0.1:8100/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "name",
+              "value": "model"
+            },
+            {
+              "name": "model",
+              "value": "bge-m3"
+            },
+            {
+              "name": "input",
+              "value": "={{ $json.input }}"
+            },
+            {}
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1
+            }
+          }
+        }
+      },
+      "id": "9096bb27-b2ae-420f-b1f6-ab13520fbdf9",
+      "name": "Create Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -256,
+        -80
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "JSSpwT48veDfeDPX",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Полный парсер всех рецептов водок из исторического документа\nconsole.log('=== ПАРСИНГ ВСЕХ РЕЦЕПТОВ ===');\n\ntry {\n  const inputData = $input.first();\n  \n  if (!inputData?.json?.content) {\n    return [{ json: { error: 'No content field found' } }];\n  }\n  \n  const fullText = inputData.json.content;\n  console.log(`Полный текст: ${fullText.length} символов`);\n  \n  // Полная функция парсинга всех рецептов\n  function parseAllWaterRecipes(text) {\n    const recipes = [];\n    \n    try {\n      console.log('Поиск всех рецептов в документе...');\n      \n      // Основной паттерн: **номер. название**\n      const mainPattern = /\\*\\*(\\d+)\\.\\s*([^*\\n]+?)\\*\\*\\s*([\\s\\S]*?)(?=\\*\\*\\d+\\.|$)/g;\n      let match;\n      let foundCount = 0;\n      \n      while ((match = mainPattern.exec(text)) !== null && foundCount < 300) {\n        const number = parseInt(match[1]);\n        let name = match[2].trim().replace(/\\.$/, ''); // Убираем точку в конце\n        let content = match[3].trim();\n        \n        // Убираем лишние переносы в начале контента\n        content = content.replace(/^\\s*\\n+/, '');\n        \n        // Фильтруем заголовки глав\n        if (name.includes('ГЛАВА') || \n            name.includes('Водки тминные') || \n            name.includes('Водки анисовые') ||\n            name.includes('Водки ировые') ||\n            name.includes('Водки померанцевые') ||\n            name.includes('Водки фенхельные') ||\n            name.includes('Водки розмариновые') ||\n            name.includes('Полынные водки') ||\n            name.includes('Водки из кудрявой мяты') ||\n            name.includes('Лимонные водки') ||\n            name.includes('Водки коричные') ||\n            name.includes('Водки можжевеловые') ||\n            name.includes('Водки мелиссные') ||\n            name.includes('Водки дягилевые') ||\n            name.includes('Водки девясильные') ||\n            name.includes('Водки гвоздичные') ||\n            name.includes('Водки цитварные') ||\n            name.includes('Водки карминативные') ||\n            name.includes('Водки желудочные') ||\n            name.includes('Грудные водки') ||\n            name.includes('Персиковые водки') ||\n            name.includes('Водки, называемые крамбамбули') ||\n            name.includes('Мастичные водки') ||\n            name.includes('Водки от колики') ||\n            name.includes('Водки укрепительные') ||\n            name.includes('Водки ореховые') ||\n            name.includes('Водки Игуменские') ||\n            name.includes('Розолии') ||\n            name.includes('Воздушные водки') ||\n            name.includes('Кардамонные водки') ||\n            name.includes('Водки для здоровья') ||\n            name.includes('Ратафии') ||\n            name.includes('Христофлеты') ||\n            name.includes('Водки хлебные') ||\n            name.includes('Водки оранжевые') ||\n            name.includes('Водки серебряные') ||\n            name.includes('Водки золотые') ||\n            name.includes('Водки горькия') ||\n            content.length < 100) {\n          continue;\n        }\n        \n        // Проверяем, что это действительно рецепт\n        if (name.length > 3 && content.length > 50) {\n          recipes.push({\n            id: `{number}`,\n            number: number,\n            name: name,\n            content: content,\n            full_text: `${name}\\n\\n${content}`\n          });\n          \n          console.log(`Найден рецепт ${number}: \"${name}\"`);\n          foundCount++;\n        }\n      }\n      \n      console.log(`Основным паттерном найдено: ${recipes.length} рецептов`);\n      \n      // Дополнительный поиск рецептов без двойных звездочек\n      if (recipes.length < 100) {\n        console.log('Поиск дополнительных рецептов...');\n        \n        const additionalPattern = /^(\\d+)\\.\\s*([А-Яа-яёЁ][^\\n]{10,100}?)\\.\\s*$([\\s\\S]*?)(?=^\\d+\\.\\s*[А-Яа-яёЁ]|$)/gm;\n        let additionalMatch;\n        \n        while ((additionalMatch = additionalPattern.exec(text)) !== null) {\n          const number = parseInt(additionalMatch[1]);\n          const name = additionalMatch[2].trim();\n          const content = additionalMatch[3].trim();\n          \n          // Проверяем, не добавили ли уже этот рецепт\n          if (!recipes.some(r => r.number === number) && content.length > 100) {\n            recipes.push({\n              id: `recipe_${number}`,\n              number: number,\n              name: name,\n              content: content,\n              full_text: `${name}\\n\\n${content}`\n            });\n            \n            console.log(`Дополнительно найден рецепт ${number}: \"${name}\"`);\n          }\n        }\n      }\n      \n    } catch (parseError) {\n      console.log('Ошибка парсинга:', parseError.message);\n    }\n    \n    return recipes;\n  }\n  \n  // Расширенная генерация sparse векторов на основе анализа документа\n  function generateComprehensiveSparseVectors(recipeText, recipeName) {\n    const vocabularies = {\n      ingredients: [\n        // Алкогольные основы\n        'водка', 'спирт', 'хлебное вино', 'простое вино', 'рейнское вино', \n        'французская водка', 'двойная водка', 'виноградное вино',\n        \n        // Орехи и семена\n        'горький миндаль', 'сладкий миндаль', 'персиковые ядра', 'сливовые ядра', \n        'вишнёвые ядра', 'абрикосовые ядра', 'кедровые орехи',\n        \n        // Фрукты и ягоды\n        'изюм', 'винные ягоды', 'коринка', 'можжевеловые ягоды', 'лавровые ягоды',\n        'ягоды чёрного шиповника', 'ягоды красного шиповника', 'финики',\n        'вишни', 'малина', 'смородина', 'ежевика', 'земляника', 'померанцы', 'лимоны',\n        \n        // Корки и цветы цитрусовых\n        'лимонная корка', 'померанцевая корка', 'померанцевые цветы',\n        \n        // Подсластители\n        'сахар', 'сироп', 'мёд', 'сахарный песок', 'леденец',\n        \n        // Жидкости\n        'вода', 'розовая вода', 'колодезная вода', 'мелиссовая вода', 'коричная вода'\n      ],\n      \n      spices_herbs: [\n        // Основные специи\n        'корица', 'анис', 'гвоздика', 'кориандр', 'кишнец', 'кардамон', 'имбирь',\n        'мускатный орех', 'мускатный цвет', 'мацис', 'шафран', 'бадьян', 'тмин',\n        'галган', 'галангал', 'калган', 'фенхель', 'райские зёрна', 'перец кубеба',\n        'ямайский перец', 'длинный перец', 'чёрный перец', 'соль винного камня',\n        'кремортартар', 'поваренная соль',\n        \n        // Лекарственные травы\n        'девясил', 'мать-и-мачеха', 'подбел', 'иссоп', 'шалфей', 'мелисса',\n        'майоран', 'розмарин', 'аир', 'ир', 'горечавка', 'полынь', 'рута',\n        'чабрец', 'кудрявая мята', 'ромашка', 'римская ромашка', 'лавандовые цветы',\n        'вероника', 'пижма', 'базилик', 'тысячелистник', 'буквица', 'ангелика',\n        'дягиль', 'кардобенедикт', 'кникус благословенный', 'золототысячник',\n        \n        // Корни\n        'солодковый корень', 'солодка', 'лакрица', 'фиалковый корень', 'ирисовый корень',\n        'цитварный корень', 'бедренцовый корень', 'корень девясила', 'корень дягиля',\n        'корень ангелики', 'валериана', 'хрен',\n        \n        // Цветы\n        'розовые цветы', 'коричные цветы', 'цветы гвоздичного дерева',\n        'цветы корицы', 'цветы кассии', 'цветы розмарина', 'цветы ландыша',\n        'бузинные цветы',\n        \n        // Особые компоненты\n        'ладан', 'стиракс', 'сассафрас', 'мастика', 'мирра', 'бензойная смола',\n        'амбра', 'мускус', 'бобровая струя', 'кора винтера', 'винтеранская корка',\n        'буковая зола', 'поташ', 'квасцы', 'ревень', 'алоэ', 'сабур'\n      ],\n      \n      techniques: [\n        // Подготовка ингредиентов\n        'возьмите', 'истолочь', 'покрошить', 'раздробить', 'измельчить', 'смолоть',\n        'обжарить', 'крошить', 'толочь', 'мелко истолочь', 'крупновато истолочь',\n        'очистить', 'срезать', 'соскрести',\n        \n        // Настаивание\n        'настаивать', 'настоять', 'сложить в бутыль', 'положить в бутыль',\n        'налить', 'умеренная теплота', 'умеренное тепло', 'закупоренная бутыль',\n        'заткнуть', 'дни', 'недели', 'сутки',\n        \n        // Перегонка\n        'перегнать', 'перегонный куб', 'перегнанный спирт', 'дистиллят',\n        'переложить в куб', 'выложить в куб', 'прибавить воды', 'добавить воды',\n        \n        // Финишная обработка\n        'подсластить', 'подцветить', 'подкрасить', 'процедить', 'пропустить',\n        'цедильная бумага', 'фильтровальная бумага', 'сварить сироп', 'разварить',\n        'слить', 'сцедить', 'отстояться', 'выдержать',\n        \n        // Брожение\n        'бродить', 'дрожжи', 'сусло', 'перебродить', 'пивные дрожжи',\n        'кисловатый запах', 'брожение'\n      ],\n      \n      categories: [\n        // Основные типы\n        'розолия', 'воздушная водка', 'водка для здоровья', 'желудочная водка',\n        'грудная водка', 'карминативная водка', 'ароматная водка', 'укрепительная водка',\n        'синяя водка', 'кардамонная водка', 'кофейная водка', 'персиковая водка',\n        'ореховая водка', 'игуменская водка', 'абтвассер', 'ратафия', 'крамбамбули',\n        'мастичная водка', 'христофлет', 'мараскино',\n        \n        // По происхождению\n        'хемницкая', 'гданская', 'бреславская', 'польская', 'линдавская',\n        'венгерская', 'итальянская', 'французская', 'английская', 'испанская',\n        'венская', 'нюрнбергская', 'курсаксонская', 'лондонская', 'туринская',\n        'кёльнская', 'швабская', 'мангеймская', 'франкфуртская',\n        \n        // По качеству\n        'лучшая', 'добрая', 'отборная', 'хорошая', 'двойная', 'тройная',\n        'простая', 'обыкновенная', 'свежая', 'доброго', 'первого рода',\n        'второго рода', 'третьего рода', 'иного рода', 'другого рода',\n        \n        // Специальные названия\n        'императорская', 'королевская', 'адмиральская', 'кармелитская',\n        'небесная вода', 'святая вода', 'магдалинина', 'госпобова',\n        'вода смелости', 'любовная', 'молодецкая', 'девическая', 'супружеская'\n      ],\n      \n      measurements: [\n        // Старинные меры веса\n        'золотник', 'фунт', 'грана', 'скрупул', 'пуд', 'лот',\n        \n        // Старинные меры объёма\n        'штоф', 'ведро', 'бутыль', 'бутылка', 'гарнец', 'четверик',\n        'ложка', 'стакан', 'горсть', 'щепоть',\n        \n        // Временные промежутки\n        '8 дней', '10 дней', '12 дней', '14 дней', 'две недели', 'три недели',\n        'несколько дней', 'сутки', 'двое суток', 'час', 'ночь',\n        \n        // Количественные указания\n        'по', 'около', 'без четверти', 'с четвертью', 'полтора', 'полфунта',\n        'два с четвертью', 'три с половиной', 'четыре с половиной',\n        'дюжина', 'десяток', 'горсти', 'капли'\n      ]\n    };\n    \n    const result = {\n      ingredients: { indices: [], values: [] },\n      spices_herbs: { indices: [], values: [] },\n      techniques: { indices: [], values: [] },\n      categories: { indices: [], values: [] },\n      measurements: { indices: [], values: [] }\n    };\n    \n    const text = (recipeText + ' ' + recipeName).toLowerCase();\n    \n    Object.keys(vocabularies).forEach(category => {\n      vocabularies[category].forEach((term, index) => {\n        const normalizedTerm = term.toLowerCase();\n        if (text.includes(normalizedTerm)) {\n          result[category].indices.push(index);\n          \n          // Подсчитываем частоту с учётом различных форм слова\n          const regex = new RegExp(normalizedTerm.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), 'g');\n          const frequency = (text.match(regex) || []).length;\n          \n          // Применяем веса по важности категории\n          let weight = frequency;\n          if (category === 'ingredients' || category === 'spices_herbs') {\n            weight *= 2.0; // Ингредиенты и специи самые важные\n          } else if (category === 'categories') {\n            weight *= 1.8; // Категории очень важны\n          } else if (category === 'techniques') {\n            weight *= 1.3; // Техники важны\n          }\n          \n          result[category].values.push(weight);\n        }\n      });\n    });\n    \n    return result;\n  }\n  \n  // Парсим все рецепты\n  const allRecipes = parseAllWaterRecipes(fullText);\n  console.log(`ВСЕГО НАЙДЕНО РЕЦЕПТОВ: ${allRecipes.length}`);\n  \n  if (allRecipes.length === 0) {\n    console.log('=== НЕ НАЙДЕНО РЕЦЕПТОВ - ОТЛАДКА ===');\n    console.log('Первые 2000 символов:');\n    console.log(fullText.substring(0, 2000));\n    \n    return [{ json: { \n      error: 'No recipes found',\n      debug_info: {\n        text_length: fullText.length,\n        sample_text: fullText.substring(0, 2000)\n      }\n    }}];\n  }\n  \n  // Сортируем рецепты по номерам\n  allRecipes.sort((a, b) => a.number - b.number);\n  \n  // Обрабатываем все найденные рецепты\n  const processedRecipes = allRecipes.map((recipe, index) => {\n    if (index % 50 === 0) {\n      console.log(`Обрабатываем рецепт ${index + 1}/${allRecipes.length}: ${recipe.name}`);\n    }\n    \n    return {\n      ...recipe,\n      sparse_vectors: generateComprehensiveSparseVectors(recipe.content, recipe.name)\n    };\n  });\n  \n  console.log('=== ОБРАБОТКА ЗАВЕРШЕНА ===');\n  console.log(`Успешно обработано: ${processedRecipes.length} рецептов`);\n  console.log(`Диапазон номеров: ${processedRecipes[0]?.number} - ${processedRecipes[processedRecipes.length - 1]?.number}`);\n  \n  // Показываем статистику по типам рецептов\n  const categoryCount = {};\n  processedRecipes.forEach(recipe => {\n    const name = recipe.name.toLowerCase();\n    if (name.includes('водка')) categoryCount['водка'] = (categoryCount['водка'] || 0) + 1;\n    else if (name.includes('розолия')) categoryCount['розолия'] = (categoryCount['розолия'] || 0) + 1;\n    else if (name.includes('ратафия')) categoryCount['ратафия'] = (categoryCount['ратафия'] || 0) + 1;\n    else categoryCount['другое'] = (categoryCount['другое'] || 0) + 1;\n  });\n  \n  console.log('Статистика по типам:');\n  Object.entries(categoryCount).forEach(([type, count]) => {\n    console.log(`  ${type}: ${count} рецептов`);\n  });\n  \n  console.log('Первые 10 рецептов:');\n  processedRecipes.slice(0, 10).forEach(r => {\n    console.log(`  ${r.number}. ${r.name}`);\n  });\n  \n  return processedRecipes.map(recipe => ({ json: recipe }));\n  \n} catch (globalError) {\n  console.log('КРИТИЧЕСКАЯ ОШИБКА:', globalError.message);\n  console.log('Стек ошибки:', globalError.stack);\n  \n  return [{ json: { \n    error: 'Critical parsing error',\n    message: globalError.message,\n    stack: globalError.stack\n  }}];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        -336
+      ],
+      "id": "2d61f3df-7397-46d4-845d-d5d60430b0c3",
+      "name": "Right Parser"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -688,
+        -128
+      ],
+      "id": "4c191368-d305-49f7-a31b-9c9231e3bc93",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Code Node: Объединение sparse и dense векторов (ИСПРАВЛЕННЫЙ)\n// Убираем function declaration, выполняем код напрямую\n\n// Получаем данные запроса и ответ OpenAI\nconst openaiResponse = $input.last().json; // Ответ от OpenAI\n\n// Извлекаем эмбеддинг\nif (!openaiResponse.data || !Array.isArray(openaiResponse.data) || openaiResponse.data.length === 0) {\n  throw new Error('Некорректный ответ от OpenAI');\n}\n\nconst embedding = openaiResponse.data[0].embedding;\nif (!Array.isArray(embedding)) {\n  throw new Error('Эмбеддинг не является массивом');\n}\n\nconst recipe = $('Code1').first().json.recipe_data;\n\n// Подготавливаем sparse векторы\nconst sparseVectors = {};\nif (recipe.sparse_vectors) {\n  Object.keys(recipe.sparse_vectors).forEach(category => {\n    const sparse = recipe.sparse_vectors[category];\n    if (sparse && sparse.indices && sparse.values && sparse.indices.length > 0) {\n      sparseVectors[category] = {\n        indices: sparse.indices,\n        values: sparse.values\n      };\n    }\n  });\n}\n\nconst uniqueId = recipe.number * 1000 + Date.now() % 1000;\n\n\n// Создаем point для Qdrant\nconst point = {\n  id:  Math.abs(uniqueId),  // ИСПРАВЛЕНО: используем числовой ID вместо строки\n  vector: {\n    dense: embedding,\n    ...sparseVectors\n  },\n  payload: {\n    recipe_id: recipe.id,  // Сохраняем оригинальный строковый ID в payload\n    recipe_number: recipe.number,\n    recipe_name: recipe.name,\n    content: recipe.content,\n    full_text: recipe.full_text,\n    content_length: recipe.content?.length || 0,\n    name_lower: recipe.name?.toLowerCase() || '',\n    has_ingredients: !!sparseVectors.ingredients,\n    has_spices_herbs: !!sparseVectors.spices_herbs,\n    has_techniques: !!sparseVectors.techniques,\n    has_measurements: !!sparseVectors.measurements,\n    is_vodka: recipe.name?.toLowerCase().includes('водка') || false,\n    is_rozolia: recipe.name?.toLowerCase().includes('розолия') || false,\n    is_ratafia: recipe.name?.toLowerCase().includes('ратафия') || false,\n    created_at: new Date().toISOString(),\n    vector_dimension: embedding.length,\n    sparse_categories: Object.keys(sparseVectors)\n  }\n};\n\nconsole.log(`✅ Point создан для рецепта ${recipe.id} с числовым ID ${recipe.number}`);\n\n// Возвращаем point для загрузки в Qdrant\nreturn [{\n  json: {\n    points: [point]  // Qdrant ожидает массив points\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -16,
+        -80
+      ],
+      "id": "00ef9c69-5a55-4c9f-bc69-43ae172cb8c1",
+      "name": "Combining vectors"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://gopa.begemot26.ru/collections/distill_hybrid/points?wait=true",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "qdrantApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "points",
+              "value": "={{ $json.points }}"
+            }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        208,
+        -80
+      ],
+      "id": "3427766a-adde-4e59-9fb4-113ca3b649a0",
+      "name": "HTTP Request",
+      "credentials": {
+        "qdrantApi": {
+          "id": "MYQGISZlE1T71Bbb",
+          "name": "QdrantApi account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Test workflow’": {
+      "main": [
+        [
+          {
+            "node": "Google Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Docs": {
+      "main": [
+        [
+          {
+            "node": "Right Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code1": {
+      "main": [
+        [
+          {
+            "node": "Create Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Embedding": {
+      "main": [
+        [
+          {
+            "node": "Combining vectors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Right Parser": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Code1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combining vectors": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "4aabe43f-2136-41c5-bfe0-216a16f44c8a",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "37c1bec5477bc5881c36f29ac7b9dab276628a9c7b18952c9c8961bf5c12fae5"
+  },
+  "id": "yFQXiZKcf79Fc4hd",
+  "tags": []
+}

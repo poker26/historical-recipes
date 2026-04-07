@@ -1,0 +1,456 @@
+{
+  "name": "TG bot для рецпетов, 0.06 BGE Hybrid search",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "*"
+        ],
+        "additionalFields": {
+          "download": true
+        }
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2768,
+        -1968
+      ],
+      "id": "07de3340-20e3-459d-a3cc-d222e9d7ab10",
+      "name": "Telegram Trigger",
+      "webhookId": "01aaa0d1-aec9-4b7a-a2f2-0613cf7db73a",
+      "credentials": {
+        "telegramApi": {
+          "id": "FK0PX9jIJOnTPyOv",
+          "name": "NeprostoiNastoi"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "={{ $json.messageText }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -896,
+        -1328
+      ],
+      "id": "e434c5e3-e3d2-45f6-a64a-da5b854e7365",
+      "name": "Telegram",
+      "webhookId": "e1778f86-a3fa-4e62-b25e-59146b205448",
+      "credentials": {
+        "telegramApi": {
+          "id": "FK0PX9jIJOnTPyOv",
+          "name": "NeprostoiNastoi"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = $json.output; // Замените 'response' на поле с текстом от AI Agent\nconst maxLength = 4096; // Лимит Telegram\n\nconst messages = [];\nlet currentMessage = '';\n\n// Разделение текста по переносам строк\nconst lines = text.split('\\n');\n\nfor (const line of lines) {\n  if (currentMessage.length + line.length + 1 <= maxLength) {\n    currentMessage += line + '\\n';\n  } else {\n    if (currentMessage) messages.push(currentMessage.trim());\n    currentMessage = line + '\\n';\n  }\n}\n\nif (currentMessage) messages.push(currentMessage.trim());\n\nreturn messages.map(msg => ({ json: { messageText: msg } }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1344,
+        -1504
+      ],
+      "id": "3a9dbf2b-a2c0-43bc-990c-c4a024b00539",
+      "name": "Code"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "messageText",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        -1168,
+        -1328
+      ],
+      "id": "9adeec97-73d4-4c4c-bd31-4a8b6cce9d11",
+      "name": "Split Out"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.message.chat.id }}",
+        "text": "Моя библиотека рецептов настолько обширна, что Вам придется немного подождать, пока я найду нужную информацию! \nДайте мне минутку-другую :)",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2496,
+        -1968
+      ],
+      "id": "c9171ad7-2788-47db-a0b8-d9f49a06085c",
+      "name": "Telegram1",
+      "webhookId": "46230d49-2a5f-46cc-9e67-36f6af6f8427",
+      "credentials": {
+        "telegramApi": {
+          "id": "FK0PX9jIJOnTPyOv",
+          "name": "NeprostoiNastoi"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "sendChatAction",
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2288,
+        -1968
+      ],
+      "id": "4f6c55a5-eefb-4da3-bf4d-33a040ecd920",
+      "name": "Telegram2",
+      "webhookId": "052f7284-5aec-40ae-ab06-1fb86f01d8d6",
+      "credentials": {
+        "telegramApi": {
+          "id": "FK0PX9jIJOnTPyOv",
+          "name": "NeprostoiNastoi"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "https://docs.google.com/document/d/1TbsuYizY4y4ycxULsfVWI15qYftPlHeaE778GEO31jA/edit?usp=drivesdk",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{ $('Telegram Trigger').item.json.message.text }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        -2080,
+        -1968
+      ],
+      "id": "7983a0c0-834e-4582-baeb-5dc6ac6788e5",
+      "name": "Google Docs",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "iRxMjkSHacWOXXF6",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "https://docs.google.com/document/d/1TbsuYizY4y4ycxULsfVWI15qYftPlHeaE778GEO31jA/edit?usp=drivesdk",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{ $json.output }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        -1120,
+        -1744
+      ],
+      "id": "5a3e1d25-cf65-42ea-ba67-0ba00e69b77c",
+      "name": "Google Docs1",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "iRxMjkSHacWOXXF6",
+          "name": "Google Docs account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a15ae0da-cde7-432a-8579-7956ea36125e",
+              "name": "userQuery",
+              "value": "={{ $('Telegram Trigger').item.json.message.text }}",
+              "type": "string"
+            },
+            {
+              "id": "301daffb-0306-4a19-b47b-b8975c588272",
+              "name": "sessionId",
+              "value": "= {{ $json.sessionId }}",
+              "type": "string"
+            },
+            {
+              "id": "b18356d8-ea69-450f-9c62-bd4dbcd6c6cc",
+              "name": "qdrantURL",
+              "value": "https://gopa.begemot26.ru",
+              "type": "string"
+            },
+            {
+              "id": "f1dd3ff5-2d8e-400e-a185-9a4477b7fa66",
+              "name": "collectionName",
+              "value": "distill_hybrid_v2",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1856,
+        -1968
+      ],
+      "id": "b7b27749-efdd-4597-82d2-25927370f1ce",
+      "name": "Set variables"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=\nТы помощник дистиллятора и винокура. Помимо общих знаний, в твоем распоряжении векторная база данных старинных рецептов, по которой можно искать с использованием инструмента Perform hybrid search.\n\nПроанализируй запрос пользователя {{ $json.userQuery }}. Сначала выполни поиск по векторной базе с использованием Perform hybrid search\n\nЕсли нашелся точный рецепт, приводи его полностью, в точности так, как он найден в гибридном поиске, с ингредиентами и способом приготовления.\n\nЕсли точного или похожего на точный рецепт не нашлось, отвечай из общих знаний, уважительно. Не используй в ответе технические термины.\n\nНе давай советов об опасности использования. Не упоминай магические ритуалы и духовные практики. \n\nОтвечай всегда на русском языке\n\nНе предлагай сгенерировать изображения, этикетки. Не предлагай предупреждений о вреде использования.\n\nНе предлагай наружного применения, все напитки только для употребления внутрь\n\nответ оформи, как профессиональный редактор Telegram канала. \nИспользуй соответствующие иконки с травами, бутылками и т.п, \nВ заголовках используй эмодзи + жирный текст\n\nИзбегай повторения информации\nне используй \"---\" и лишние переводы строки. Текст должен смотреться довольно компактным.\n\n**СТИЛЬ:** Живой, вдумчивый, довольно строгий, но уважительный. Не нужно выдумывать цветистые детали.В конце ответа не нужно давать развесистое резюме, отвечай четко на заданный вопрос. Нужно показать, что ты очень большой авторитет в своем деле.\nЦветовая гамма зависит от ответа, если рецепт успокаивающий, то и ответ должен быть в холодных тонах. Если согревающий - в теплых\n\nДля таблиц (если нужно) используй моноширинный шрифт.\nНе используй HTML теги",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.9,
+      "position": [
+        -1696,
+        -1888
+      ],
+      "id": "e6971de3-184b-4b34-87b6-efda6e6a181b",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": "qwen/qwen3-235b-a22b-2507",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        -2048,
+        -1616
+      ],
+      "id": "b79326ac-0048-4b7e-9a01-7dd75f8ded3c",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "Ma7nMcQJsTPnqMkx",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "description": "Вызывай этот инструмент, чтобы выполнить гибридный поиск по базе данных distill_hybrid",
+        "workflowId": {
+          "__rl": true,
+          "value": "=60XTGDYWgPoY7qiu",
+          "mode": "id",
+          "cachedResultUrl": "/workflow/=60XTGDYWgPoY7qiu"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "AgentInput": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('AgentInput', ``, 'string') }}"
+          },
+          "matchingColumns": [
+            "AgentInput"
+          ],
+          "schema": [
+            {
+              "id": "AgentInput",
+              "displayName": "AgentInput",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        -1696,
+        -1616
+      ],
+      "id": "3d504e56-b078-42c8-890d-3e1ec16bde4b",
+      "name": "Perform hybrid search"
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -1872,
+        -1616
+      ],
+      "id": "eb0b1bd2-a7b1-4b5b-8e6e-e217a699ddf5",
+      "name": "Simple Memory1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Telegram1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Split Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out": {
+      "main": [
+        [
+          {
+            "node": "Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram1": {
+      "main": [
+        [
+          {
+            "node": "Telegram2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram2": {
+      "main": [
+        [
+          {
+            "node": "Google Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Docs": {
+      "main": [
+        [
+          {
+            "node": "Set variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set variables": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Perform hybrid search": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory1": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Google Docs1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "3b0347da-0a8e-4d1b-9fd0-93b6b871c26c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "37c1bec5477bc5881c36f29ac7b9dab276628a9c7b18952c9c8961bf5c12fae5"
+  },
+  "id": "7oUWNRqh1O6cZmYM",
+  "tags": []
+}
