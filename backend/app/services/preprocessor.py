@@ -34,6 +34,58 @@ def split_pdf_to_pages(pdf_bytes: bytes) -> list[tuple[bytes, int]]:
     return pages
 
 
+MIN_TEXT_LENGTH = 50  # Minimum chars to consider a page as having extractable text
+
+
+def split_pdf_smart(pdf_bytes: bytes) -> list[dict]:
+    """Split PDF with automatic text extraction for text pages.
+
+    For each page returns:
+    {
+        "page_number": int,
+        "page_type": "text" | "image",
+        "text": str | None,         # extracted text (if text page)
+        "image_bytes": bytes | None, # rendered PNG (if image page)
+        "dpi": int,
+    }
+
+    Text pages get text extracted directly via PyMuPDF (fast, free).
+    Image pages get rendered to PNG for OCR pipeline.
+    """
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    pages = []
+
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        text = page.get_text().strip()
+
+        if len(text) >= MIN_TEXT_LENGTH:
+            # Text page — extract text directly, no need for OCR
+            pages.append({
+                "page_number": page_num + 1,
+                "page_type": "text",
+                "text": text,
+                "image_bytes": None,
+                "dpi": 0,
+            })
+        else:
+            # Image page — render to PNG for OCR
+            zoom = TARGET_DPI / 72
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat)
+            png_bytes = pix.tobytes("png")
+            pages.append({
+                "page_number": page_num + 1,
+                "page_type": "image",
+                "text": None,
+                "image_bytes": png_bytes,
+                "dpi": TARGET_DPI,
+            })
+
+    doc.close()
+    return pages
+
+
 def preprocess_page(image_bytes: bytes) -> bytes:
     """Full pre-OCR pipeline for a single page image.
 

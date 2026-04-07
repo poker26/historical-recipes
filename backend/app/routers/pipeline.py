@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.book import Book, BookPage, BookChunk, ProcessingLog
 from app.services import minio as minio_svc
-from app.services.preprocessor import split_pdf_to_pages, preprocess_page
+from app.services.preprocessor import split_pdf_to_pages, split_pdf_smart, preprocess_page
 from app.services.ocr import ocr_page, ocr_page_with_fallback
 from app.services.postprocessor import clean_ocr_text, detect_chunk_boundaries, split_into_chunks
 from app.services.normalizer import normalize_orthography, full_normalize
@@ -44,14 +44,20 @@ async def _get_page(book_id: uuid.UUID, page_number: int, db: AsyncSession) -> B
 
 @router.post("/{book_id}/split")
 async def split_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Split PDF into individual page images, save to MinIO."""
+    """Split PDF into pages with smart text/image detection.
+
+    Text pages: text extracted directly via PyMuPDF (no OCR needed).
+    Image pages: rendered to PNG, saved to MinIO for preprocess+OCR.
+
+    Returns page list with types so n8n knows which pages need OCR.
+    """
     book = await _get_book(book_id, db)
 
     if not book.file_path:
         raise HTTPException(status_code=400, detail="Book has no PDF file")
 
     pdf_bytes = minio_svc.download_file(book.file_path)
-    pages = split_pdf_to_pages(pdf_bytes)
+    pages = split_pdf_smart(pdf_bytes)
 
     # Delete existing pages for re-processing
     existing = await db.execute(select(BookPage).where(BookPage.book_id == book_id))
@@ -60,28 +66,52 @@ async def split_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     await db.flush()
 
     page_list = []
-    for i, (png_bytes, dpi) in enumerate(pages):
-        page_num = i + 1
-        image_path = f"books/{book_id}/pages/{page_num:04d}.png"
-        minio_svc.upload_file(png_bytes, image_path, content_type="image/png")
+    text_count = 0
+    image_count = 0
+
+    for page_data in pages:
+        page_num = page_data["page_number"]
+        page_type = page_data["page_type"]
+
+        image_path = None
+        if page_type == "image" and page_data["image_bytes"]:
+            image_path = f"books/{book_id}/pages/{page_num:04d}.png"
+            minio_svc.upload_file(page_data["image_bytes"], image_path, content_type="image/png")
+            image_count += 1
+        else:
+            text_count += 1
 
         page = BookPage(
             book_id=book_id,
             page_number=page_num,
             image_path=image_path,
-            dpi=dpi,
-            status="split",
+            raw_text=page_data["text"],
+            dpi=page_data["dpi"],
+            ocr_confidence=100.0 if page_type == "text" else None,
+            status="text_extracted" if page_type == "text" else "needs_ocr",
         )
         db.add(page)
-        page_list.append({"page_number": page_num, "image_path": image_path, "dpi": dpi})
+        page_list.append({
+            "page_number": page_num,
+            "page_type": page_type,
+            "status": page.status,
+            "image_path": image_path,
+            "text_length": len(page_data["text"]) if page_data["text"] else 0,
+        })
 
     book.status = "split"
     log = ProcessingLog(book_id=book_id, step="split", status="completed",
-                        details={"total_pages": len(pages)})
+                        details={"total_pages": len(pages), "text_pages": text_count, "image_pages": image_count})
     db.add(log)
     await db.commit()
 
-    return {"status": "ok", "total_pages": len(pages), "pages": page_list}
+    return {
+        "status": "ok",
+        "total_pages": len(pages),
+        "text_pages": text_count,
+        "image_pages": image_count,
+        "pages": page_list,
+    }
 
 
 @router.get("/{book_id}/pages/{page_number}/image")
@@ -101,8 +131,12 @@ async def get_page_image(book_id: uuid.UUID, page_number: int, preprocessed: boo
 @router.post("/{book_id}/pages/{page_number}/preprocess")
 async def preprocess_page_endpoint(book_id: uuid.UUID, page_number: int,
                                    db: AsyncSession = Depends(get_db)):
-    """Apply OpenCV preprocessing to a page image."""
+    """Apply OpenCV preprocessing to a page image. Skips text pages."""
     page = await _get_page(book_id, page_number, db)
+
+    # Skip text pages — no image to preprocess
+    if page.status == "text_extracted":
+        return {"status": "skipped", "page_number": page_number, "reason": "text page, no preprocessing needed"}
 
     if not page.image_path:
         raise HTTPException(status_code=400, detail="Page has no image")
@@ -124,8 +158,20 @@ async def preprocess_page_endpoint(book_id: uuid.UUID, page_number: int,
 async def ocr_page_endpoint(book_id: uuid.UUID, page_number: int,
                             use_llm_fallback: bool = True,
                             db: AsyncSession = Depends(get_db)):
-    """Run OCR on a page. Uses preprocessed image if available."""
+    """Run OCR on a page. Skips pages that already have text extracted."""
     page = await _get_page(book_id, page_number, db)
+
+    # Skip text pages — already have text from split
+    if page.status == "text_extracted" and page.raw_text:
+        return {
+            "status": "skipped",
+            "page_number": page_number,
+            "reason": "text already extracted from PDF",
+            "text_length": len(page.raw_text),
+            "confidence": 100.0,
+            "method": "pdf_extract",
+            "needs_review": False,
+        }
 
     image_path = page.preprocessed_path or page.image_path
     if not image_path:
