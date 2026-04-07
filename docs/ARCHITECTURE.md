@@ -87,8 +87,10 @@ books (
   year INTEGER,
   language TEXT,          -- 'modern_ru', 'pre_reform_ru'
   pdf_type TEXT,          -- 'image', 'text', 'mixed'
+  domain TEXT,            -- 'recipes' | 'herbalism' (см. ниже)
   file_path TEXT,         -- путь в MinIO
   status TEXT,            -- текущий статус
+  tags TEXT[],            -- доп. теги: 'дистилляция', 'ликёры', 'травник', 'аптека'
   created_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ
 )
@@ -130,9 +132,9 @@ processing_log (
 )
 ```
 
-### 2. `recipes` — Парсинг и хранение рецептов
+### 2. `recipes` — Рецепты (домен: recipes)
 
-Структурированные рецепты, извлечённые из книг.
+Структурированные рецепты настоек, дистиллятов, ликёров и т.п.
 
 **API:**
 - `GET /api/recipes` — список рецептов с поиском
@@ -153,12 +155,14 @@ recipes (
   year INTEGER,
   quality TEXT,             -- оценка качества из книги
   qdrant_point_id TEXT,     -- ID вектора в Qdrant
+  qdrant_collection TEXT,   -- коллекция в Qdrant
   indexed_at TIMESTAMPTZ
 )
 
 recipe_ingredients (
   id UUID PRIMARY KEY,
   recipe_id UUID REFERENCES recipes,
+  plant_id UUID REFERENCES plants,  -- связь с каталогом растений
   name TEXT,                -- современное название
   original_name TEXT,       -- название из книги
   amount TEXT,              -- исходное количество ("2 золотника")
@@ -168,7 +172,104 @@ recipe_ingredients (
 )
 ```
 
-### 3. `dictionaries` — Словари
+### 3. `herbalism` — Травник (домен: herbalism)
+
+Знания о растениях: лекарственные свойства, совместимость, применение.
+Извлекаются из справочников и травников — отдельный тип книг.
+
+**API:**
+- `GET /api/plants` — каталог растений с поиском
+- `GET /api/plants/{id}` — карточка растения (свойства, рецепты где используется)
+- `POST /api/plants` — добавление растения
+- `PUT /api/plants/{id}` — редактирование
+- `GET /api/plants/{id}/recipes` — рецепты, содержащие это растение
+- `GET /api/plants/{id}/compatible` — совместимые растения
+- `POST /api/plants/parse` — извлечение из чанков книги-травника
+
+**Таблицы:**
+```sql
+plants (
+  id UUID PRIMARY KEY,
+  name TEXT,                  -- современное название
+  name_latin TEXT,            -- латинское название
+  names_historical TEXT[],    -- массив старинных названий из разных книг
+  family TEXT,                -- семейство (зонтичные, губоцветные и т.д.)
+  parts_used TEXT[],          -- используемые части: 'корень', 'лист', 'цветок', 'семя'
+  qdrant_point_id TEXT,
+  qdrant_collection TEXT
+)
+
+plant_properties (
+  id UUID PRIMARY KEY,
+  plant_id UUID REFERENCES plants,
+  property_type TEXT,         -- 'medicinal', 'flavor', 'aroma', 'color'
+  property TEXT,              -- 'противовоспалительное', 'горький', 'пряный'
+  description TEXT,           -- подробности из книги
+  source_book_id UUID REFERENCES books
+)
+
+plant_compatibility (
+  id UUID PRIMARY KEY,
+  plant_a_id UUID REFERENCES plants,
+  plant_b_id UUID REFERENCES plants,
+  compatibility TEXT,         -- 'synergy', 'neutral', 'conflict'
+  context TEXT,               -- 'вкус', 'лечебное действие', 'аромат'
+  description TEXT,
+  source_book_id UUID REFERENCES books
+)
+
+plant_book_mentions (
+  id UUID PRIMARY KEY,
+  plant_id UUID REFERENCES plants,
+  book_id UUID REFERENCES books,
+  chunk_id UUID REFERENCES book_chunks,
+  original_name TEXT,         -- как называется в этой книге
+  original_text TEXT,         -- цитата из книги
+  page_number INTEGER
+)
+```
+
+### Связь доменов
+
+```
+┌─────────────────────┐          ┌─────────────────────┐
+│   ДОМЕН: RECIPES    │          │  ДОМЕН: HERBALISM   │
+│                     │          │                     │
+│  Книги рецептов     │          │  Травники,          │
+│  настоек, ликёров,  │          │  справочники,       │
+│  дистиллятов        │          │  аптекарские книги  │
+│                     │          │                     │
+│  recipes            │          │  plants             │
+│  recipe_ingredients─┼──────────┼─►plant_properties   │
+│                     │  plant_id│  plant_compatibility│
+│                     │          │  plant_book_mentions│
+└─────────────────────┘          └─────────────────────┘
+         │                                │
+         └──────────┬─────────────────────┘
+                    │
+              ┌─────▼─────┐
+              │  Qdrant    │
+              │            │
+              │ collection:│
+              │  recipes   │ ← рецепты (точный + семантический поиск)
+              │  herbalism │ ← свойства растений (семантический поиск)
+              └────────────┘
+```
+
+**Зачем два домена:**
+- Рецепт говорит: "возьми 2 золотника зверобоя" — это **recipes**
+- Травник говорит: "зверобой обладает противовоспалительным действием,
+  хорошо сочетается с мятой и ромашкой" — это **herbalism**
+- При ответе бот может обогатить рецепт информацией из травника:
+  почему именно эти ингредиенты, чем заменить, какой эффект
+
+**Две коллекции в Qdrant:**
+- `recipes` — поиск рецептов (гибридный: dense + sparse)
+- `herbalism` — поиск по свойствам растений (dense)
+
+Бот при ответе может искать в обеих коллекциях для полного ответа.
+
+### 4. `dictionaries` — Словари
 
 Словари для нормализации старинных текстов. Накапливаются по мере обработки книг.
 
@@ -206,11 +307,14 @@ dictionary_terms (
 
 **Логика (из текущего n8n workflow):**
 1. Получить запрос пользователя
-2. Сгенерировать dense + sparse векторы через BGE-M3
-3. Выполнить prefetch: 2 запроса (dense limit=20, sparse limit=20)
-4. RRF fusion → top 10 результатов
+2. Определить intent: рецепт? свойства растения? общий вопрос?
+3. Сгенерировать dense + sparse векторы через BGE-M3
+4. Поиск по коллекциям:
+   - `recipes`: prefetch dense(20) + sparse(20) → RRF → top 10
+   - `herbalism`: dense search → top 5 (если запрос про свойства/растения)
 5. Если найден точный рецепт (score > threshold) → вернуть как есть
-6. Иначе → вернуть контекст для LLM
+6. Обогатить ответ данными из herbalism (свойства ингредиентов, совместимость)
+7. Вернуть контекст для LLM
 
 ### 5. `indexing` — Индексация в Qdrant
 
@@ -230,8 +334,8 @@ dictionary_terms (
 - Последние действия (лог)
 
 **2. Библиотека книг** (`/books`)
-- Таблица книг с фильтрами по статусу
-- Drag-n-drop загрузка новых PDF
+- Таблица книг с фильтрами по статусу и домену (recipes / herbalism)
+- Drag-n-drop загрузка новых PDF с выбором домена
 - Цветовые индикаторы статуса обработки
 - Кнопки действий: OCR, нормализация, парсинг, индексация
 
@@ -247,12 +351,18 @@ dictionary_terms (
 - Группировка по категориям, книгам, ингредиентам
 - Карточка рецепта с оригиналом и нормализованной версией
 
-**5. Словари** (`/dictionaries`)
+**5. Травник** (`/plants`)
+- Каталог растений с поиском
+- Карточка растения: названия (совр. + старинные + латынь), свойства, совместимость
+- Связь с рецептами: в каких рецептах используется
+- Граф совместимости ингредиентов (визуализация)
+
+**6. Словари** (`/dictionaries`)
 - CRUD для словарных терминов
 - Группировка по категориям (меры, растения, орфография, техники)
 - Импорт/экспорт
 
-**6. Поиск (тестовый стенд)** (`/search`)
+**7. Поиск (тестовый стенд)** (`/search`)
 - Интерфейс тестирования поиска (аналог qdrant-search-tester)
 - Сравнение dense / sparse / hybrid
 - Управление тестами
@@ -418,10 +528,12 @@ historical-recipes/
 │   │   ├── models/            # SQLAlchemy / Pydantic модели
 │   │   │   ├── book.py
 │   │   │   ├── recipe.py
+│   │   │   ├── plant.py
 │   │   │   └── dictionary.py
 │   │   ├── routers/           # API endpoints
 │   │   │   ├── books.py
 │   │   │   ├── recipes.py
+│   │   │   ├── plants.py
 │   │   │   ├── dictionaries.py
 │   │   │   ├── search.py
 │   │   │   └── indexing.py
@@ -450,6 +562,7 @@ historical-recipes/
 │   │   │   ├── page.tsx       # Dashboard
 │   │   │   ├── books/
 │   │   │   ├── recipes/
+│   │   │   ├── plants/
 │   │   │   ├── dictionaries/
 │   │   │   └── search/
 │   │   ├── components/
