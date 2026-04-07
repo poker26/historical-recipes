@@ -33,6 +33,3 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
-    # Доступ к хостовым сервисам (Supabase, Qdrant, MinIO, BGE-M3)
-    extra_hosts:
-      - "host.docker.internal:host-gateway"

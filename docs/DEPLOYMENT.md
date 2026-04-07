@@ -2,14 +2,14 @@
 
 ## Предусловия
 
-На сервере уже развёрнуты и работают:
-- **Supabase** (PostgreSQL) 
+На отдельных серверах уже развёрнуты и работают:
+- **Supabase** (PostgreSQL) — `sup.begemot26.ru`
 - **Qdrant** (векторная БД)
 - **MinIO** (S3 хранилище)
 - **BGE-M3** (эмбеддинги)
 - **n8n** (оркестрация, TG-бот)
 
-Приложение (backend + frontend + nginx) подключается к ним через `host.docker.internal`.
+Приложение (backend + frontend + nginx) подключается к ним по сети через реальные адреса.
 
 ## 1. Клонирование
 
@@ -29,37 +29,35 @@ nano .env
 Заполнить реальные адреса и credentials ваших сервисов:
 
 ```env
-# PostgreSQL — адрес и пароль вашего Supabase
-DATABASE_URL=postgresql+asyncpg://postgres:YOUR_PASSWORD@host.docker.internal:5432/postgres
+# Supabase PostgreSQL
+DATABASE_URL=postgresql+asyncpg://postgres.tenant-id:PASSWORD@sup.begemot26.ru:6543/postgres
 
-# MinIO — credentials вашего инстанса
-MINIO_ENDPOINT=host.docker.internal:9000
+# MinIO
+MINIO_ENDPOINT=minio-host:9000
 MINIO_ACCESS_KEY=...
 MINIO_SECRET_KEY=...
-MINIO_BUCKET=historical-recipes
 
 # Qdrant
-QDRANT_URL=http://host.docker.internal:6333
+QDRANT_URL=http://qdrant-host:6333
 
 # BGE-M3
-BGE_M3_URL=http://host.docker.internal
+BGE_M3_URL=http://bge-host
 BGE_M3_PORT=8100
 
 # OpenRouter
 OPENROUTER_API_KEY=sk-or-v1-...
 
 # n8n
-N8N_BASE_URL=http://host.docker.internal:5678
+N8N_BASE_URL=http://n8n-host:5678
 
-# CORS — ваш домен
+# CORS — домен этого приложения
 CORS_ORIGINS=["http://your-domain.com"]
 
 # Порт (если 80 занят)
 NGINX_HTTP_PORT=80
 ```
 
-> Если сервисы слушают на нестандартных портах или доступны по IP/домену — 
-> замените `host.docker.internal` на реальный адрес.
+Все адреса — реальные домены/IP ваших серверов с сервисами.
 
 ## 3. Сборка и запуск
 
@@ -156,8 +154,7 @@ sudo certbot certonly --standalone -d your-domain.com
 | Проблема | Решение |
 |----------|---------|
 | Backend не стартует | `docker compose logs backend` — проверить строку подключения к БД |
-| `host.docker.internal` не резолвится | Старый Docker — заменить на IP хоста (`172.17.0.1` или реальный IP) |
-| Qdrant connection refused | Проверить что Qdrant слушает на нужном порту и доступен с хоста |
+| Connection refused к сервису | Проверить доступность: `curl http://qdrant-host:6333`, файрвол, порты |
 | MinIO 403 | Проверить MINIO_ACCESS_KEY/SECRET_KEY |
 | OCR медленный | `docker compose exec backend tesseract --version` — проверить установку |
 | BGE-M3 timeout | Увеличить `BGE_M3_TIMEOUT`, проверить: `curl http://host:8100/health` |
