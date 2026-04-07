@@ -22,8 +22,8 @@
 | **Backend API** | FastAPI (Python) | REST API для всех сервисов |
 | **Оркестрация** | n8n | Пайплайны обработки, TG-бот |
 | **LLM Gateway** | OpenRouter | Единая точка доступа ко всем LLM |
-| **Векторная БД** | Qdrant | Гибридный поиск рецептов |
-| **Реляционная БД** | Supabase (PostgreSQL) | Метаданные книг, словари, пользователи |
+| **Векторная БД** | Qdrant (self-hosted) | Гибридный поиск рецептов |
+| **Реляционная БД** | Supabase (self-hosted) | Метаданные книг, словари, пользователи, dashboard |
 | **Хранилище файлов** | MinIO (S3-compatible) | PDF, изображения, промежуточные файлы |
 | **Embeddings** | BGE-M3 (self-hosted) | Dense (1024d) + Sparse векторы |
 | **OCR** | Tesseract + LLM (см. ниже) | Распознавание сканов |
@@ -621,19 +621,105 @@ historical-recipes/
 └── .gitignore
 ```
 
-## Docker Compose (сервисы)
+## Инфраструктура (всё self-hosted на VDS)
+
+Все сервисы размещаются на VDS. Единственный внешний сервис — OpenRouter (API для LLM).
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    VDS Server                        │
+│                                                      │
+│  ┌─ Приложение ──────────────────────────────────┐  │
+│  │  frontend    (Next.js)              :3000      │  │
+│  │  backend     (FastAPI)              :8000      │  │
+│  │  n8n         (Workflows + TG bot)   :5678      │  │
+│  └───────────────────────────────────────────────┘  │
+│                                                      │
+│  ┌─ Данные ──────────────────────────────────────┐  │
+│  │  supabase    (PostgreSQL + Dashboard) :5432    │  │
+│  │  qdrant      (Vector DB)              :6333    │  │
+│  │  minio       (S3 File Storage)        :9000    │  │
+│  └───────────────────────────────────────────────┘  │
+│                                                      │
+│  ┌─ AI/ML ───────────────────────────────────────┐  │
+│  │  bge-m3      (Embeddings)             :8100    │  │
+│  │  tesseract   (OCR, в контейнере backend)       │  │
+│  └───────────────────────────────────────────────┘  │
+│                                                      │
+│  ┌─ Инфра ───────────────────────────────────────┐  │
+│  │  nginx       (Reverse proxy + SSL)    :80/443  │  │
+│  └───────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
+          │
+          │ HTTPS
+          ▼
+  ┌──────────────┐
+  │  OpenRouter   │  ← единственный внешний сервис
+  │  (LLM API)    │
+  └──────────────┘
+```
+
+### Почему self-hosted:
+- **Qdrant** — данных немного, не нужен облачный кластер. Полный контроль, нет лимитов
+- **Supabase** — полноценный PostgreSQL + веб-dashboard для просмотра данных, без облачных лимитов (500MB / 50k rows)
+- **MinIO** — файлы PDF могут быть большими, хранение на своём диске дешевле
+- **BGE-M3** — уже развёрнут и работает
+- **Tesseract** — ставится пакетом в Docker-образ backend, не требует отдельного сервиса
+
+### Docker Compose
 
 ```yaml
 services:
-  frontend:     # Next.js :3000
-  backend:      # FastAPI :8000
-  # Внешние (уже развёрнуты на VDS):
-  # n8n:        :5678
-  # supabase:   :5432
-  # qdrant:     :6333
-  # minio:      :9000
-  # bge-m3:     :8100
-  # nginx:      :80/:443
+  # === Приложение ===
+  frontend:
+    build: ./frontend
+    ports: ["3000:3000"]
+    depends_on: [backend]
+
+  backend:
+    build: ./backend          # включает Tesseract + OpenCV
+    ports: ["8000:8000"]
+    depends_on: [supabase-db, qdrant, minio, bge-m3]
+    env_file: .env
+
+  # === Данные ===
+  supabase-db:
+    image: supabase/postgres
+    ports: ["5432:5432"]
+    volumes: ["supabase-data:/var/lib/postgresql/data"]
+
+  supabase-studio:
+    image: supabase/studio
+    ports: ["3001:3000"]       # веб-панель для просмотра БД
+    depends_on: [supabase-db]
+
+  qdrant:
+    image: qdrant/qdrant
+    ports: ["6333:6333"]
+    volumes: ["qdrant-data:/qdrant/storage"]
+
+  minio:
+    image: minio/minio
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["minio-data:/data"]
+    command: server /data --console-address ":9001"
+
+  # === AI/ML ===
+  bge-m3:
+    image: # ваш текущий образ BGE-M3
+    ports: ["8100:8100"]
+
+  # === Инфра ===
+  nginx:
+    image: nginx:alpine
+    ports: ["80:80", "443:443"]
+    volumes: ["./nginx/conf.d:/etc/nginx/conf.d", "./certbot:/etc/letsencrypt"]
+    depends_on: [frontend, backend]
+
+volumes:
+  supabase-data:
+  qdrant-data:
+  minio-data:
 ```
 
 ## Приоритеты реализации
