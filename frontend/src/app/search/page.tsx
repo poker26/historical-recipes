@@ -96,7 +96,7 @@ function ResultCard({ result, rank }: { result: SearchResult; rank: number }) {
           <span style={{ fontSize: 20, fontWeight: 700, color: "var(--text-muted)" }}>#{rank}</span>
           <div>
             <div style={{ fontWeight: 600, fontSize: 16 }}>
-              {(payload.recipe_name as string) || (payload.name as string) || "—"}
+              {String(payload.recipe_name || payload.name || "—")}
             </div>
             <div style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", gap: 8 }}>
               <span className={`badge ${result.collection === "recipes" ? "badge-blue" : "badge-green"}`}>
@@ -115,9 +115,9 @@ function ResultCard({ result, rank }: { result: SearchResult; rank: number }) {
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>score</div>
         </div>
       </div>
-      {expanded && payload.content && (
+      {expanded && payload.content ? (
         <pre style={{ marginTop: 12, fontSize: 13, whiteSpace: "pre-wrap", background: "var(--bg)", padding: 12, borderRadius: 6, maxHeight: 300, overflow: "auto" }}>
-          {payload.content as string}
+          {String(payload.content)}
         </pre>
       )}
     </div>
