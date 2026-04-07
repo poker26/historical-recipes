@@ -1,247 +1,164 @@
 # Развёртывание на сервере
 
-## Требования
+## Предусловия
 
-- **VDS/VPS**: Ubuntu 22.04+, минимум 4 GB RAM, 40 GB SSD
-- **Docker**: 24.0+ и Docker Compose v2
-- **Домен** (опционально): для HTTPS через Let's Encrypt
+На сервере уже развёрнуты и работают:
+- **Supabase** (PostgreSQL) 
+- **Qdrant** (векторная БД)
+- **MinIO** (S3 хранилище)
+- **BGE-M3** (эмбеддинги)
+- **n8n** (оркестрация, TG-бот)
 
-## 1. Подготовка сервера
+Приложение (backend + frontend + nginx) подключается к ним через `host.docker.internal`.
 
-```bash
-# Обновление системы
-sudo apt update && sudo apt upgrade -y
-
-# Docker (если не установлен)
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER
-newgrp docker
-
-# Docker Compose plugin (если не установлен)
-sudo apt install docker-compose-plugin -y
-
-# Проверка
-docker --version
-docker compose version
-```
-
-## 2. Клонирование и настройка
+## 1. Клонирование
 
 ```bash
-# Клонирование
 git clone https://github.com/poker26/historical-recipes.git
 cd historical-recipes
 git checkout claude/restructure-project-dLnyG
-
-# Создание .env из примера
-cp .env.example .env
 ```
 
-## 3. Настройка .env
-
-Обязательно измените следующие значения:
+## 2. Настройка .env
 
 ```bash
+cp .env.example .env
 nano .env
 ```
 
+Заполнить реальные адреса и credentials ваших сервисов:
+
 ```env
-# ОБЯЗАТЕЛЬНО — сменить пароли
-POSTGRES_PASSWORD=<сгенерировать: openssl rand -hex 24>
-MINIO_ACCESS_KEY=<сгенерировать: openssl rand -hex 16>
-MINIO_SECRET_KEY=<сгенерировать: openssl rand -hex 24>
+# PostgreSQL — адрес и пароль вашего Supabase
+DATABASE_URL=postgresql+asyncpg://postgres:YOUR_PASSWORD@host.docker.internal:5432/postgres
 
-# ОБЯЗАТЕЛЬНО — ваш ключ OpenRouter
-OPENROUTER_API_KEY=sk-or-v1-...
+# MinIO — credentials вашего инстанса
+MINIO_ENDPOINT=host.docker.internal:9000
+MINIO_ACCESS_KEY=...
+MINIO_SECRET_KEY=...
+MINIO_BUCKET=historical-recipes
 
-# BGE-M3 — адрес вашего сервиса эмбеддингов
-BGE_M3_URL=http://172.17.0.1
+# Qdrant
+QDRANT_URL=http://host.docker.internal:6333
+
+# BGE-M3
+BGE_M3_URL=http://host.docker.internal
 BGE_M3_PORT=8100
 
-# CORS — домен вашего сервера
+# OpenRouter
+OPENROUTER_API_KEY=sk-or-v1-...
+
+# n8n
+N8N_BASE_URL=http://host.docker.internal:5678
+
+# CORS — ваш домен
 CORS_ORIGINS=["http://your-domain.com"]
 
-# Frontend — URL API для браузера
-NEXT_PUBLIC_API_URL=/api
-
-# Порт nginx (по умолчанию 80)
+# Порт (если 80 занят)
 NGINX_HTTP_PORT=80
 ```
 
-## 4. BGE-M3 (эмбеддинги)
+> Если сервисы слушают на нестандартных портах или доступны по IP/домену — 
+> замените `host.docker.internal` на реальный адрес.
 
-BGE-M3 запускается отдельно, т.к. требует GPU или много RAM:
-
-```bash
-# Вариант 1: GPU (рекомендуется)
-docker run -d --name bge-m3 \
-  --gpus all \
-  -p 8100:8100 \
-  ghcr.io/huggingface/text-embeddings-inference:1.5 \
-  --model-id BAAI/bge-m3 \
-  --port 8100
-
-# Вариант 2: CPU (медленнее, но работает)
-docker run -d --name bge-m3 \
-  -p 8100:8100 \
-  ghcr.io/huggingface/text-embeddings-inference:cpu-1.5 \
-  --model-id BAAI/bge-m3 \
-  --port 8100
-```
-
-Проверка:
-```bash
-curl http://localhost:8100/embed \
-  -X POST -H "Content-Type: application/json" \
-  -d '{"inputs": "тест"}'
-```
-
-## 5. Запуск
+## 3. Сборка и запуск
 
 ```bash
-# Сборка и запуск всех сервисов
 docker compose up -d --build
-
-# Просмотр логов
-docker compose logs -f
-
-# Только backend логи
-docker compose logs -f backend
 ```
 
-## 6. Миграция базы данных
+Будут собраны и запущены 3 контейнера:
+- **nginx** — reverse proxy (порт 80)
+- **backend** — FastAPI + Tesseract OCR
+- **frontend** — Next.js
+
+## 4. Миграция базы данных
 
 ```bash
-# Выполнить миграции Alembic
 docker compose exec backend alembic upgrade head
 ```
 
-## 7. Проверка
+Это создаст все таблицы в вашей Supabase PostgreSQL.
+
+## 5. Проверка
 
 ```bash
 # Health check
 curl http://localhost/health
 
-# API доступен
+# API
 curl http://localhost/api/books/
 
-# Qdrant
-curl http://localhost:6333/collections
-
-# MinIO (через nginx)
-# Открыть http://your-server/minio/ в браузере
+# Подключение к Qdrant
+curl http://localhost/api/search/ -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"query": "тест", "limit": 1}'
 ```
 
-## 8. HTTPS (опционально, рекомендуется)
+Откройте `http://your-server` в браузере — должен показаться Dashboard.
 
-### Вариант A: Certbot + nginx на хосте
+## 6. Создание бакета MinIO
 
-```bash
-# Установка certbot
-sudo apt install certbot -y
+Если бакет `historical-recipes` ещё не создан — backend создаст его автоматически при первом аплоаде. Либо создайте вручную через MinIO Console.
 
-# Получение сертификата (nginx должен быть остановлен или на другом порту)
-sudo certbot certonly --standalone -d your-domain.com
+## 7. Импорт воркфлоу n8n
 
-# Добавить в nginx/nginx.conf SSL server block
-# и смонтировать сертификаты в docker-compose.yml
-```
+Файлы воркфлоу находятся в `docs/n8n-workflows/`. Импортируйте через UI n8n (Settings → Import).
 
-### Вариант B: Cloudflare Proxy
-
-Если домен на Cloudflare — включить проксирование (оранжевое облако), 
-Cloudflare обеспечит HTTPS автоматически. Сервер работает на HTTP.
-
-### Вариант C: Traefik вместо nginx
-
-Для автоматического HTTPS можно заменить nginx на Traefik с Let's Encrypt.
-Это более сложная настройка, но полностью автоматизирует сертификаты.
-
-## 9. n8n (Telegram-бот и пайплайны)
-
-n8n запускается отдельно (у него своя экосистема):
-
-```bash
-docker run -d --name n8n \
-  -p 5678:5678 \
-  -v n8n_data:/home/node/.n8n \
-  -e N8N_BASIC_AUTH_ACTIVE=true \
-  -e N8N_BASIC_AUTH_USER=admin \
-  -e N8N_BASIC_AUTH_PASSWORD=<ваш-пароль> \
-  -e WEBHOOK_URL=https://your-domain.com/n8n/ \
-  n8nio/n8n:latest
-```
-
-Импорт воркфлоу:
-```bash
-# Файлы воркфлоу находятся в docs/n8n-workflows/
-# Импортировать через UI n8n: Settings → Import from file
-```
-
-В воркфлоу обновить:
-- URL API бэкенда: `http://172.17.0.1:8000` (или внутренний адрес)
+В воркфлоу обновите:
+- URL бэкенда: `http://host-ip:80/api` или внутренний адрес
 - Токен Telegram-бота
 - Ключ OpenRouter
+
+---
 
 ## Управление
 
 ```bash
-# Остановка
-docker compose down
+# Логи
+docker compose logs -f
+docker compose logs -f backend
 
-# Остановка с удалением данных (ОСТОРОЖНО!)
-docker compose down -v
-
-# Перезапуск одного сервиса
+# Перезапуск
 docker compose restart backend
 
-# Пересборка после изменений кода
-docker compose up -d --build backend frontend
+# Пересборка после обновления кода
+git pull
+docker compose up -d --build
 
-# Обновление образов
-docker compose pull
-docker compose up -d
+# Остановка
+docker compose down
 ```
 
-## Бэкапы
+## Обновление
 
 ```bash
-# PostgreSQL
-docker compose exec supabase-db pg_dump -U postgres postgres > backup_$(date +%Y%m%d).sql
-
-# Восстановление
-cat backup_20240101.sql | docker compose exec -T supabase-db psql -U postgres postgres
-
-# MinIO (файлы)
-docker run --rm -v minio-data:/data -v $(pwd)/backups:/backup \
-  alpine tar czf /backup/minio_$(date +%Y%m%d).tar.gz /data
-
-# Qdrant (снапшоты)
-curl -X POST http://localhost:6333/collections/recipes/snapshots
-curl -X POST http://localhost:6333/collections/herbalism/snapshots
+cd historical-recipes
+git pull origin claude/restructure-project-dLnyG
+docker compose up -d --build
+docker compose exec backend alembic upgrade head
 ```
 
-## Мониторинг
+## HTTPS
 
+### Вариант A: Cloudflare Proxy
+Включить проксирование (оранжевое облако) — Cloudflare обеспечит HTTPS автоматически.
+
+### Вариант B: Certbot
 ```bash
-# Статус контейнеров
-docker compose ps
-
-# Использование ресурсов
-docker stats
-
-# Диск
-df -h
-docker system df
+sudo apt install certbot -y
+sudo certbot certonly --standalone -d your-domain.com
 ```
+Затем добавить SSL server block в `nginx/nginx.conf` и смонтировать сертификаты.
 
 ## Решение проблем
 
 | Проблема | Решение |
 |----------|---------|
-| Backend не стартует | `docker compose logs backend` — проверить подключение к БД |
-| Qdrant OOM | Увеличить RAM или добавить `--storage-snapshot-path` для offload |
-| MinIO 403 | Проверить MINIO_ACCESS_KEY/SECRET_KEY в .env |
-| OCR медленный | Проверить что Tesseract установлен в контейнере: `docker compose exec backend tesseract --version` |
-| BGE-M3 timeout | Увеличить BGE_M3_TIMEOUT, проверить доступность: `curl http://172.17.0.1:8100/health` |
-| Frontend белый экран | Проверить NEXT_PUBLIC_API_URL, посмотреть консоль браузера |
+| Backend не стартует | `docker compose logs backend` — проверить строку подключения к БД |
+| `host.docker.internal` не резолвится | Старый Docker — заменить на IP хоста (`172.17.0.1` или реальный IP) |
+| Qdrant connection refused | Проверить что Qdrant слушает на нужном порту и доступен с хоста |
+| MinIO 403 | Проверить MINIO_ACCESS_KEY/SECRET_KEY |
+| OCR медленный | `docker compose exec backend tesseract --version` — проверить установку |
+| BGE-M3 timeout | Увеличить `BGE_M3_TIMEOUT`, проверить: `curl http://host:8100/health` |
+| Frontend белый экран | F12 → Console, проверить что `/api/` отвечает |

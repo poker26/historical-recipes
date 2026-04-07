@@ -26,13 +26,6 @@ services:
   backend:
     build: ./backend
     env_file: .env
-    depends_on:
-      supabase-db:
-        condition: service_healthy
-      qdrant:
-        condition: service_started
-      minio:
-        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s
@@ -40,57 +33,6 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
-
-  # === Data ===
-  supabase-db:
-    image: supabase/postgres:15.6.1.143
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: postgres
-    volumes:
-      - supabase-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  supabase-studio:
-    image: supabase/studio:20241202-71e0f73
-    environment:
-      STUDIO_PG_META_URL: http://supabase-meta:8080
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      SUPABASE_URL: http://supabase-db:5432
-    depends_on:
-      supabase-db:
-        condition: service_healthy
-    restart: unless-stopped
-
-  qdrant:
-    image: qdrant/qdrant:v1.13.2
-    volumes:
-      - qdrant-data:/qdrant/storage
-    environment:
-      - QDRANT__SERVICE__GRPC_PORT=6334
-    restart: unless-stopped
-
-  minio:
-    image: minio/minio:latest
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
-    volumes:
-      - minio-data:/data
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-volumes:
-  supabase-data:
-  qdrant-data:
-  minio-data:
+    # Доступ к хостовым сервисам (Supabase, Qdrant, MinIO, BGE-M3)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
