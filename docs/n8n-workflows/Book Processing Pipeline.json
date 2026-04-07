@@ -1,0 +1,354 @@
+{
+  "name": "Book Processing Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "book-process",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "id": "a1000001-0000-0000-0000-000000000001",
+      "name": "Webhook",
+      "webhookId": "book-process"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "var-book-id",
+              "name": "book_id",
+              "value": "={{ $json.body.book_id }}",
+              "type": "string"
+            },
+            {
+              "id": "var-api-base",
+              "name": "api_base",
+              "value": "http://BACKEND_HOST:8126/api/pipeline",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0],
+      "id": "a1000001-0000-0000-0000-000000000002",
+      "name": "Set Variables"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.api_base }}/{{ $json.book_id }}/split",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 0],
+      "id": "a1000001-0000-0000-0000-000000000003",
+      "name": "Split PDF"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter only image pages that need OCR\nconst splitResult = $json;\nconst bookId = $('Set Variables').first().json.book_id;\nconst apiBase = $('Set Variables').first().json.api_base;\n\nconst imagePages = splitResult.pages.filter(p => p.page_type === 'image');\n\nconsole.log(`Total pages: ${splitResult.total_pages}`);\nconsole.log(`Text pages (already extracted): ${splitResult.text_pages}`);\nconsole.log(`Image pages (need OCR): ${splitResult.image_pages}`);\n\nreturn imagePages.map(p => ({\n  json: {\n    book_id: bookId,\n    api_base: apiBase,\n    page_number: p.page_number,\n    page_type: p.page_type\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0],
+      "id": "a1000001-0000-0000-0000-000000000004",
+      "name": "Filter Image Pages"
+    },
+    {
+      "parameters": {
+        "options": {
+          "batchSize": 1
+        }
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [880, 0],
+      "id": "a1000001-0000-0000-0000-000000000005",
+      "name": "Loop Pages"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.api_base }}/{{ $json.book_id }}/pages/{{ $json.page_number }}/preprocess",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1100, 0],
+      "id": "a1000001-0000-0000-0000-000000000006",
+      "name": "Preprocess Page"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Loop Pages').first().json.api_base }}/{{ $('Loop Pages').first().json.book_id }}/pages/{{ $('Loop Pages').first().json.page_number }}/ocr",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1320, 0],
+      "id": "a1000001-0000-0000-0000-000000000007",
+      "name": "OCR Page"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log OCR result\nconst result = $json;\nconst page = $('Loop Pages').first().json;\nconsole.log(`Page ${page.page_number}: confidence=${result.confidence}%, method=${result.method}, length=${result.text_length}`);\nreturn [{ json: { ...page, ocr_result: result } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 0],
+      "id": "a1000001-0000-0000-0000-000000000008",
+      "name": "Log OCR Result"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Set Variables').first().json.api_base }}/{{ $('Set Variables').first().json.book_id }}/postprocess",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1100, 300],
+      "id": "a1000001-0000-0000-0000-000000000009",
+      "name": "Postprocess"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Set Variables').first().json.api_base }}/{{ $('Set Variables').first().json.book_id }}/normalize",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1320, 300],
+      "id": "a1000001-0000-0000-0000-000000000010",
+      "name": "Normalize"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Set Variables').first().json.api_base }}/{{ $('Set Variables').first().json.book_id }}/parse",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1540, 300],
+      "id": "a1000001-0000-0000-0000-000000000011",
+      "name": "Parse Recipes"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Summary of the pipeline run\nconst bookId = $('Set Variables').first().json.book_id;\nconst splitResult = $('Split PDF').first().json;\nconst parseResult = $json;\n\nconst summary = {\n  book_id: bookId,\n  status: 'completed',\n  total_pages: splitResult.total_pages,\n  text_pages: splitResult.text_pages,\n  image_pages: splitResult.image_pages,\n  chunks_count: $('Postprocess').first().json.chunks_count || 0,\n  normalized_chunks: $('Normalize').first().json.normalized_chunks || 0,\n  recipes_count: parseResult.recipes_count || 0,\n  completed_at: new Date().toISOString()\n};\n\nconsole.log('=== Pipeline Complete ===');\nconsole.log(JSON.stringify(summary, null, 2));\n\nreturn [{ json: summary }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 300],
+      "id": "a1000001-0000-0000-0000-000000000012",
+      "name": "Pipeline Summary"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1980, 300],
+      "id": "a1000001-0000-0000-0000-000000000013",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check if there are image pages to process\nconst items = $input.all();\nif (items.length === 0) {\n  // No image pages — skip OCR loop, go straight to postprocess\n  return [{ json: { skip_ocr: true, book_id: $('Set Variables').first().json.book_id, api_base: $('Set Variables').first().json.api_base } }];\n}\nreturn items;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300],
+      "id": "a1000001-0000-0000-0000-000000000014",
+      "name": "Check Has Image Pages"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Split PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split PDF": {
+      "main": [
+        [
+          {
+            "node": "Filter Image Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Image Pages": {
+      "main": [
+        [
+          {
+            "node": "Loop Pages",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Has Image Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Pages": {
+      "main": [
+        [
+          {
+            "node": "Postprocess",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preprocess Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preprocess Page": {
+      "main": [
+        [
+          {
+            "node": "OCR Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OCR Page": {
+      "main": [
+        [
+          {
+            "node": "Log OCR Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log OCR Result": {
+      "main": [
+        [
+          {
+            "node": "Loop Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Has Image Pages": {
+      "main": [
+        [
+          {
+            "node": "Postprocess",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postprocess": {
+      "main": [
+        [
+          {
+            "node": "Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize": {
+      "main": [
+        [
+          {
+            "node": "Parse Recipes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Recipes": {
+      "main": [
+        [
+          {
+            "node": "Pipeline Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pipeline Summary": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
