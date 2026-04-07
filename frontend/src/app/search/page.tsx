@@ -119,7 +119,7 @@ function ResultCard({ result, rank }: { result: SearchResult; rank: number }) {
         <pre style={{ marginTop: 12, fontSize: 13, whiteSpace: "pre-wrap", background: "var(--bg)", padding: 12, borderRadius: 6, maxHeight: 300, overflow: "auto" }}>
           {String(payload.content)}
         </pre>
-      )}
+      ) : null}
     </div>
   );
 }
