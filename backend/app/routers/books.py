@@ -1,32 +1,68 @@
 import uuid
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
+from app.models.book import Book, BookPage, BookChunk, ProcessingLog
+from app.models.recipe import Recipe
+from app.schemas.book import (
+    BookOut, BookDetailOut, BookPageOut, BookChunkOut, ChunkUpdate, ProcessingLogOut,
+)
+from app.services import minio as minio_svc
 
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("/", response_model=list[BookOut])
 async def list_books(
-    status: str | None = None,
-    domain: str | None = None,
+    status: str | None = Query(None),
+    domain: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     """List books with optional filters by status and domain."""
-    # TODO: implement
-    return []
+    query = select(Book).order_by(Book.created_at.desc())
+    if status:
+        query = query.where(Book.status == status)
+    if domain:
+        query = query.where(Book.domain == domain)
+    result = await db.execute(query)
+    return result.scalars().all()
 
 
-@router.get("/{book_id}")
+@router.get("/{book_id}", response_model=BookDetailOut)
 async def get_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Get book details with processing history."""
-    # TODO: implement
-    return {}
+    """Get book details with processing history and counts."""
+    result = await db.execute(
+        select(Book).options(selectinload(Book.logs)).where(Book.id == book_id)
+    )
+    book = result.scalar_one_or_none()
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    # Get counts
+    pages_count = await db.scalar(
+        select(func.count()).select_from(BookPage).where(BookPage.book_id == book_id)
+    )
+    chunks_count = await db.scalar(
+        select(func.count()).select_from(BookChunk).where(BookChunk.book_id == book_id)
+    )
+    recipes_count = await db.scalar(
+        select(func.count()).select_from(Recipe).where(Recipe.book_id == book_id)
+    )
+
+    return BookDetailOut(
+        **BookOut.model_validate(book).model_dump(),
+        pages_count=pages_count or 0,
+        chunks_count=chunks_count or 0,
+        recipes_count=recipes_count or 0,
+        logs=[ProcessingLogOut.model_validate(log) for log in book.logs],
+    )
 
 
-@router.post("/upload")
+@router.post("/upload", response_model=BookOut)
 async def upload_book(
     file: UploadFile = File(...),
     title: str = Form(...),
@@ -37,44 +73,192 @@ async def upload_book(
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a PDF book to MinIO and create a book record."""
-    # TODO: implement
-    return {}
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    # Detect PDF type (image vs text) by checking for text extraction capability
+    pdf_type = _detect_pdf_type(content)
+
+    # Create book record first to get ID
+    book = Book(
+        title=title,
+        domain=domain,
+        language=language,
+        author=author,
+        year=year,
+        pdf_type=pdf_type,
+        status="uploaded",
+    )
+    db.add(book)
+    await db.flush()
+
+    # Upload to MinIO: books/{id}/original.pdf
+    file_path = f"books/{book.id}/original.pdf"
+    minio_svc.upload_file(content, file_path, content_type="application/pdf")
+    book.file_path = file_path
+
+    # Log
+    log = ProcessingLog(book_id=book.id, step="upload", status="completed", details={"size": len(content), "pdf_type": pdf_type})
+    db.add(log)
+
+    await db.commit()
+    await db.refresh(book)
+    return book
+
+
+@router.patch("/{book_id}", response_model=BookOut)
+async def update_book(
+    book_id: uuid.UUID,
+    title: str | None = None,
+    author: str | None = None,
+    year: int | None = None,
+    domain: str | None = None,
+    language: str | None = None,
+    status: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update book metadata."""
+    result = await db.execute(select(Book).where(Book.id == book_id))
+    book = result.scalar_one_or_none()
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    for field, value in [("title", title), ("author", author), ("year", year),
+                         ("domain", domain), ("language", language), ("status", status)]:
+        if value is not None:
+            setattr(book, field, value)
+
+    await db.commit()
+    await db.refresh(book)
+    return book
+
+
+@router.delete("/{book_id}")
+async def delete_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Delete a book and its files from MinIO."""
+    result = await db.execute(select(Book).where(Book.id == book_id))
+    book = result.scalar_one_or_none()
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    # Delete files from MinIO
+    files = minio_svc.list_files(f"books/{book_id}/")
+    for f in files:
+        minio_svc.delete_file(f)
+
+    await db.delete(book)
+    await db.commit()
+    return {"status": "deleted"}
 
 
 @router.post("/{book_id}/process")
 async def process_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Trigger the full processing pipeline via n8n webhook."""
-    # TODO: implement
-    return {}
+    result = await db.execute(select(Book).where(Book.id == book_id))
+    book = result.scalar_one_or_none()
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    # TODO: trigger n8n webhook
+    # async with httpx.AsyncClient() as client:
+    #     await client.post(f"{settings.n8n_base_url}/webhook/book-process", json={"book_id": str(book_id)})
+
+    book.status = "processing"
+    log = ProcessingLog(book_id=book_id, step="pipeline", status="started")
+    db.add(log)
+    await db.commit()
+
+    return {"status": "processing", "book_id": str(book_id)}
 
 
-@router.post("/{book_id}/preprocess")
-async def preprocess_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Run pre-OCR image processing (binarize, deskew, denoise)."""
-    # TODO: implement
-    return {}
-
-
-@router.get("/{book_id}/pages")
-async def list_pages(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+@router.get("/{book_id}/pages", response_model=list[BookPageOut])
+async def list_pages(
+    book_id: uuid.UUID,
+    needs_review: bool | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
     """List pages with OCR confidence scores."""
-    # TODO: implement
-    return []
+    query = select(BookPage).where(BookPage.book_id == book_id).order_by(BookPage.page_number)
+    if needs_review is not None:
+        query = query.where(BookPage.needs_review == needs_review)
+    result = await db.execute(query)
+    return result.scalars().all()
 
 
-@router.get("/{book_id}/chunks")
-async def list_chunks(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+@router.get("/{book_id}/chunks", response_model=list[BookChunkOut])
+async def list_chunks(
+    book_id: uuid.UUID,
+    chunk_type: str | None = Query(None),
+    status: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
     """List recognized text chunks."""
-    # TODO: implement
-    return []
+    query = select(BookChunk).where(BookChunk.book_id == book_id).order_by(BookChunk.chunk_index)
+    if chunk_type:
+        query = query.where(BookChunk.chunk_type == chunk_type)
+    if status:
+        query = query.where(BookChunk.status == status)
+    result = await db.execute(query)
+    return result.scalars().all()
 
 
-@router.patch("/{book_id}/chunks/{chunk_id}")
+@router.patch("/{book_id}/chunks/{chunk_id}", response_model=BookChunkOut)
 async def update_chunk(
     book_id: uuid.UUID,
     chunk_id: uuid.UUID,
+    body: ChunkUpdate,
     db: AsyncSession = Depends(get_db),
 ):
     """Manually edit a chunk (normalized_text, chunk_type, etc)."""
-    # TODO: implement
-    return {}
+    result = await db.execute(
+        select(BookChunk).where(BookChunk.id == chunk_id, BookChunk.book_id == book_id)
+    )
+    chunk = result.scalar_one_or_none()
+    if not chunk:
+        raise HTTPException(status_code=404, detail="Chunk not found")
+
+    update_data = body.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(chunk, field, value)
+
+    await db.commit()
+    await db.refresh(chunk)
+    return chunk
+
+
+@router.get("/{book_id}/logs", response_model=list[ProcessingLogOut])
+async def list_logs(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Get processing history for a book."""
+    result = await db.execute(
+        select(ProcessingLog)
+        .where(ProcessingLog.book_id == book_id)
+        .order_by(ProcessingLog.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+def _detect_pdf_type(content: bytes) -> str:
+    """Detect if PDF contains text or only images."""
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=content, filetype="pdf")
+        text_pages = 0
+        total_pages = len(doc)
+        for page in doc:
+            text = page.get_text().strip()
+            if len(text) > 50:
+                text_pages += 1
+        doc.close()
+
+        if text_pages == 0:
+            return "image"
+        elif text_pages == total_pages:
+            return "text"
+        else:
+            return "mixed"
+    except Exception:
+        return "unknown"
