@@ -28,7 +28,7 @@
             {
               "id": "var-api-base",
               "name": "api_base",
-              "value": "http://BACKEND_HOST:8126/api/pipeline",
+              "value": "http://46.173.19.68:8126/api/pipeline",
               "type": "string"
             }
           ]
