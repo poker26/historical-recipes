@@ -101,6 +101,9 @@ def parse_recipes(text: str) -> list[ParsedRecipe]:
     for chunk in chunks:
         name = chunk.get("title", "").strip()
         if not name:
+            # Only try to extract name if this chunk came from a detected boundary
+            if chunk.get("pattern") in (None, "", "none"):
+                continue
             # Try to extract name from first line
             first_line = chunk["text"].split("\n")[0].strip()
             # Remove numbering

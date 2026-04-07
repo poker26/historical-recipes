@@ -20,9 +20,9 @@ ORTHO_REPLACEMENTS = {
     "Ѣ": "Е",
     "ѳ": "ф",
     "Ѳ": "Ф",
-    "і": "и",
-    "І": "И",
-    # ять in various positions
+    "і": "и",  # Cyrillic і (U+0456)
+    "І": "И",  # Cyrillic І (U+0406)
+    "i": "и",  # Latin i used as і in some OCR outputs
 }
 
 
@@ -38,8 +38,8 @@ def normalize_orthography(text: str) -> str:
         result = result.replace(old, new)
 
     # Remove trailing ъ (hard sign at end of words)
-    # But keep ъ in the middle of words (e.g., "объём")
-    result = re.sub(r"ъ(?=\s|[.,;:!?)\]»\"]|$)", "", result)
+    # But keep ъ when followed by a vowel (e.g., "объём", "въездъ")
+    result = re.sub(r"ъ(?=[^а-яА-ЯёЁ]|$)", "", result)
 
     return result
 
