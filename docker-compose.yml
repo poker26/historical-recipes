@@ -1,71 +1,94 @@
 services:
+  # === Reverse Proxy ===
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
   # === Application ===
   frontend:
     build: ./frontend
-    ports:
-      - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-/api}
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
   backend:
     build: ./backend
-    ports:
-      - "8000:8000"
     env_file: .env
     depends_on:
-      - supabase-db
-      - qdrant
-      - minio
+      supabase-db:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
 
   # === Data ===
   supabase-db:
     image: supabase/postgres:15.6.1.143
-    ports:
-      - "5432:5432"
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: postgres
     volumes:
       - supabase-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
   supabase-studio:
     image: supabase/studio:20241202-71e0f73
-    ports:
-      - "3001:3000"
     environment:
       STUDIO_PG_META_URL: http://supabase-meta:8080
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       SUPABASE_URL: http://supabase-db:5432
     depends_on:
-      - supabase-db
+      supabase-db:
+        condition: service_healthy
+    restart: unless-stopped
 
   qdrant:
     image: qdrant/qdrant:v1.13.2
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     volumes:
       - qdrant-data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    restart: unless-stopped
 
   minio:
     image: minio/minio:latest
-    ports:
-      - "9000:9000"
-      - "9001:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
     volumes:
       - minio-data:/data
     command: server /data --console-address ":9001"
-
-  # === AI/ML ===
-  # bge-m3: use your existing BGE-M3 deployment
-  #   image: your-bge-m3-image
-  #   ports:
-  #     - "8100:8100"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
   supabase-data:
