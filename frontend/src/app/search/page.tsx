@@ -102,9 +102,9 @@ function ResultCard({ result, rank }: { result: SearchResult; rank: number }) {
               <span className={`badge ${result.collection === "recipes" ? "badge-blue" : "badge-green"}`}>
                 {result.collection}
               </span>
-              {payload.category && <span className="badge badge-gray">{payload.category as string}</span>}
-              {payload.year && <span>Year: {payload.year as number}</span>}
-              {payload.book_title && <span>Book: {payload.book_title as string}</span>}
+              {payload.category ? <span className="badge badge-gray">{String(payload.category)}</span> : null}
+              {payload.year ? <span>Year: {String(payload.year)}</span> : null}
+              {payload.book_title ? <span>Book: {String(payload.book_title)}</span> : null}
             </div>
           </div>
         </div>
