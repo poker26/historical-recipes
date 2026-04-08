@@ -7,13 +7,13 @@ import { api, WizardStatus, WizardSection, WizardRecipe } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
 const STEPS = [
-  { num: 1, label: "Classify", key: "classify" },
-  { num: 2, label: "Extract Text", key: "extract" },
-  { num: 3, label: "Translate", key: "translate" },
-  { num: 4, label: "Analyze Structure", key: "analyze" },
-  { num: 5, label: "Extract Recipes", key: "recipes" },
-  { num: 6, label: "Ingredients", key: "ingredients" },
-  { num: 7, label: "Index", key: "index" },
+  { num: 1, label: "Classify", key: "classify", action: "Classifying PDF..." },
+  { num: 2, label: "Extract Text", key: "extract", action: "Extracting text..." },
+  { num: 3, label: "Translate", key: "translate", action: "Translating..." },
+  { num: 4, label: "Analyze", key: "analyze", action: "LLM analyzing structure..." },
+  { num: 5, label: "Recipes", key: "recipes", action: "LLM extracting recipes..." },
+  { num: 6, label: "Ingredients", key: "ingredients", action: "Matching ingredients..." },
+  { num: 7, label: "Index", key: "index", action: "Indexing to Qdrant..." },
 ];
 
 const SECTION_TYPES = [
@@ -38,8 +38,9 @@ export default function WizardPage() {
   const [ws, setWs] = useState<WizardStatus | null>(null);
   const [activeStep, setActiveStep] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [running, setRunning] = useState(false);
+  const [runningStep, setRunningStep] = useState<string | null>(null); // key of currently running step
   const [error, setError] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
 
   // Step-specific state
   const [classifyResult, setClassifyResult] = useState<Record<string, unknown> | null>(null);
@@ -53,19 +54,30 @@ export default function WizardPage() {
     try {
       const status = await api.wizardStatus(bookId);
       setWs(status);
-      setActiveStep(status.wizard_step || 1);
+      if (!runningStep) {
+        setActiveStep(status.wizard_step || 1);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, [bookId]);
+  }, [bookId, runningStep]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const runStep = async (fn: () => Promise<unknown>) => {
-    setRunning(true);
+  // Timer for elapsed seconds while running
+  useEffect(() => {
+    if (!runningStep) { setElapsed(0); return; }
+    const start = Date.now();
+    const interval = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(interval);
+  }, [runningStep]);
+
+  const runStep = async (stepKey: string, fn: () => Promise<unknown>) => {
+    setRunningStep(stepKey);
     setError(null);
+    setElapsed(0);
     try {
       const result = await fn();
       await refresh();
@@ -74,45 +86,48 @@ export default function WizardPage() {
       setError(String(e));
       return null;
     } finally {
-      setRunning(false);
+      setRunningStep(null);
     }
   };
 
+  const busy = runningStep !== null;
+  const runningLabel = runningStep ? STEPS.find(s => s.key === runningStep)?.action || "Working..." : null;
+
   // Step handlers
-  const handleClassify = () => runStep(async () => {
+  const handleClassify = () => runStep("classify", async () => {
     const r = await api.wizardClassify(bookId);
     setClassifyResult(r as unknown as Record<string, unknown>);
   });
 
-  const handleExtract = () => runStep(async () => {
+  const handleExtract = () => runStep("extract", async () => {
     const r = await api.wizardExtract(bookId);
     setExtractResult(r as unknown as Record<string, unknown>);
   });
 
-  const handleCleanup = () => runStep(async () => {
+  const handleCleanup = () => runStep("cleanup", async () => {
     await api.wizardCleanup(bookId);
   });
 
-  const handleTranslate = () => runStep(async () => {
+  const handleTranslate = () => runStep("translate", async () => {
     await api.wizardTranslate(bookId);
   });
 
-  const handleAnalyze = () => runStep(async () => {
+  const handleAnalyze = () => runStep("analyze", async () => {
     const r = await api.wizardAnalyze(bookId);
     setSections(r.sections);
   });
 
-  const handleExtractRecipes = () => runStep(async () => {
+  const handleExtractRecipes = () => runStep("recipes", async () => {
     const r = await api.wizardExtractRecipes(bookId);
     setRecipes(r.recipes);
   });
 
-  const handleMatchIngredients = () => runStep(async () => {
+  const handleMatchIngredients = () => runStep("ingredients", async () => {
     const r = await api.wizardMatchIngredients(bookId);
     setIngredientResult(r as unknown as Record<string, unknown>);
   });
 
-  const handleIndex = () => runStep(async () => {
+  const handleIndex = () => runStep("index", async () => {
     const r = await api.wizardIndex(bookId);
     setIndexResult(r as unknown as Record<string, unknown>);
   });
@@ -137,6 +152,8 @@ export default function WizardPage() {
 
   const currentStep = ws.wizard_step || 1;
 
+  const formatElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+
   return (
     <>
       <div className="page-header">
@@ -149,11 +166,31 @@ export default function WizardPage() {
         <StatusBadge status={ws.status} />
       </div>
 
+      {/* Global running banner */}
+      {busy && (
+        <div style={{
+          padding: "12px 16px",
+          marginBottom: 16,
+          borderRadius: 8,
+          background: "rgba(59,130,246,0.1)",
+          border: "1px solid var(--blue)",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          fontSize: 14,
+        }}>
+          <span className="spinner" />
+          <span style={{ fontWeight: 500 }}>{runningLabel}</span>
+          <span style={{ color: "var(--text-muted)", marginLeft: "auto" }}>{formatElapsed(elapsed)}</span>
+        </div>
+      )}
+
       {/* Step indicator */}
       <div style={{ display: "flex", gap: 4, marginBottom: 24 }}>
         {STEPS.map((step) => {
           const done = currentStep > step.num;
           const active = activeStep === step.num;
+          const isRunning = runningStep === step.key;
           return (
             <button
               key={step.num}
@@ -161,17 +198,26 @@ export default function WizardPage() {
               style={{
                 flex: 1,
                 padding: "10px 8px",
-                border: active ? "2px solid var(--blue)" : "1px solid var(--border)",
+                border: isRunning ? "2px solid var(--blue)" : active ? "2px solid var(--blue)" : "1px solid var(--border)",
                 borderRadius: 8,
-                background: done ? "var(--green-bg, rgba(34,197,94,0.1))" : active ? "var(--blue-bg, rgba(59,130,246,0.1))" : "var(--bg-card)",
+                background: isRunning
+                  ? "rgba(59,130,246,0.15)"
+                  : done
+                    ? "rgba(34,197,94,0.1)"
+                    : active
+                      ? "rgba(59,130,246,0.05)"
+                      : "var(--bg-card)",
                 cursor: "pointer",
                 fontSize: 12,
-                fontWeight: active ? 600 : 400,
-                color: done ? "var(--green)" : active ? "var(--blue)" : "var(--text-muted)",
+                fontWeight: active || isRunning ? 600 : 400,
+                color: isRunning ? "var(--blue)" : done ? "var(--green)" : active ? "var(--blue)" : "var(--text-muted)",
                 textAlign: "center",
+                position: "relative",
               }}
             >
-              <div style={{ fontSize: 16, marginBottom: 2 }}>{done ? "\u2713" : step.num}</div>
+              <div style={{ fontSize: 16, marginBottom: 2 }}>
+                {isRunning ? "\u23F3" : done ? "\u2713" : step.num}
+              </div>
               {step.label}
             </button>
           );
@@ -193,8 +239,8 @@ export default function WizardPage() {
             <p style={{ color: "var(--text-muted)", marginBottom: 16 }}>
               Detect whether this is a text PDF or image PDF, and whether the language is modern or pre-reform Russian.
             </p>
-            <button className="btn btn-primary" onClick={handleClassify} disabled={running}>
-              {running ? "Analyzing..." : "Classify"}
+            <button className="btn btn-primary" onClick={handleClassify} disabled={busy}>
+              {runningStep === "classify" ? `Classifying... ${formatElapsed(elapsed)}` : "Classify"}
             </button>
             {(classifyResult || ws.pdf_type) && (
               <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -223,11 +269,11 @@ export default function WizardPage() {
               Extract text from all pages. Text PDFs use PyMuPDF, image PDFs use OCR + LLM fallback.
             </p>
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-              <button className="btn btn-primary" onClick={handleExtract} disabled={running}>
-                {running ? "Extracting..." : "Extract All Pages"}
+              <button className="btn btn-primary" onClick={handleExtract} disabled={busy}>
+                {runningStep === "extract" ? `Extracting... ${formatElapsed(elapsed)}` : "Extract All Pages"}
               </button>
-              <button className="btn btn-outline" onClick={handleCleanup} disabled={running}>
-                LLM Cleanup
+              <button className="btn btn-outline" onClick={handleCleanup} disabled={busy}>
+                {runningStep === "cleanup" ? `Cleaning up... ${formatElapsed(elapsed)}` : "LLM Cleanup"}
               </button>
             </div>
             {(extractResult || ws.has_full_text) && (
@@ -260,9 +306,9 @@ export default function WizardPage() {
             <button
               className="btn btn-primary"
               onClick={handleTranslate}
-              disabled={running || ws.language === "modern_ru"}
+              disabled={busy || ws.language === "modern_ru"}
             >
-              {running ? "Translating..." : ws.language === "modern_ru" ? "Not Needed" : "Translate"}
+              {runningStep === "translate" ? `Translating... ${formatElapsed(elapsed)}` : ws.language === "modern_ru" ? "Not Needed" : "Translate"}
             </button>
           </div>
         )}
@@ -275,8 +321,8 @@ export default function WizardPage() {
               LLM analyzes the book text and identifies sections: recipe blocks, bibliography, TOC, etc.
               You can correct section types or delete false positives.
             </p>
-            <button className="btn btn-primary" onClick={handleAnalyze} disabled={running}>
-              {running ? "Analyzing..." : "Analyze Structure"}
+            <button className="btn btn-primary" onClick={handleAnalyze} disabled={busy}>
+              {runningStep === "analyze" ? `Analyzing structure... ${formatElapsed(elapsed)}` : "Analyze Structure"}
             </button>
             {sections.length > 0 && (
               <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -326,7 +372,7 @@ export default function WizardPage() {
                 ))}
               </div>
             )}
-            {ws.sections_count > 0 && sections.length === 0 && (
+            {ws.sections_count > 0 && sections.length === 0 && !busy && (
               <div style={{ marginTop: 16, color: "var(--text-muted)" }}>
                 {ws.sections_count} sections already analyzed. Click "Analyze Structure" to re-run.
               </div>
@@ -342,8 +388,8 @@ export default function WizardPage() {
               LLM extracts structured recipes from identified recipe blocks.
               Review results and delete any false positives.
             </p>
-            <button className="btn btn-primary" onClick={handleExtractRecipes} disabled={running}>
-              {running ? "Extracting..." : "Extract Recipes"}
+            <button className="btn btn-primary" onClick={handleExtractRecipes} disabled={busy}>
+              {runningStep === "recipes" ? `Extracting recipes... ${formatElapsed(elapsed)}` : "Extract Recipes"}
             </button>
             {recipes.length > 0 && (
               <div style={{ marginTop: 16 }}>
@@ -379,7 +425,7 @@ export default function WizardPage() {
                 </div>
               </div>
             )}
-            {ws.recipes_count > 0 && recipes.length === 0 && (
+            {ws.recipes_count > 0 && recipes.length === 0 && !busy && (
               <div style={{ marginTop: 16, color: "var(--text-muted)" }}>
                 {ws.recipes_count} recipes already extracted. Click "Extract Recipes" to re-run.
               </div>
@@ -395,8 +441,8 @@ export default function WizardPage() {
               Match extracted ingredients against the global dictionary.
               New ingredients are added automatically.
             </p>
-            <button className="btn btn-primary" onClick={handleMatchIngredients} disabled={running}>
-              {running ? "Matching..." : "Match Ingredients"}
+            <button className="btn btn-primary" onClick={handleMatchIngredients} disabled={busy}>
+              {runningStep === "ingredients" ? `Matching... ${formatElapsed(elapsed)}` : "Match Ingredients"}
             </button>
             {ingredientResult && (
               <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
@@ -424,8 +470,8 @@ export default function WizardPage() {
             <p style={{ color: "var(--text-muted)", marginBottom: 16 }}>
               Generate BGE-M3 embeddings (dense + sparse) and index recipes to Qdrant collection recipes_v2.
             </p>
-            <button className="btn btn-primary" onClick={handleIndex} disabled={running}>
-              {running ? "Indexing..." : "Index to Qdrant"}
+            <button className="btn btn-primary" onClick={handleIndex} disabled={busy}>
+              {runningStep === "index" ? `Indexing... ${formatElapsed(elapsed)}` : "Index to Qdrant"}
             </button>
             {indexResult && (
               <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -452,7 +498,7 @@ export default function WizardPage() {
         >
           Back
         </button>
-        <button className="btn btn-outline" onClick={refresh} disabled={running}>
+        <button className="btn btn-outline" onClick={refresh} disabled={busy}>
           Refresh
         </button>
         <button
