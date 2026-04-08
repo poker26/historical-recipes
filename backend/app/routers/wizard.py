@@ -79,7 +79,7 @@ async def classify_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
     book.pdf_type = pdf_type
     book.language = language
-    book.wizard_step = 1
+    book.wizard_step = 2
     book.status = "classified"
 
     log = ProcessingLog(book_id=book_id, step="classify", status="completed",
@@ -173,7 +173,7 @@ async def extract_text(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     # Combine all text and save as book asset
     full_text = "\n\n".join(all_texts)
     book.full_text = full_text
-    book.wizard_step = 2
+    book.wizard_step = 3
     book.status = "extracted"
 
     log = ProcessingLog(book_id=book_id, step="extract", status="completed",
@@ -265,7 +265,7 @@ async def translate_text(book_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 
     # Keep original in pages, update full_text with translation
     book.full_text = translated
-    book.wizard_step = 3
+    book.wizard_step = 4
 
     log = ProcessingLog(book_id=book_id, step="translate", status="completed",
                         details={"original_length": len(normalized), "translated_length": len(translated)})
@@ -334,7 +334,7 @@ async def analyze_structure(book_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "confidence": s.confidence,
         })
 
-    book.wizard_step = 4
+    book.wizard_step = 5
     book.status = "analyzed"
     log = ProcessingLog(book_id=book_id, step="analyze", status="completed",
                         details={"sections_found": len(sections),
@@ -466,7 +466,7 @@ async def extract_recipes(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)
                 "text_preview": er.original_text[:150] + "..." if len(er.original_text) > 150 else er.original_text,
             })
 
-    book.wizard_step = 5
+    book.wizard_step = 6
     book.status = "recipes_extracted"
     log = ProcessingLog(book_id=book_id, step="extract_recipes", status="completed",
                         details={"recipes_count": len(all_recipes),
@@ -596,7 +596,7 @@ async def match_ingredients(book_id: uuid.UUID, db: AsyncSession = Depends(get_d
             results.append({"name": ri.name, "status": "new"})
 
     book = await _get_book(book_id, db)
-    book.wizard_step = 6
+    book.wizard_step = 7
     log = ProcessingLog(book_id=book_id, step="match_ingredients", status="completed",
                         details={"matched": matched, "new_created": new_created})
     db.add(log)
@@ -682,7 +682,7 @@ async def index_to_qdrant(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)
         batch = points[i:i + 50]
         await qdrant_svc.upsert_points(QDRANT_COLLECTION, batch)
 
-    book.wizard_step = 7
+    book.wizard_step = 8
     book.status = "indexed"
     log = ProcessingLog(book_id=book_id, step="index", status="completed",
                         details={"points_indexed": len(points), "collection": QDRANT_COLLECTION})
