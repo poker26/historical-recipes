@@ -452,6 +452,9 @@ export default function WizardPage() {
         >
           Back
         </button>
+        <button className="btn btn-outline" onClick={refresh} disabled={running}>
+          Refresh
+        </button>
         <button
           className="btn btn-primary"
           onClick={() => setActiveStep(Math.min(7, activeStep + 1))}
@@ -462,9 +465,16 @@ export default function WizardPage() {
       </div>
 
       {/* Processing Log */}
-      {ws.logs.length > 0 && (
-        <div className="card" style={{ marginTop: 24 }}>
-          <h3 style={{ marginBottom: 12 }}>Processing Log</h3>
+      <div className="card" style={{ marginTop: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h3>Processing Log</h3>
+          <button className="btn btn-outline" onClick={refresh} style={{ fontSize: 12, padding: "4px 10px" }}>
+            Refresh
+          </button>
+        </div>
+        {ws.logs.length === 0 ? (
+          <div style={{ color: "var(--text-muted)" }}>No logs yet. Run a step to start processing.</div>
+        ) : (
           <div className="table-wrap">
             <table>
               <thead><tr><th>Step</th><th>Status</th><th>Details</th><th>Time</th></tr></thead>
@@ -480,8 +490,8 @@ export default function WizardPage() {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 }
