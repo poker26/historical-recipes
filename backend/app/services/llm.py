@@ -1,9 +1,12 @@
 """OpenRouter LLM client with per-task model selection and JSON mode support."""
 
 import json
+import logging
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 MODELS = {
     "default": settings.llm_model_default,
@@ -26,18 +29,7 @@ async def chat_completion(
     max_tokens: int = 4096,
     json_mode: bool = False,
 ) -> str:
-    """Send a chat completion request to OpenRouter.
-
-    Args:
-        messages: Chat messages in OpenAI format.
-        task: Task key to select model from MODELS dict.
-        temperature: Sampling temperature.
-        max_tokens: Maximum tokens in response.
-        json_mode: If True, request JSON response format.
-
-    Returns:
-        The assistant's response text.
-    """
+    """Send a chat completion request to OpenRouter."""
     model = MODELS.get(task, MODELS["default"])
 
     body = {
@@ -50,7 +42,11 @@ async def chat_completion(
     if json_mode:
         body["response_format"] = {"type": "json_object"}
 
-    async with httpx.AsyncClient(timeout=300) as client:
+    # Log request info
+    prompt_chars = sum(len(m.get("content", "")) if isinstance(m.get("content"), str) else 0 for m in messages)
+    logger.info(f"LLM request: model={model}, task={task}, prompt_chars={prompt_chars}, max_tokens={max_tokens}")
+
+    async with httpx.AsyncClient(timeout=600) as client:
         response = await client.post(
             f"{settings.openrouter_base_url}/chat/completions",
             headers={
@@ -60,7 +56,23 @@ async def chat_completion(
         )
         response.raise_for_status()
         data = response.json()
-        return data["choices"][0]["message"]["content"]
+
+        # Check for errors in response
+        if "error" in data:
+            error_msg = data["error"].get("message", str(data["error"]))
+            logger.error(f"LLM error: {error_msg}")
+            raise ValueError(f"LLM API error: {error_msg}")
+
+        content = data["choices"][0]["message"]["content"]
+
+        # Handle null/empty content
+        if content is None:
+            finish_reason = data["choices"][0].get("finish_reason", "unknown")
+            logger.warning(f"LLM returned null content, finish_reason={finish_reason}")
+            raise ValueError(f"LLM returned empty response (finish_reason={finish_reason})")
+
+        logger.info(f"LLM response: {len(content)} chars, finish_reason={data['choices'][0].get('finish_reason')}")
+        return content
 
 
 async def chat_completion_json(
@@ -81,7 +93,7 @@ async def chat_completion_json(
     # Try direct JSON parse
     try:
         return json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         pass
 
     # Try extracting from markdown code block
@@ -101,4 +113,4 @@ async def chat_completion_json(
             end = raw.rindex(end_char) + 1
             return json.loads(raw[start:end])
 
-    raise ValueError(f"Could not parse JSON from LLM response: {raw[:200]}...")
+    raise ValueError(f"Could not parse JSON from LLM response: {raw[:500]}...")

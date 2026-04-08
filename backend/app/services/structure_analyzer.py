@@ -4,13 +4,15 @@ Sends the entire book text (or chunks) to an LLM and asks it to identify
 sections: recipe blocks, bibliography, TOC, introductions, appendices, etc.
 """
 
+import logging
 from dataclasses import dataclass
 
 from app.services.llm import chat_completion_json
 
+logger = logging.getLogger(__name__)
 
-MAX_CHARS_SINGLE_CALL = 500_000  # ~250K tokens, safe for Gemini 2.5 Pro (1M)
-CHUNK_SIZE = 100_000  # ~50 pages per chunk
+MAX_CHARS_SINGLE_CALL = 400_000  # ~200K tokens — safe limit for Gemini 2.5 Pro
+CHUNK_SIZE = 80_000  # ~40 pages per chunk (raw text, no line numbers)
 CHUNK_OVERLAP = 4_000  # ~2 pages overlap
 
 
@@ -74,9 +76,17 @@ async def analyze_book_structure(
     Sends entire text if it fits, otherwise splits into overlapping chunks.
     Returns list of detected sections with types and boundaries.
     """
-    if len(text) <= MAX_CHARS_SINGLE_CALL:
+    text_len = len(text)
+    lines_count = text.count("\n") + 1
+    # Line numbers add ~7 chars per line ("12345: "), estimate inflated size
+    estimated_with_numbers = text_len + lines_count * 7
+    logger.info(f"Structure analysis: text={text_len} chars, lines={lines_count}, estimated_with_numbers={estimated_with_numbers}")
+
+    if estimated_with_numbers <= MAX_CHARS_SINGLE_CALL:
+        logger.info("Using single-call mode (text fits in context)")
         return await _analyze_single(text, book_title, book_year)
     else:
+        logger.info(f"Using chunked mode (text too large, chunk_size={CHUNK_SIZE})")
         return await _analyze_chunked(text, book_title, book_year)
 
 
@@ -94,6 +104,7 @@ async def _analyze_single(
         {"role": "user", "content": f'Here is the complete text of the book "{book_title}"{year_str}.\n\n{numbered}'},
     ]
 
+    logger.info(f"Single-call: sending {len(numbered)} chars to LLM")
     result = await chat_completion_json(
         messages,
         task="structure_analysis",
@@ -102,6 +113,7 @@ async def _analyze_single(
     )
 
     sections = result if isinstance(result, list) else result.get("sections", [])
+    logger.info(f"Single-call: got {len(sections)} sections")
     return [_parse_section(s) for s in sections]
 
 
@@ -110,54 +122,62 @@ async def _analyze_chunked(
     book_title: str,
     book_year: int | None,
 ) -> list[DetectedSection]:
-    """Analyze book in overlapping chunks, then merge results."""
+    """Analyze book in overlapping chunks, then merge results.
+
+    Does NOT add line numbers to chunks (too much overhead).
+    Instead, tells LLM the approximate line range.
+    """
     lines = text.split("\n")
     total_lines = len(lines)
     all_sections = []
 
-    # Split into chunks by character count, tracking line numbers
-    chunk_start_line = 0
-    char_pos = 0
+    # Build chunks by line count
+    chunk_line_size = CHUNK_SIZE // 80  # ~80 chars per line average
+    overlap_lines = CHUNK_OVERLAP // 80
+    chunk_num = 0
 
-    while char_pos < len(text):
-        chunk_end_char = min(char_pos + CHUNK_SIZE, len(text))
-
-        # Find the line numbers for this chunk
-        chunk_text = text[char_pos:chunk_end_char]
-        chunk_lines = chunk_text.split("\n")
-        chunk_end_line = chunk_start_line + len(chunk_lines) - 1
-
-        # Number lines with global line numbers
-        numbered = "\n".join(
-            f"{chunk_start_line + i + 1}: {line}"
-            for i, line in enumerate(chunk_lines)
-        )
+    start_line = 0
+    while start_line < total_lines:
+        end_line = min(start_line + chunk_line_size, total_lines)
+        chunk_lines = lines[start_line:end_line]
+        chunk_text = "\n".join(chunk_lines)
+        chunk_num += 1
 
         year_str = f" ({book_year})" if book_year else ""
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": (
-                f'Here is a portion (lines {chunk_start_line+1}-{chunk_end_line+1} of ~{total_lines}) '
-                f'of the book "{book_title}"{year_str}.\n\n{numbered}'
+                f'Here is a portion (lines {start_line+1}-{end_line} of {total_lines}) '
+                f'of the book "{book_title}"{year_str}.\n'
+                f'Use line numbers relative to the FULL book (this chunk starts at line {start_line+1}).\n\n'
+                f'{chunk_text}'
             )},
         ]
 
-        result = await chat_completion_json(
-            messages,
-            task="structure_analysis",
-            temperature=0.1,
-            max_tokens=16384,
-        )
+        logger.info(f"Chunk {chunk_num}: lines {start_line+1}-{end_line}, {len(chunk_text)} chars")
 
-        sections = result if isinstance(result, list) else result.get("sections", [])
-        all_sections.extend([_parse_section(s) for s in sections])
+        try:
+            result = await chat_completion_json(
+                messages,
+                task="structure_analysis",
+                temperature=0.1,
+                max_tokens=16384,
+            )
+
+            sections = result if isinstance(result, list) else result.get("sections", [])
+            logger.info(f"Chunk {chunk_num}: got {len(sections)} sections")
+            all_sections.extend([_parse_section(s) for s in sections])
+        except Exception as e:
+            logger.error(f"Chunk {chunk_num} failed: {e}")
+            # Continue with other chunks
 
         # Advance with overlap
-        char_pos = chunk_end_char - CHUNK_OVERLAP
-        chunk_start_line = max(0, chunk_end_line - 2)
+        start_line = end_line - overlap_lines
 
     # Merge overlapping sections from different chunks
-    return _merge_sections(all_sections)
+    merged = _merge_sections(all_sections)
+    logger.info(f"Total: {len(all_sections)} raw sections -> {len(merged)} merged sections")
+    return merged
 
 
 def _parse_section(data: dict) -> DetectedSection:
@@ -174,11 +194,7 @@ def _parse_section(data: dict) -> DetectedSection:
 
 
 def _merge_sections(sections: list[DetectedSection]) -> list[DetectedSection]:
-    """Merge overlapping sections from chunked analysis.
-
-    If two sections of the same type overlap by >50% of the smaller one,
-    merge them into one with the wider range.
-    """
+    """Merge overlapping sections from chunked analysis."""
     if not sections:
         return []
 
