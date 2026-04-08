@@ -35,6 +35,7 @@ class RecipeIngredient(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     recipe_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("recipes.id", ondelete="CASCADE"))
     plant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("plants.id", ondelete="SET NULL"))
+    ingredient_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("ingredients.id", ondelete="SET NULL"))
     name: Mapped[str] = mapped_column(Text)
     original_name: Mapped[str | None] = mapped_column(Text)
     amount: Mapped[str | None] = mapped_column(Text)

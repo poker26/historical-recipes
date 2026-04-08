@@ -49,7 +49,8 @@ export default function BookDetailPage() {
           <h1>{book.title}</h1>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn btn-primary" onClick={handleProcess}>Process</button>
+          <Link href={`/books/${id}/wizard`} className="btn btn-primary">Open Wizard</Link>
+          <button className="btn btn-outline" onClick={handleProcess}>Process (n8n)</button>
           <button className="btn btn-outline" onClick={handleIndex}>Index</button>
         </div>
       </div>

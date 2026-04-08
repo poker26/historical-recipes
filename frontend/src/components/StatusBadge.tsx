@@ -14,6 +14,16 @@ const STATUS_COLORS: Record<string, string> = {
   raw: "badge-gray",
   cleaned: "badge-yellow",
   reviewed: "badge-green",
+  // wizard statuses
+  classified: "badge-blue",
+  extracted: "badge-blue",
+  analyzed: "badge-yellow",
+  recipes_extracted: "badge-yellow",
+  completed: "badge-green",
+  skipped: "badge-gray",
+  started: "badge-blue",
+  split: "badge-blue",
+  postprocessed: "badge-yellow",
 };
 
 export default function StatusBadge({ status }: { status: string }) {

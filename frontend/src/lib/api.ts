@@ -123,6 +123,43 @@ export interface SearchResponse {
   collections_searched: string[];
 }
 
+// === Wizard Types ===
+
+export interface WizardStatus {
+  book_id: string;
+  title: string;
+  wizard_step: number;
+  status: string;
+  pdf_type: string;
+  language: string;
+  has_full_text: boolean;
+  text_length: number;
+  pages_count: number;
+  sections_count: number;
+  recipes_count: number;
+  logs: { step: string; status: string; details: Record<string, unknown> | null; created_at: string | null }[];
+}
+
+export interface WizardSection {
+  id: string;
+  section_type: string;
+  title: string;
+  start_line: number;
+  end_line: number;
+  content_preview: string;
+  recipe_pattern: string | null;
+  estimated_recipe_count: number | null;
+  confidence: number;
+}
+
+export interface WizardRecipe {
+  id: string;
+  name: string;
+  category: string;
+  ingredients_count: number;
+  text_preview: string;
+}
+
 // === API functions ===
 
 export const api = {
@@ -183,4 +220,30 @@ export const api = {
     apiFetch<{ status: string; indexed: number }>(`/api/indexing/book/${bookId}/`, { method: "POST" }),
   deindexBook: (bookId: string) =>
     apiFetch<{ status: string }>(`/api/indexing/book/${bookId}/`, { method: "DELETE" }),
+
+  // Wizard
+  wizardStatus: (bookId: string) =>
+    apiFetch<WizardStatus>(`/api/wizard/${bookId}/status`),
+  wizardClassify: (bookId: string) =>
+    apiFetch<{ status: string; pdf_type: string; language: string; total_pages: number }>(`/api/wizard/${bookId}/classify`, { method: "POST" }),
+  wizardExtract: (bookId: string) =>
+    apiFetch<{ status: string; total_pages: number; text_length: number }>(`/api/wizard/${bookId}/extract`, { method: "POST" }),
+  wizardCleanup: (bookId: string) =>
+    apiFetch<{ status: string; text_length: number; used_llm: boolean }>(`/api/wizard/${bookId}/cleanup`, { method: "POST" }),
+  wizardTranslate: (bookId: string) =>
+    apiFetch<{ status: string; reason?: string }>(`/api/wizard/${bookId}/translate`, { method: "POST" }),
+  wizardAnalyze: (bookId: string) =>
+    apiFetch<{ status: string; sections: WizardSection[] }>(`/api/wizard/${bookId}/analyze`, { method: "POST" }),
+  wizardUpdateSection: (bookId: string, sectionId: string, data: { section_type: string; title?: string }) =>
+    apiFetch<{ status: string }>(`/api/wizard/${bookId}/sections/${sectionId}`, { method: "PUT", body: JSON.stringify(data) }),
+  wizardDeleteSection: (bookId: string, sectionId: string) =>
+    apiFetch<{ status: string }>(`/api/wizard/${bookId}/sections/${sectionId}`, { method: "DELETE" }),
+  wizardExtractRecipes: (bookId: string) =>
+    apiFetch<{ status: string; recipes_count: number; recipes: WizardRecipe[] }>(`/api/wizard/${bookId}/extract-recipes`, { method: "POST" }),
+  wizardDeleteRecipe: (bookId: string, recipeId: string) =>
+    apiFetch<{ status: string }>(`/api/wizard/${bookId}/recipes/${recipeId}`, { method: "DELETE" }),
+  wizardMatchIngredients: (bookId: string) =>
+    apiFetch<{ status: string; matched: number; new_created: number }>(`/api/wizard/${bookId}/match-ingredients`, { method: "POST" }),
+  wizardIndex: (bookId: string) =>
+    apiFetch<{ status: string; points_indexed: number; collection: string }>(`/api/wizard/${bookId}/index`, { method: "POST" }),
 };

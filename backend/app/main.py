@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import books, recipes, plants, dictionaries, search, indexing, pipeline
+from app.routers import books, recipes, plants, dictionaries, search, indexing, pipeline, wizard
 
 
 @asynccontextmanager
@@ -36,6 +36,7 @@ app.include_router(dictionaries.router, prefix="/api/dictionaries", tags=["dicti
 app.include_router(search.router, prefix="/api/search", tags=["search"])
 app.include_router(indexing.router, prefix="/api/indexing", tags=["indexing"])
 app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
+app.include_router(wizard.router, prefix="/api/wizard", tags=["wizard"])
 
 
 @app.get("/health")
