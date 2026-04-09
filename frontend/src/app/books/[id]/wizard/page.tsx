@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { api, WizardStatus, WizardSection, WizardRecipe } from "@/lib/api";
+import { api, WizardStatus, WizardProgress, WizardSection, WizardRecipe } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
 const STEPS = [
@@ -11,8 +11,8 @@ const STEPS = [
   { num: 2, label: "Extract Text", key: "extract", action: "Extracting text..." },
   { num: 3, label: "Translate", key: "translate", action: "Translating..." },
   { num: 4, label: "Analyze", key: "analyze", action: "LLM analyzing structure..." },
-  { num: 5, label: "Recipes", key: "recipes", action: "LLM extracting recipes..." },
-  { num: 6, label: "Ingredients", key: "ingredients", action: "Matching ingredients..." },
+  { num: 5, label: "Recipes", key: "extract-recipes", action: "LLM extracting recipes..." },
+  { num: 6, label: "Ingredients", key: "match-ingredients", action: "Matching ingredients..." },
   { num: 7, label: "Index", key: "index", action: "Indexing to Qdrant..." },
 ];
 
@@ -38,9 +38,12 @@ export default function WizardPage() {
   const [ws, setWs] = useState<WizardStatus | null>(null);
   const [activeStep, setActiveStep] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [runningStep, setRunningStep] = useState<string | null>(null); // key of currently running step
   const [error, setError] = useState<string | null>(null);
-  const [elapsed, setElapsed] = useState(0);
+
+  // Progress state (polled)
+  const [progress, setProgress] = useState<WizardProgress | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const logEndRef = useRef<HTMLDivElement>(null);
 
   // Step-specific state
   const [classifyResult, setClassifyResult] = useState<Record<string, unknown> | null>(null);
@@ -54,7 +57,11 @@ export default function WizardPage() {
     try {
       const status = await api.wizardStatus(bookId);
       setWs(status);
-      if (!runningStep) {
+      // If server reports progress, use it
+      if (status.progress) {
+        setProgress(status.progress);
+      }
+      if (!status.progress?.running) {
         setActiveStep(status.wizard_step || 1);
       }
     } catch (e) {
@@ -62,75 +69,113 @@ export default function WizardPage() {
     } finally {
       setLoading(false);
     }
-  }, [bookId, runningStep]);
+  }, [bookId]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // Timer for elapsed seconds while running
+  // Auto-scroll log to bottom
   useEffect(() => {
-    if (!runningStep) { setElapsed(0); return; }
-    const start = Date.now();
-    const interval = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
-    return () => clearInterval(interval);
-  }, [runningStep]);
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [progress?.messages]);
 
+  // Poll progress when a step is running
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) return;
+    pollingRef.current = setInterval(async () => {
+      try {
+        const p = await api.wizardProgress(bookId);
+        setProgress(p);
+        if (!p.running) {
+          // Task finished — stop polling, refresh full status
+          stopPolling();
+          await refresh();
+          // If completed with result containing sections/recipes, update UI
+          if (p.status === "completed" && p.result) {
+            if (p.result.sections) {
+              setSections(p.result.sections as unknown as WizardSection[]);
+            }
+            if (p.result.recipes) {
+              setRecipes(p.result.recipes as unknown as WizardRecipe[]);
+            }
+          }
+          if (p.status === "error") {
+            setError(p.error || "Step failed");
+          }
+        }
+      } catch {
+        // ignore polling errors
+      }
+    }, 3000);
+  }, [bookId, refresh]);
+
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => () => stopPolling(), [stopPolling]);
+
+  // Check if server has a running task on load
+  useEffect(() => {
+    if (ws?.progress?.running) {
+      startPolling();
+    }
+  }, [ws?.progress?.running, startPolling]);
+
+  const busy = progress?.running === true;
+  const runningStep = busy ? progress?.step : null;
+  const runningLabel = runningStep ? STEPS.find(s => s.key === runningStep)?.action || `Running ${runningStep}...` : null;
+
+  // Fire a step: POST to backend, start polling
   const runStep = async (stepKey: string, fn: () => Promise<unknown>) => {
-    setRunningStep(stepKey);
     setError(null);
-    setElapsed(0);
+    setProgress({ running: true, step: stepKey, status: "running", elapsed: 0, messages: ["Starting..."], error: null, result: null });
     try {
-      const result = await fn();
-      await refresh();
-      return result;
+      await fn();
+      startPolling();
     } catch (e) {
       setError(String(e));
-      return null;
-    } finally {
-      setRunningStep(null);
+      setProgress(null);
     }
   };
 
-  const busy = runningStep !== null;
-  const runningLabel = runningStep ? STEPS.find(s => s.key === runningStep)?.action || "Working..." : null;
-
   // Step handlers
-  const handleClassify = () => runStep("classify", async () => {
-    const r = await api.wizardClassify(bookId);
-    setClassifyResult(r as unknown as Record<string, unknown>);
-  });
+  const handleClassify = async () => {
+    // Classify is fast, no background task
+    setError(null);
+    try {
+      const r = await api.wizardClassify(bookId);
+      setClassifyResult(r as unknown as Record<string, unknown>);
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
 
-  const handleExtract = () => runStep("extract", async () => {
-    const r = await api.wizardExtract(bookId);
-    setExtractResult(r as unknown as Record<string, unknown>);
-  });
-
-  const handleCleanup = () => runStep("cleanup", async () => {
-    await api.wizardCleanup(bookId);
-  });
-
-  const handleTranslate = () => runStep("translate", async () => {
-    await api.wizardTranslate(bookId);
-  });
-
-  const handleAnalyze = () => runStep("analyze", async () => {
-    const r = await api.wizardAnalyze(bookId);
-    setSections(r.sections);
-  });
-
-  const handleExtractRecipes = () => runStep("recipes", async () => {
-    const r = await api.wizardExtractRecipes(bookId);
-    setRecipes(r.recipes);
-  });
-
-  const handleMatchIngredients = () => runStep("ingredients", async () => {
-    const r = await api.wizardMatchIngredients(bookId);
-    setIngredientResult(r as unknown as Record<string, unknown>);
-  });
-
-  const handleIndex = () => runStep("index", async () => {
-    const r = await api.wizardIndex(bookId);
-    setIndexResult(r as unknown as Record<string, unknown>);
-  });
+  const handleExtract = () => runStep("extract", () => api.wizardExtract(bookId));
+  const handleCleanup = () => runStep("cleanup", () => api.wizardCleanup(bookId));
+  const handleTranslate = async () => {
+    setError(null);
+    try {
+      const r = await api.wizardTranslate(bookId);
+      if ((r as Record<string, unknown>).status === "skipped") {
+        await refresh();
+        return;
+      }
+      // Started as background task
+      startPolling();
+      setProgress({ running: true, step: "translate", status: "running", elapsed: 0, messages: ["Starting translation..."], error: null, result: null });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+  const handleAnalyze = () => runStep("analyze", () => api.wizardAnalyze(bookId));
+  const handleExtractRecipes = () => runStep("extract-recipes", () => api.wizardExtractRecipes(bookId));
+  const handleMatchIngredients = () => runStep("match-ingredients", () => api.wizardMatchIngredients(bookId));
+  const handleIndex = () => runStep("index", () => api.wizardIndex(bookId));
 
   const handleDeleteSection = async (sectionId: string) => {
     await api.wizardDeleteSection(bookId, sectionId);
@@ -151,8 +196,7 @@ export default function WizardPage() {
   if (!ws) return <div className="empty">Book not found</div>;
 
   const currentStep = ws.wizard_step || 1;
-
-  const formatElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  const formatElapsed = (s: number) => s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 
   return (
     <>
@@ -181,7 +225,9 @@ export default function WizardPage() {
         }}>
           <span className="spinner" />
           <span style={{ fontWeight: 500 }}>{runningLabel}</span>
-          <span style={{ color: "var(--text-muted)", marginLeft: "auto" }}>{formatElapsed(elapsed)}</span>
+          <span style={{ color: "var(--text-muted)", marginLeft: "auto" }}>
+            {progress ? formatElapsed(progress.elapsed) : ""}
+          </span>
         </div>
       )}
 
@@ -240,7 +286,7 @@ export default function WizardPage() {
               Detect whether this is a text PDF or image PDF, and whether the language is modern or pre-reform Russian.
             </p>
             <button className="btn btn-primary" onClick={handleClassify} disabled={busy}>
-              {runningStep === "classify" ? `Classifying... ${formatElapsed(elapsed)}` : "Classify"}
+              Classify
             </button>
             {(classifyResult || ws.pdf_type) && (
               <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -270,10 +316,10 @@ export default function WizardPage() {
             </p>
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
               <button className="btn btn-primary" onClick={handleExtract} disabled={busy}>
-                {runningStep === "extract" ? `Extracting... ${formatElapsed(elapsed)}` : "Extract All Pages"}
+                Extract All Pages
               </button>
               <button className="btn btn-outline" onClick={handleCleanup} disabled={busy}>
-                {runningStep === "cleanup" ? `Cleaning up... ${formatElapsed(elapsed)}` : "LLM Cleanup"}
+                LLM Cleanup
               </button>
             </div>
             {(extractResult || ws.has_full_text) && (
@@ -308,7 +354,7 @@ export default function WizardPage() {
               onClick={handleTranslate}
               disabled={busy || ws.language === "modern_ru"}
             >
-              {runningStep === "translate" ? `Translating... ${formatElapsed(elapsed)}` : ws.language === "modern_ru" ? "Not Needed" : "Translate"}
+              {ws.language === "modern_ru" ? "Not Needed" : "Translate"}
             </button>
           </div>
         )}
@@ -322,7 +368,7 @@ export default function WizardPage() {
               You can correct section types or delete false positives.
             </p>
             <button className="btn btn-primary" onClick={handleAnalyze} disabled={busy}>
-              {runningStep === "analyze" ? `Analyzing structure... ${formatElapsed(elapsed)}` : "Analyze Structure"}
+              Analyze Structure
             </button>
             {sections.length > 0 && (
               <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -389,7 +435,7 @@ export default function WizardPage() {
               Review results and delete any false positives.
             </p>
             <button className="btn btn-primary" onClick={handleExtractRecipes} disabled={busy}>
-              {runningStep === "recipes" ? `Extracting recipes... ${formatElapsed(elapsed)}` : "Extract Recipes"}
+              Extract Recipes
             </button>
             {recipes.length > 0 && (
               <div style={{ marginTop: 16 }}>
@@ -442,7 +488,7 @@ export default function WizardPage() {
               New ingredients are added automatically.
             </p>
             <button className="btn btn-primary" onClick={handleMatchIngredients} disabled={busy}>
-              {runningStep === "ingredients" ? `Matching... ${formatElapsed(elapsed)}` : "Match Ingredients"}
+              Match Ingredients
             </button>
             {ingredientResult && (
               <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
@@ -471,7 +517,7 @@ export default function WizardPage() {
               Generate BGE-M3 embeddings (dense + sparse) and index recipes to Qdrant collection recipes_v2.
             </p>
             <button className="btn btn-primary" onClick={handleIndex} disabled={busy}>
-              {runningStep === "index" ? `Indexing... ${formatElapsed(elapsed)}` : "Index to Qdrant"}
+              Index to Qdrant
             </button>
             {indexResult && (
               <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -510,17 +556,48 @@ export default function WizardPage() {
         </button>
       </div>
 
-      {/* Processing Log */}
+      {/* Live Progress Log */}
       <div className="card" style={{ marginTop: 24 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <h3>Processing Log</h3>
+          <h3>
+            {busy ? (
+              <><span className="spinner" style={{ marginRight: 8 }} />Live Progress</>
+            ) : "Processing Log"}
+          </h3>
           <button className="btn btn-outline" onClick={refresh} style={{ fontSize: 12, padding: "4px 10px" }}>
             Refresh
           </button>
         </div>
-        {ws.logs.length === 0 ? (
+
+        {/* Live progress messages (when a step is running or just finished) */}
+        {progress && progress.messages.length > 0 && (
+          <div style={{
+            background: "var(--bg)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            padding: 12,
+            marginBottom: 16,
+            maxHeight: 300,
+            overflowY: "auto",
+            fontFamily: "monospace",
+            fontSize: 12,
+            lineHeight: 1.6,
+          }}>
+            {progress.messages.map((msg, i) => (
+              <div key={i} style={{
+                color: msg.includes("ERROR") ? "var(--red)" : msg.includes("Done") ? "var(--green)" : "var(--text-secondary)",
+              }}>
+                {msg}
+              </div>
+            ))}
+            <div ref={logEndRef} />
+          </div>
+        )}
+
+        {/* Historical logs from DB */}
+        {ws.logs.length === 0 && (!progress || progress.messages.length === 0) ? (
           <div style={{ color: "var(--text-muted)" }}>No logs yet. Run a step to start processing.</div>
-        ) : (
+        ) : ws.logs.length > 0 && (
           <div className="table-wrap">
             <table>
               <thead><tr><th>Step</th><th>Status</th><th>Details</th><th>Time</th></tr></thead>

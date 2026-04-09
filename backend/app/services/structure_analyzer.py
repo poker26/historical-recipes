@@ -70,30 +70,36 @@ async def analyze_book_structure(
     text: str,
     book_title: str = "",
     book_year: int | None = None,
+    progress_callback=None,
 ) -> list[DetectedSection]:
     """Analyze book structure using LLM.
 
     Sends entire text if it fits, otherwise splits into overlapping chunks.
     Returns list of detected sections with types and boundaries.
     """
+    cb = progress_callback or (lambda msg: None)
     text_len = len(text)
     lines_count = text.count("\n") + 1
     # Line numbers add ~7 chars per line ("12345: "), estimate inflated size
     estimated_with_numbers = text_len + lines_count * 7
     logger.info(f"Structure analysis: text={text_len} chars, lines={lines_count}, estimated_with_numbers={estimated_with_numbers}")
+    cb(f"Text: {text_len} chars, {lines_count} lines")
 
     if estimated_with_numbers <= MAX_CHARS_SINGLE_CALL:
         logger.info("Using single-call mode (text fits in context)")
-        return await _analyze_single(text, book_title, book_year)
+        cb("Single-call mode (text fits in LLM context)")
+        return await _analyze_single(text, book_title, book_year, cb)
     else:
         logger.info(f"Using chunked mode (text too large, chunk_size={CHUNK_SIZE})")
-        return await _analyze_chunked(text, book_title, book_year)
+        cb(f"Chunked mode (text too large for single call, chunk_size={CHUNK_SIZE})")
+        return await _analyze_chunked(text, book_title, book_year, cb)
 
 
 async def _analyze_single(
     text: str,
     book_title: str,
     book_year: int | None,
+    cb=lambda msg: None,
 ) -> list[DetectedSection]:
     """Analyze entire book in a single LLM call."""
     numbered = _number_lines(text)
@@ -105,6 +111,7 @@ async def _analyze_single(
     ]
 
     logger.info(f"Single-call: sending {len(numbered)} chars to LLM")
+    cb(f"Sending {len(numbered)} chars to LLM (single call)")
     result = await chat_completion_json(
         messages,
         task="structure_analysis",
@@ -114,6 +121,7 @@ async def _analyze_single(
 
     sections = result if isinstance(result, list) else result.get("sections", [])
     logger.info(f"Single-call: got {len(sections)} sections")
+    cb(f"LLM returned {len(sections)} sections")
     return [_parse_section(s) for s in sections]
 
 
@@ -121,6 +129,7 @@ async def _analyze_chunked(
     text: str,
     book_title: str,
     book_year: int | None,
+    cb=lambda msg: None,
 ) -> list[DetectedSection]:
     """Analyze book in overlapping chunks, then merge results.
 
@@ -134,6 +143,8 @@ async def _analyze_chunked(
     # Build chunks by line count
     chunk_line_size = CHUNK_SIZE // 80  # ~80 chars per line average
     overlap_lines = CHUNK_OVERLAP // 80
+    total_chunks = (total_lines + chunk_line_size - 1) // max(chunk_line_size - overlap_lines, 1)
+    cb(f"Splitting into ~{total_chunks} chunks")
     chunk_num = 0
 
     start_line = 0
@@ -155,6 +166,7 @@ async def _analyze_chunked(
         ]
 
         logger.info(f"Chunk {chunk_num}: lines {start_line+1}-{end_line}, {len(chunk_text)} chars")
+        cb(f"Chunk {chunk_num}: lines {start_line+1}-{end_line}, sending {len(chunk_text)} chars to LLM")
 
         try:
             result = await chat_completion_json(
@@ -166,9 +178,11 @@ async def _analyze_chunked(
 
             sections = result if isinstance(result, list) else result.get("sections", [])
             logger.info(f"Chunk {chunk_num}: got {len(sections)} sections")
+            cb(f"Chunk {chunk_num}: LLM returned {len(sections)} sections")
             all_sections.extend([_parse_section(s) for s in sections])
         except Exception as e:
             logger.error(f"Chunk {chunk_num} failed: {e}")
+            cb(f"Chunk {chunk_num}: ERROR - {e}")
             # Continue with other chunks
 
         # Advance with overlap
@@ -177,6 +191,7 @@ async def _analyze_chunked(
     # Merge overlapping sections from different chunks
     merged = _merge_sections(all_sections)
     logger.info(f"Total: {len(all_sections)} raw sections -> {len(merged)} merged sections")
+    cb(f"Merged: {len(all_sections)} raw -> {len(merged)} sections")
     return merged
 
 

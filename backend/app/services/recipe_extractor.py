@@ -56,12 +56,16 @@ async def extract_recipes_from_section(
     section_text: str,
     book_title: str = "",
     recipe_pattern: str | None = None,
+    progress_callback=None,
 ) -> list[ExtractedRecipe]:
     """Extract structured recipes from a recipe section using LLM.
 
     If the section is too large for a single call, splits it and processes in parts.
     """
+    cb = progress_callback or (lambda msg: None)
+
     if len(section_text) <= MAX_CHARS_PER_CALL:
+        cb(f"Single call: {len(section_text)} chars")
         return await _extract_single(section_text, book_title, recipe_pattern)
 
     # Split large sections
@@ -69,22 +73,30 @@ async def extract_recipes_from_section(
     lines = section_text.split("\n")
     chunk_lines = []
     chunk_len = 0
+    chunk_num = 0
 
     for line in lines:
         chunk_lines.append(line)
         chunk_len += len(line) + 1
         if chunk_len >= MAX_CHARS_PER_CALL * 0.8:
+            chunk_num += 1
             chunk_text = "\n".join(chunk_lines)
+            cb(f"Extraction chunk {chunk_num}: {len(chunk_text)} chars")
             recipes = await _extract_single(chunk_text, book_title, recipe_pattern)
+            cb(f"Extraction chunk {chunk_num}: got {len(recipes)} recipes")
             all_recipes.extend(recipes)
             chunk_lines = []
             chunk_len = 0
 
     if chunk_lines:
+        chunk_num += 1
         chunk_text = "\n".join(chunk_lines)
+        cb(f"Extraction chunk {chunk_num} (last): {len(chunk_text)} chars")
         recipes = await _extract_single(chunk_text, book_title, recipe_pattern)
+        cb(f"Extraction chunk {chunk_num}: got {len(recipes)} recipes")
         all_recipes.extend(recipes)
 
+    cb(f"Total extracted: {len(all_recipes)} recipes")
     return all_recipes
 
 

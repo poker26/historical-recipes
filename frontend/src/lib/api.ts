@@ -125,6 +125,16 @@ export interface SearchResponse {
 
 // === Wizard Types ===
 
+export interface WizardProgress {
+  running: boolean;
+  step: string | null;
+  status: string;  // running | completed | error | idle
+  elapsed: number;
+  messages: string[];
+  error: string | null;
+  result: Record<string, unknown> | null;
+}
+
 export interface WizardStatus {
   book_id: string;
   title: string;
@@ -137,6 +147,7 @@ export interface WizardStatus {
   pages_count: number;
   sections_count: number;
   recipes_count: number;
+  progress: WizardProgress | null;
   logs: { step: string; status: string; details: Record<string, unknown> | null; created_at: string | null }[];
 }
 
@@ -224,6 +235,8 @@ export const api = {
   // Wizard
   wizardStatus: (bookId: string) =>
     apiFetch<WizardStatus>(`/api/wizard/${bookId}/status`),
+  wizardProgress: (bookId: string) =>
+    apiFetch<WizardProgress>(`/api/wizard/${bookId}/progress`),
   wizardClassify: (bookId: string) =>
     apiFetch<{ status: string; pdf_type: string; language: string; total_pages: number }>(`/api/wizard/${bookId}/classify`, { method: "POST" }),
   wizardExtract: (bookId: string) =>
