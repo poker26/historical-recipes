@@ -4,6 +4,7 @@ Sends the entire book text (or chunks) to an LLM and asks it to identify
 sections: recipe blocks, bibliography, TOC, introductions, appendices, etc.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -12,8 +13,9 @@ from app.services.llm import chat_completion_json
 logger = logging.getLogger(__name__)
 
 MAX_CHARS_SINGLE_CALL = 400_000  # ~200K tokens — safe limit for Gemini 2.5 Pro
-CHUNK_SIZE = 80_000  # ~40 pages per chunk (raw text, no line numbers)
-CHUNK_OVERLAP = 4_000  # ~2 pages overlap
+CHUNK_SIZE = 150_000  # chars of book text per chunk (~75K tokens; Gemini handles 1M)
+CHUNK_OVERLAP = 6_000  # chars of overlap between consecutive chunks
+MAX_CONCURRENT_CHUNKS = 4  # parallel LLM calls (tune down if OpenRouter rate-limits)
 
 
 @dataclass
@@ -64,6 +66,41 @@ def _number_lines(text: str) -> str:
     """Add line numbers to text for LLM reference."""
     lines = text.split("\n")
     return "\n".join(f"{i+1}: {line}" for i, line in enumerate(lines))
+
+
+def _number_lines_range(lines: list[str], start_idx: int, end_idx: int) -> str:
+    """Number a slice of lines using ABSOLUTE (full-book) 1-based line numbers."""
+    return "\n".join(
+        f"{start_idx + k + 1}: {line}" for k, line in enumerate(lines[start_idx:end_idx])
+    )
+
+
+def _build_char_chunks(lines: list[str], chunk_chars: int, overlap_chars: int) -> list[tuple[int, int]]:
+    """Split lines into overlapping windows sized by ACTUAL character count.
+
+    Returns a list of (start_idx, end_idx) line-index pairs (end exclusive).
+    Avoids the old "~80 chars per line" guess that made chunks 3x too small.
+    """
+    n = len(lines)
+    chunks: list[tuple[int, int]] = []
+    start = 0
+    while start < n:
+        size = 0
+        end = start
+        while end < n and size < chunk_chars:
+            size += len(lines[end]) + 1  # +1 for the newline
+            end += 1
+        chunks.append((start, end))
+        if end >= n:
+            break
+        # Step back by ~overlap_chars worth of lines for context continuity
+        ov = 0
+        j = end - 1
+        while j > start and ov < overlap_chars:
+            ov += len(lines[j]) + 1
+            j -= 1
+        start = max(start + 1, j + 1)
+    return chunks
 
 
 async def analyze_book_structure(
@@ -131,71 +168,56 @@ async def _analyze_chunked(
     book_year: int | None,
     cb=lambda msg: None,
 ) -> list[DetectedSection]:
-    """Analyze book in overlapping chunks, then merge results.
+    """Analyze book in overlapping char-sized chunks, processed in parallel.
 
-    Does NOT add line numbers to chunks (too much overhead).
-    Instead, tells LLM the approximate line range.
+    Each chunk is line-numbered with ABSOLUTE full-book line numbers so the LLM
+    can report exact section boundaries instead of guessing offsets.
     """
     lines = text.split("\n")
     total_lines = len(lines)
-    all_sections = []
 
-    # Build chunks by line count
-    chunk_line_size = CHUNK_SIZE // 80  # ~80 chars per line average
-    overlap_lines = CHUNK_OVERLAP // 80
-    total_chunks = (total_lines + chunk_line_size - 1) // max(chunk_line_size - overlap_lines, 1)
-    cb(f"Splitting into ~{total_chunks} chunks")
-    chunk_num = 0
+    chunks = _build_char_chunks(lines, CHUNK_SIZE, CHUNK_OVERLAP)
+    total_chunks = len(chunks)
+    cb(f"Splitting into {total_chunks} chunks (parallel x{MAX_CONCURRENT_CHUNKS})")
 
-    start_line = 0
-    while start_line < total_lines:
-        end_line = min(start_line + chunk_line_size, total_lines)
-        chunk_lines = lines[start_line:end_line]
-        chunk_text = "\n".join(chunk_lines)
-        chunk_num += 1
+    year_str = f" ({book_year})" if book_year else ""
+    sem = asyncio.Semaphore(MAX_CONCURRENT_CHUNKS)
 
-        year_str = f" ({book_year})" if book_year else ""
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": (
-                f'Here is a portion (lines {start_line+1}-{end_line} of {total_lines}) '
-                f'of the book "{book_title}"{year_str}.\n'
-                f'Use line numbers relative to the FULL book (this chunk starts at line {start_line+1}).\n\n'
-                f'{chunk_text}'
-            )},
-        ]
+    async def _process_chunk(idx: int, start_idx: int, end_idx: int) -> list[DetectedSection]:
+        async with sem:
+            numbered = _number_lines_range(lines, start_idx, end_idx)
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": (
+                    f'Here is a portion (lines {start_idx+1}-{end_idx} of {total_lines}) '
+                    f'of the book "{book_title}"{year_str}.\n'
+                    f'Each line is prefixed with its absolute line number in the full book. '
+                    f'Use those exact numbers for start_line/end_line.\n\n'
+                    f'{numbered}'
+                )},
+            ]
+            logger.info(f"Chunk {idx}/{total_chunks}: lines {start_idx+1}-{end_idx}, {len(numbered)} chars")
+            cb(f"Chunk {idx}/{total_chunks}: lines {start_idx+1}-{end_idx}, sending {len(numbered)} chars to LLM")
+            try:
+                result = await chat_completion_json(
+                    messages,
+                    task="structure_analysis",
+                    temperature=0.1,
+                    max_tokens=32768,
+                )
+                sections = result if isinstance(result, list) else result.get("sections", [])
+                logger.info(f"Chunk {idx}: got {len(sections)} sections")
+                cb(f"Chunk {idx}/{total_chunks}: LLM returned {len(sections)} sections")
+                return [_parse_section(s) for s in sections]
+            except Exception as e:
+                logger.error(f"Chunk {idx} failed: {e}")
+                cb(f"Chunk {idx}/{total_chunks}: ERROR - {e}")
+                return []  # continue with other chunks
 
-        logger.info(f"Chunk {chunk_num}: lines {start_line+1}-{end_line}, {len(chunk_text)} chars")
-        cb(f"Chunk {chunk_num}: lines {start_line+1}-{end_line}, sending {len(chunk_text)} chars to LLM")
-
-        try:
-            result = await chat_completion_json(
-                messages,
-                task="structure_analysis",
-                temperature=0.1,
-                max_tokens=16384,
-            )
-
-            sections = result if isinstance(result, list) else result.get("sections", [])
-            logger.info(f"Chunk {chunk_num}: got {len(sections)} sections")
-            cb(f"Chunk {chunk_num}: LLM returned {len(sections)} sections")
-            all_sections.extend([_parse_section(s) for s in sections])
-        except Exception as e:
-            logger.error(f"Chunk {chunk_num} failed: {e}")
-            cb(f"Chunk {chunk_num}: ERROR - {e}")
-            # Continue with other chunks
-
-        # Stop once the final chunk (reaching the end of the book) is processed.
-        # Otherwise the overlap rewind keeps end_line clamped at total_lines and
-        # start_line stuck at total_lines - overlap_lines forever (infinite loop).
-        if end_line >= total_lines:
-            break
-
-        # Advance with overlap (guard against non-positive step)
-        next_start = end_line - overlap_lines
-        if next_start <= start_line:
-            next_start = start_line + 1
-        start_line = next_start
+    results = await asyncio.gather(*[
+        _process_chunk(i + 1, s, e) for i, (s, e) in enumerate(chunks)
+    ])
+    all_sections = [sec for chunk_sections in results for sec in chunk_sections]
 
     # Merge overlapping sections from different chunks
     merged = _merge_sections(all_sections)
