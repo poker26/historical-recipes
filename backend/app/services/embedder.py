@@ -25,9 +25,10 @@ async def create_embedding(text: str) -> dict:
     url = f"{settings.bge_m3_url}/embed/qdrant"
 
     async with httpx.AsyncClient(timeout=settings.bge_m3_timeout, follow_redirects=True) as client:
-        response = await client.post(url, json={"text": text})
+        response = await client.post(url, json={"texts": [text]})
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+    return data["results"][0]
 
 
 async def create_embeddings_batch(texts: list[str]) -> list[dict]:
@@ -45,4 +46,5 @@ async def create_embeddings_batch(texts: list[str]) -> list[dict]:
     async with httpx.AsyncClient(timeout=settings.bge_m3_timeout * 2, follow_redirects=True) as client:
         response = await client.post(url, json={"texts": truncated})
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+    return data["results"]
