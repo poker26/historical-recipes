@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 # Retry transient failures: provider returning empty content (finish_reason=None),
 # rate limits (429) and upstream errors (5xx). Backoff in seconds per attempt.
-MAX_RETRIES = 3
-RETRY_BACKOFF = [3, 8, 20]
+MAX_RETRIES = 5
+RETRY_BACKOFF = [5, 15, 30, 60]
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 

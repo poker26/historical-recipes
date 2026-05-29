@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 MAX_CHARS_SINGLE_CALL = 400_000  # ~200K tokens — safe limit for Gemini 2.5 Pro
 CHUNK_SIZE = 150_000  # chars of book text per chunk (~75K tokens; Gemini handles 1M)
 CHUNK_OVERLAP = 6_000  # chars of overlap between consecutive chunks
-MAX_CONCURRENT_CHUNKS = 4  # parallel LLM calls (tune down if OpenRouter rate-limits)
+MAX_CONCURRENT_CHUNKS = 2  # parallel LLM calls (kept low: free Qwen tier rate-limits at 4)
 
 
 @dataclass
