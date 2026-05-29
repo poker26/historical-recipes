@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     llm_model_ocr_fallback: str = "google/gemini-2.5-flash"
     llm_model_ocr_hard: str = "google/gemini-2.5-pro"
     llm_model_lightweight: str = "qwen/qwen3-32b"
+    # Large-context model for text-only wizard tasks (structure analysis,
+    # recipe extraction). Was google/gemini-2.5-pro, but Google ToS-blocks the
+    # book content (alcohol distillates / medicinal preparations) with HTTP 403.
+    # Qwen handles Russian well, has a 262K context, and doesn't ToS-filter.
+    llm_model_long_context: str = "qwen/qwen3-235b-a22b-2507"
 
     # n8n
     n8n_base_url: str = "http://n8n:5678"

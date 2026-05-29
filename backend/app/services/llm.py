@@ -25,8 +25,8 @@ MODELS = {
     "ocr_hard": settings.llm_model_ocr_hard,
     "lightweight": settings.llm_model_lightweight,
     # Wizard-specific tasks — use large-context models
-    "structure_analysis": settings.llm_model_ocr_hard,  # gemini-2.5-pro (1M context)
-    "recipe_extraction": settings.llm_model_ocr_hard,   # gemini-2.5-pro (precise extraction)
+    "structure_analysis": settings.llm_model_long_context,  # qwen3-235b-2507 (262K context)
+    "recipe_extraction": settings.llm_model_long_context,   # qwen3-235b-2507 (precise extraction)
     "text_cleanup": settings.llm_model_default,          # qwen3-235b (good Russian)
     "translation": settings.llm_model_default,           # qwen3-235b (pre-reform Russian)
     "ingredient_matching": settings.llm_model_lightweight,  # qwen3-32b (many small calls)
