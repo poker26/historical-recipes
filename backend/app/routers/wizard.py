@@ -38,7 +38,7 @@ from app.services.postprocessor import clean_ocr_text
 from app.services.normalizer import normalize_orthography
 from app.services.structure_analyzer import analyze_book_structure
 from app.services.recipe_extractor import extract_recipes_from_section
-from app.services.llm import chat_completion, chat_completion_json
+from app.services.text_transform import transform_text_chunked
 from app.services.embedder import create_embedding
 from app.services import qdrant as qdrant_svc
 
@@ -180,8 +180,19 @@ async def classify_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     pdf_type = "text" if text_pages >= len(check_pages) * 0.5 else "image"
 
     sample_text = " ".join(p["text"] for p in check_pages if p["text"])
-    pre_reform_chars = sum(1 for c in sample_text if c in "ѣѢіІѳѲ")
-    language = "pre_reform_ru" if pre_reform_chars > 3 else "modern_ru"
+    # Pre-reform Russian detection. The obvious markers (ѣ і ѳ) are often
+    # destroyed by a low-quality OCR layer (ѣ -> Ь, і -> и/н), so we ALSO use the
+    # most robust signal that survives OCR: the word-final hard sign ъ. In
+    # pre-reform orthography nearly every consonant-final word ends in ъ
+    # ("въ заторный чанъ", "пудъ хлѣба"); in modern Russian word-final ъ is
+    # essentially absent.
+    yat_chars = sum(1 for c in sample_text if c in "ѣѢіІѳѲ")
+    words = sample_text.split()
+    final_hard = sum(
+        1 for w in words if w.strip(".,;:!?()[]«»\"'—-–…").endswith(("ъ", "Ъ"))
+    )
+    hard_ratio = final_hard / max(1, len(words))
+    language = "pre_reform_ru" if (yat_chars > 3 or hard_ratio > 0.08) else "modern_ru"
 
     book.pdf_type = pdf_type
     book.language = language
@@ -191,6 +202,7 @@ async def classify_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     log = ProcessingLog(book_id=book_id, step="classify", status="completed",
                         details={"pdf_type": pdf_type, "language": language,
                                  "pages_checked": len(check_pages), "text_pages": text_pages,
+                                 "yat_chars": yat_chars, "final_hard_ratio": round(hard_ratio, 3),
                                  "total_pages": len(pages)})
     db.add(log)
     await db.commit()
@@ -297,38 +309,50 @@ async def cleanup_text(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="No text to clean up. Run extract first.")
 
     tp = _start_progress(bid, "cleanup")
-    tp.task = asyncio.create_task(_bg_cleanup(book_id, book.full_text, book.pdf_type, tp))
+    tp.task = asyncio.create_task(
+        _bg_cleanup(book_id, book.full_text, book.pdf_type, book.language, tp)
+    )
     return {"status": "started", "step": "cleanup"}
 
 
-async def _bg_cleanup(book_id: uuid.UUID, full_text: str, pdf_type: str, tp: TaskProgress):
+CLEANUP_SYSTEM_PROMPT = (
+    "You are cleaning up OCR text from a historical Russian book. "
+    "Fix obvious OCR errors, broken words, and artifacts while preserving "
+    "the original meaning and style. Keep the original orthography if present "
+    "(do NOT modernize spelling — that is a later step). "
+    "Return the cleaned text only, no comments."
+)
+
+
+async def _bg_cleanup(
+    book_id: uuid.UUID, full_text: str, pdf_type: str, language: str, tp: TaskProgress
+):
     try:
         tp.log("Applying rule-based cleanup")
         cleaned = clean_ocr_text(full_text)
 
-        if pdf_type == "image":
-            tp.log("Sending to LLM for OCR artifact cleanup")
-            messages = [
-                {"role": "system", "content": (
-                    "You are cleaning up OCR text from a historical Russian book. "
-                    "Fix obvious OCR errors, broken words, and artifacts while preserving "
-                    "the original meaning and style. Keep the original orthography if present. "
-                    "Return the cleaned text only, no comments."
-                )},
-                {"role": "user", "content": cleaned},
-            ]
-            cleaned = await chat_completion(messages, task="text_cleanup", temperature=0.1, max_tokens=32768)
+        # LLM OCR-artifact cleanup pays off for image PDFs (raw OCR) and for
+        # pre-reform books (whose embedded text layer is bad third-party OCR).
+        use_llm = pdf_type == "image" or language == "pre_reform_ru"
+        if use_llm:
+            tp.log(f"Sending to LLM for OCR artifact cleanup (chunked, {len(cleaned)} chars)")
+            cleaned = await transform_text_chunked(
+                cleaned,
+                system_prompt=CLEANUP_SYSTEM_PROMPT,
+                task="text_cleanup",
+                cb=tp.log,
+            )
             tp.log("LLM cleanup complete")
 
         async with async_session() as db:
             book = (await db.execute(select(Book).where(Book.id == book_id))).scalar_one()
             book.full_text = cleaned
             log = ProcessingLog(book_id=book_id, step="cleanup", status="completed",
-                                details={"text_length": len(cleaned), "used_llm": pdf_type == "image"})
+                                details={"text_length": len(cleaned), "used_llm": use_llm})
             db.add(log)
             await db.commit()
 
-        tp.finish({"text_length": len(cleaned), "used_llm": pdf_type == "image"})
+        tp.finish({"text_length": len(cleaned), "used_llm": use_llm})
     except Exception as e:
         logger.exception("Cleanup failed")
         tp.fail(str(e))
@@ -356,25 +380,29 @@ async def translate_text(book_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     return {"status": "started", "step": "translate"}
 
 
+TRANSLATE_SYSTEM_PROMPT = (
+    "You are translating a historical Russian text from pre-reform orthography "
+    "and archaic language to modern Russian. The text is about herbal tinctures, "
+    "distillates, and medicinal preparations. "
+    "Modernize archaic words and constructions while preserving the exact meaning. "
+    "Keep recipe names, ingredient names, and measurement units recognizable. "
+    "Return only the translated text."
+)
+
+
 async def _bg_translate(book_id: uuid.UUID, full_text: str, tp: TaskProgress):
     try:
         tp.log("Applying rule-based orthographic normalization")
         normalized = normalize_orthography(full_text)
         tp.log(f"Normalized: {len(normalized)} chars")
 
-        tp.log("Sending to LLM for archaic language translation")
-        messages = [
-            {"role": "system", "content": (
-                "You are translating a historical Russian text from pre-reform orthography "
-                "and archaic language to modern Russian. The text is about herbal tinctures, "
-                "distillates, and medicinal preparations. "
-                "Modernize archaic words and constructions while preserving the exact meaning. "
-                "Keep recipe names, ingredient names, and measurement units recognizable. "
-                "Return only the translated text."
-            )},
-            {"role": "user", "content": normalized},
-        ]
-        translated = await chat_completion(messages, task="translation", temperature=0.1, max_tokens=32768)
+        tp.log(f"Sending to LLM for archaic language translation (chunked, {len(normalized)} chars)")
+        translated = await transform_text_chunked(
+            normalized,
+            system_prompt=TRANSLATE_SYSTEM_PROMPT,
+            task="translation",
+            cb=tp.log,
+        )
         tp.log(f"Translated: {len(translated)} chars")
 
         async with async_session() as db:
