@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from app.services.llm import chat_completion_json
 
 
-MAX_CHARS_PER_CALL = 100_000  # ~50K tokens, safe for extraction with response
+# Keep input small: extraction OUTPUT (full original_text duplicated + structured
+# ingredients per recipe) runs ~3x the input, and Cyrillic tokenizes densely, so a
+# big section overruns max_tokens and the JSON gets truncated mid-array. ~12K chars
+# of input keeps the JSON response inside the 32K-token budget.
+MAX_CHARS_PER_CALL = 12_000
 
 
 @dataclass

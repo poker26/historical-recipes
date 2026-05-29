@@ -570,15 +570,24 @@ async def _bg_extract_recipes(
 
             all_recipes = []
 
+            failed_sections = 0
             for i, sd in enumerate(section_data):
                 tp.log(f"Section {i+1}/{len(section_data)}: {sd['title']} ({len(sd['text'])} chars)")
 
-                extracted = await extract_recipes_from_section(
-                    sd["text"],
-                    book_title=book_title,
-                    recipe_pattern=sd["recipe_pattern"],
-                    progress_callback=tp.log,
-                )
+                try:
+                    extracted = await extract_recipes_from_section(
+                        sd["text"],
+                        book_title=book_title,
+                        recipe_pattern=sd["recipe_pattern"],
+                        progress_callback=tp.log,
+                    )
+                except Exception as e:
+                    # One bad section (truncated JSON, transient LLM error) must
+                    # not abort the whole extraction — log, skip, keep the rest.
+                    failed_sections += 1
+                    logger.exception(f"Section {i+1} extraction failed")
+                    tp.log(f"Section {i+1}: ERROR - {e} (skipped)")
+                    continue
 
                 tp.log(f"Section {i+1}: extracted {len(extracted)} recipes")
 
@@ -609,7 +618,8 @@ async def _bg_extract_recipes(
             book.status = "recipes_extracted"
             log = ProcessingLog(book_id=book_id, step="extract_recipes", status="completed",
                                 details={"recipes_count": len(all_recipes),
-                                         "sections_processed": len(section_data)})
+                                         "sections_processed": len(section_data),
+                                         "sections_failed": failed_sections})
             db.add(log)
             await db.commit()
 

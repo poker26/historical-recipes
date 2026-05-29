@@ -134,20 +134,59 @@ async def chat_completion_json(
         pass
 
     # Try extracting from markdown code block
-    if "```json" in raw:
-        start = raw.index("```json") + 7
-        end = raw.index("```", start)
-        return json.loads(raw[start:end].strip())
-    if "```" in raw:
-        start = raw.index("```") + 3
-        end = raw.index("```", start)
-        return json.loads(raw[start:end].strip())
+    for fence in ("```json", "```"):
+        if fence in raw:
+            try:
+                start = raw.index(fence) + len(fence)
+                end = raw.index("```", start)
+                return json.loads(raw[start:end].strip())
+            except (json.JSONDecodeError, ValueError):
+                pass
 
-    # Try finding JSON array or object
+    # Try finding a complete JSON array or object
     for char, end_char in [("[", "]"), ("{", "}")]:
-        if char in raw:
-            start = raw.index(char)
-            end = raw.rindex(end_char) + 1
-            return json.loads(raw[start:end])
+        if char in raw and end_char in raw:
+            try:
+                start = raw.index(char)
+                end = raw.rindex(end_char) + 1
+                return json.loads(raw[start:end])
+            except json.JSONDecodeError:
+                pass
+
+    # Last resort: response was truncated (hit max_tokens mid-array). Salvage
+    # every complete object from the array so we keep what the model produced
+    # instead of losing the whole call.
+    salvaged = _salvage_json_objects(raw)
+    if salvaged:
+        logger.warning(f"Salvaged {len(salvaged)} objects from truncated/invalid JSON response")
+        return salvaged
 
     raise ValueError(f"Could not parse JSON from LLM response: {raw[:500]}...")
+
+
+def _salvage_json_objects(raw: str) -> list:
+    """Recover complete objects from a (possibly truncated) JSON array.
+
+    Finds the first '[' — covers both a bare top-level array and an array nested
+    in a wrapper like {"recipes": [...]} — then decodes objects one at a time,
+    stopping at the first incomplete one. Returns the list of recovered objects.
+    """
+    start = raw.find("[")
+    if start == -1:
+        return []
+    decoder = json.JSONDecoder()
+    objects: list = []
+    i = start + 1
+    n = len(raw)
+    while i < n:
+        while i < n and raw[i] in " \t\r\n,":
+            i += 1
+        if i >= n or raw[i] == "]":
+            break
+        try:
+            obj, end = decoder.raw_decode(raw, i)
+        except json.JSONDecodeError:
+            break  # truncated/incomplete object — stop here
+        objects.append(obj)
+        i = end
+    return objects
