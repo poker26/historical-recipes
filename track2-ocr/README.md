@@ -22,7 +22,8 @@ from images and produces a far better base text.
 - **GPU:** NVIDIA A4000 16 GB (Ampere, compute capability **8.6** ✓ — PaddleOCR-VL
   needs CC ≥ 8.0 and CUDA ≥ 12.6).
 - 8 cores / 32 GB RAM / 128 GB NVMe.
-- **OS:** Ubuntu 26.04 LTS.
+- **OS:** Ubuntu 24.04 LTS (noble) recommended for reliability — fully supported
+  by the Docker and NVIDIA Container Toolkit apt repos. 22.04 (jammy) also works.
 
 ## Architecture
 
@@ -57,10 +58,10 @@ nvidia-smi                 # verify GPU is visible after reboot
 docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi  # verify Docker GPU
 ```
 
-> Ubuntu 26.04 is new; if the Docker or NVIDIA apt repos don't yet publish for
-> its codename, the script's comments explain how to pin to the previous LTS
-> codename. Driver version in the script (`nvidia-driver-580-open`) is a
-> fallback — `ubuntu-drivers autoinstall` normally picks the right one.
+> On 24.04/22.04 the Docker and NVIDIA apt repos publish for the codename, so
+> setup is straightforward. The explicit driver version in the script
+> (`nvidia-driver-580-open`) is only a fallback — `ubuntu-drivers autoinstall`
+> normally picks the right one.
 
 ## Run the batch
 

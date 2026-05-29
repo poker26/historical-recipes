@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Provision a fresh Ubuntu 26.04 LTS GPU VDS (NVIDIA A4000) for Track 2 OCR.
+# Provision a fresh Ubuntu 24.04 LTS (noble) GPU VDS (NVIDIA A4000) for Track 2.
+# 22.04 (jammy) also works — the apt repos below resolve the codename
+# automatically, and both are fully supported by Docker + NVIDIA.
 # Installs: NVIDIA driver, Docker Engine, NVIDIA Container Toolkit.
 # Run as root (or with sudo).  A reboot is required after the driver install.
 set -euo pipefail
@@ -22,9 +24,7 @@ install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
   -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
-# NOTE: if Docker has no 26.04 ("resolute"?) repo yet, pin to the latest LTS
-# codename that exists, e.g. replace "$(. /etc/os-release; echo "$VERSION_CODENAME")"
-# with the previous LTS codename.
+# Resolves to "noble" (24.04) or "jammy" (22.04) — both have Docker repos.
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
 https://download.docker.com/linux/ubuntu $(. /etc/os-release; echo "$VERSION_CODENAME") stable" \
   > /etc/apt/sources.list.d/docker.list
