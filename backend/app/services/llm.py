@@ -1,5 +1,6 @@
 """OpenRouter LLM client with per-task model selection and JSON mode support."""
 
+import asyncio
 import json
 import logging
 import httpx
@@ -7,6 +8,16 @@ import httpx
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Retry transient failures: provider returning empty content (finish_reason=None),
+# rate limits (429) and upstream errors (5xx). Backoff in seconds per attempt.
+MAX_RETRIES = 3
+RETRY_BACKOFF = [3, 8, 20]
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+class _RetryableLLMError(Exception):
+    """Internal: a transient LLM failure worth retrying."""
 
 MODELS = {
     "default": settings.llm_model_default,
@@ -46,6 +57,23 @@ async def chat_completion(
     prompt_chars = sum(len(m.get("content", "")) if isinstance(m.get("content"), str) else 0 for m in messages)
     logger.info(f"LLM request: model={model}, task={task}, prompt_chars={prompt_chars}, max_tokens={max_tokens}")
 
+    last_err: Exception | None = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            return await _do_request(body, model)
+        except _RetryableLLMError as e:
+            last_err = e
+            if attempt < MAX_RETRIES - 1:
+                delay = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                logger.warning(f"LLM transient failure ({e}); retry {attempt+1}/{MAX_RETRIES-1} in {delay}s")
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"LLM failed after {MAX_RETRIES} attempts: {e}")
+    raise ValueError(f"LLM request failed after {MAX_RETRIES} attempts: {last_err}")
+
+
+async def _do_request(body: dict, model: str) -> str:
+    """Single OpenRouter call. Raises _RetryableLLMError on transient failures."""
     async with httpx.AsyncClient(timeout=600) as client:
         response = await client.post(
             f"{settings.openrouter_base_url}/chat/completions",
@@ -54,25 +82,28 @@ async def chat_completion(
             },
             json=body,
         )
-        response.raise_for_status()
-        data = response.json()
 
-        # Check for errors in response
-        if "error" in data:
-            error_msg = data["error"].get("message", str(data["error"]))
-            logger.error(f"LLM error: {error_msg}")
-            raise ValueError(f"LLM API error: {error_msg}")
+    if response.status_code in RETRYABLE_STATUS:
+        raise _RetryableLLMError(f"HTTP {response.status_code}")
+    response.raise_for_status()
+    data = response.json()
 
-        content = data["choices"][0]["message"]["content"]
+    # Check for errors in response body
+    if "error" in data:
+        error_msg = data["error"].get("message", str(data["error"]))
+        logger.error(f"LLM error: {error_msg}")
+        raise ValueError(f"LLM API error: {error_msg}")
 
-        # Handle null/empty content
-        if content is None:
-            finish_reason = data["choices"][0].get("finish_reason", "unknown")
-            logger.warning(f"LLM returned null content, finish_reason={finish_reason}")
-            raise ValueError(f"LLM returned empty response (finish_reason={finish_reason})")
+    content = data["choices"][0]["message"]["content"]
 
-        logger.info(f"LLM response: {len(content)} chars, finish_reason={data['choices'][0].get('finish_reason')}")
-        return content
+    # Null/empty content (e.g. finish_reason=None) — usually a transient provider hiccup
+    if content is None or content == "":
+        finish_reason = data["choices"][0].get("finish_reason", "unknown")
+        logger.warning(f"LLM returned empty content, finish_reason={finish_reason}")
+        raise _RetryableLLMError(f"empty response (finish_reason={finish_reason})")
+
+    logger.info(f"LLM response: {len(content)} chars, finish_reason={data['choices'][0].get('finish_reason')}")
+    return content
 
 
 async def chat_completion_json(
