@@ -185,8 +185,17 @@ async def _analyze_chunked(
             cb(f"Chunk {chunk_num}: ERROR - {e}")
             # Continue with other chunks
 
-        # Advance with overlap
-        start_line = end_line - overlap_lines
+        # Stop once the final chunk (reaching the end of the book) is processed.
+        # Otherwise the overlap rewind keeps end_line clamped at total_lines and
+        # start_line stuck at total_lines - overlap_lines forever (infinite loop).
+        if end_line >= total_lines:
+            break
+
+        # Advance with overlap (guard against non-positive step)
+        next_start = end_line - overlap_lines
+        if next_start <= start_line:
+            next_start = start_line + 1
+        start_line = next_start
 
     # Merge overlapping sections from different chunks
     merged = _merge_sections(all_sections)

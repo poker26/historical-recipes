@@ -177,6 +177,15 @@ export default function WizardPage() {
   const handleMatchIngredients = () => runStep("match-ingredients", () => api.wizardMatchIngredients(bookId));
   const handleIndex = () => runStep("index", () => api.wizardIndex(bookId));
 
+  const handleCancel = async () => {
+    try {
+      await api.wizardCancel(bookId);
+    } catch (e) {
+      setError(String(e));
+    }
+    await refresh();
+  };
+
   const handleDeleteSection = async (sectionId: string) => {
     await api.wizardDeleteSection(bookId, sectionId);
     setSections(prev => prev.filter(s => s.id !== sectionId));
@@ -228,6 +237,13 @@ export default function WizardPage() {
           <span style={{ color: "var(--text-muted)", marginLeft: "auto" }}>
             {progress ? formatElapsed(progress.elapsed) : ""}
           </span>
+          <button
+            className="btn btn-outline"
+            onClick={handleCancel}
+            style={{ borderColor: "var(--red, #ef4444)", color: "var(--red, #ef4444)" }}
+          >
+            Остановить
+          </button>
         </div>
       )}
 

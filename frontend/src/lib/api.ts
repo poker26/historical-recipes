@@ -237,6 +237,8 @@ export const api = {
     apiFetch<WizardStatus>(`/api/wizard/${bookId}/status`),
   wizardProgress: (bookId: string) =>
     apiFetch<WizardProgress>(`/api/wizard/${bookId}/progress`),
+  wizardCancel: (bookId: string) =>
+    apiFetch<{ status: string; step?: string }>(`/api/wizard/${bookId}/cancel`, { method: "POST" }),
   wizardClassify: (bookId: string) =>
     apiFetch<{ status: string; pdf_type: string; language: string; total_pages: number }>(`/api/wizard/${bookId}/classify`, { method: "POST" }),
   wizardExtract: (bookId: string) =>

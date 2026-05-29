@@ -55,12 +55,13 @@ MIN_TEXT_LENGTH = 50
 @dataclass
 class TaskProgress:
     step: str
-    status: str = "running"          # running | completed | error
+    status: str = "running"          # running | completed | error | cancelled
     started_at: float = 0.0
     finished_at: float | None = None
     messages: list[str] = field(default_factory=list)
     result: dict | None = None
     error_text: str | None = None
+    task: "asyncio.Task | None" = None   # background task handle (for cancellation)
 
     def log(self, msg: str):
         elapsed = time.time() - self.started_at
@@ -141,6 +142,27 @@ async def get_progress(book_id: uuid.UUID):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Cancel a running background step
+# ──────────────────────────────────────────────────────────────────────
+
+@router.post("/{book_id}/cancel")
+async def cancel_task(book_id: uuid.UUID):
+    bid = str(book_id)
+    tp = _get_progress(bid)
+    if not tp or tp.status != "running":
+        return {"status": "no_running_task"}
+
+    if tp.task and not tp.task.done():
+        tp.task.cancel()
+
+    tp.status = "cancelled"
+    tp.finished_at = time.time()
+    tp.error_text = "Cancelled by user"
+    tp.log("Cancelled by user")
+    return {"status": "cancelled", "step": tp.step}
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Step 1: Classify  (fast, synchronous)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -196,7 +218,7 @@ async def extract_text(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Book has no PDF file")
 
     tp = _start_progress(bid, "extract")
-    asyncio.create_task(_bg_extract(book_id, book.file_path, book.pdf_type, tp))
+    tp.task = asyncio.create_task(_bg_extract(book_id, book.file_path, book.pdf_type, tp))
     return {"status": "started", "step": "extract"}
 
 
@@ -275,7 +297,7 @@ async def cleanup_text(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="No text to clean up. Run extract first.")
 
     tp = _start_progress(bid, "cleanup")
-    asyncio.create_task(_bg_cleanup(book_id, book.full_text, book.pdf_type, tp))
+    tp.task = asyncio.create_task(_bg_cleanup(book_id, book.full_text, book.pdf_type, tp))
     return {"status": "started", "step": "cleanup"}
 
 
@@ -330,7 +352,7 @@ async def translate_text(book_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     bid = str(book_id)
     _check_not_busy(bid)
     tp = _start_progress(bid, "translate")
-    asyncio.create_task(_bg_translate(book_id, book.full_text, tp))
+    tp.task = asyncio.create_task(_bg_translate(book_id, book.full_text, tp))
     return {"status": "started", "step": "translate"}
 
 
@@ -383,7 +405,7 @@ async def analyze_structure(book_id: uuid.UUID, db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=400, detail="No text to analyze. Run extract first.")
 
     tp = _start_progress(bid, "analyze")
-    asyncio.create_task(_bg_analyze(book_id, book.full_text, book.title, book.year, tp))
+    tp.task = asyncio.create_task(_bg_analyze(book_id, book.full_text, book.title, book.year, tp))
     return {"status": "started", "step": "analyze"}
 
 
@@ -531,7 +553,7 @@ async def extract_recipes(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)
         })
 
     tp = _start_progress(bid, "extract-recipes")
-    asyncio.create_task(_bg_extract_recipes(book_id, book.title, section_data, tp))
+    tp.task = asyncio.create_task(_bg_extract_recipes(book_id, book.title, section_data, tp))
     return {"status": "started", "step": "extract-recipes"}
 
 
@@ -655,7 +677,7 @@ async def match_ingredients(book_id: uuid.UUID, db: AsyncSession = Depends(get_d
     await _get_book(book_id, db)
 
     tp = _start_progress(bid, "match-ingredients")
-    asyncio.create_task(_bg_match_ingredients(book_id, tp))
+    tp.task = asyncio.create_task(_bg_match_ingredients(book_id, tp))
     return {"status": "started", "step": "match-ingredients"}
 
 
@@ -733,7 +755,7 @@ async def index_to_qdrant(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     await _get_book(book_id, db)
 
     tp = _start_progress(bid, "index")
-    asyncio.create_task(_bg_index(book_id, tp))
+    tp.task = asyncio.create_task(_bg_index(book_id, tp))
     return {"status": "started", "step": "index"}
 
 
