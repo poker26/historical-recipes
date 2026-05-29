@@ -33,7 +33,9 @@ SYSTEM_PROMPT = """You are analyzing the structure of a historical Russian book 
 distillates, and medicinal preparations. Your task is to identify what sections the book contains.
 
 Identify ALL sections of the book. For each section, determine its type:
-- recipe_block: a contiguous group of actual recipes with ingredients and preparation instructions
+- recipe_block: a contiguous group of actual recipes. A recipe may be STRUCTURED (a name plus an \
+ingredient list/table and/or steps) OR PROSE (a narrative paragraph of what to take and how to prepare it). \
+Either form counts — the block contains instructions for making preparations (by ingredients and/or by process)
 - bibliography: lists of references, authors, publications
 - toc: table of contents
 - introduction: foreword, preface, general descriptions without specific recipes

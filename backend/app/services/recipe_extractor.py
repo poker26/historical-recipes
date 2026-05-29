@@ -34,19 +34,30 @@ class ExtractedRecipe:
 SYSTEM_PROMPT = """You are extracting individual recipes from a section of a historical Russian recipe book \
 about herbal tinctures, distillates, and medicinal preparations.
 
-Be PRECISE — extract ONLY actual recipes that contain ingredients and/or preparation instructions. \
-Do NOT extract:
+A "recipe" is any self-contained instruction for making a preparation. It can take EITHER form:
+- STRUCTURED: a name followed by a list or table of ingredients with quantities, and/or numbered steps.
+- PROSE: a narrative paragraph describing what to take and what to do \
+(e.g. "Возьми фунтъ кардамона, настаивай на спирту три дня, потомъ перегони и процеди"), \
+even without an itemised ingredient list.
+Both forms are EQUALLY valid recipes. Some recipes emphasise INGREDIENTS (precise quantities matter), \
+others emphasise the PROCESS (steps: смешать, настоять, перегнать, процедить, слить). Capture BOTH kinds — \
+never skip a recipe just because it is written as prose or lacks a clean ingredient list, and never skip one \
+just because it is mostly a table with little prose.
+
+Be PRECISE about what is NOT a recipe. Do NOT extract:
 - Chapter headers or section dividers
 - Bibliography or reference entries
 - Table of contents entries
-- General descriptions or introductory text
+- Purely general/introductory descriptions that give no way to make anything
 - Footnotes or editorial comments
 
 For each recipe, extract:
 - name: the recipe name/title
 - category: one of водка, ликёр, настойка, бальзам, масло, вода, эссенция, эликсир, тинктура, ратафия, розолия, другое
-- original_text: the COMPLETE original recipe text (including name, ingredients, and instructions)
-- ingredients: array of extracted ingredients, each with:
+- original_text: the COMPLETE original recipe text, verbatim (name + ingredients + the full preparation process)
+- ingredients: array of ingredients you can identify — parse them out of prose too when possible. \
+If a recipe genuinely has no separable ingredients, return an empty array but STILL output the recipe. \
+Each ingredient with:
   - name: ingredient name in nominative case (именительный падеж), e.g. "корица" not "корицы"
   - amount: numeric amount as string, e.g. "2", "0.5"
   - unit: measurement unit, e.g. "золотник", "фунт", "ведро", "штоф", "бутылка", "стакан"
