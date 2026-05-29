@@ -44,7 +44,9 @@ Identify ALL sections of the book. For each section, determine its type:
 For recipe_block sections, also identify the formatting pattern used for recipe boundaries \
 (e.g., "**N. Title**", "§ N. Title", "N) Title", or describe the specific pattern).
 
-Return a JSON array. Each element:
+Return a JSON object with a single key "sections" whose value is an ARRAY of \
+section objects (one element per distinct section — do NOT return just one section). \
+Each element of the "sections" array:
 {
   "type": "recipe_block|bibliography|toc|introduction|appendix|chapter_header|other",
   "title": "section title or short description",
@@ -54,6 +56,8 @@ Return a JSON array. Each element:
   "estimated_recipe_count": <number or null>,
   "confidence": 0.0-1.0
 }
+
+Example shape: {"sections": [ {"type": "introduction", ...}, {"type": "recipe_block", ...} ]}
 
 Be thorough — identify every distinct section. Pay attention to:
 - Multiple recipe blocks in one book (different chapters for vodkas, liqueurs, tinctures, etc.)
@@ -156,7 +160,7 @@ async def _analyze_single(
         max_tokens=16384,
     )
 
-    sections = result if isinstance(result, list) else result.get("sections", [])
+    sections = _extract_sections(result)
     logger.info(f"Single-call: got {len(sections)} sections")
     cb(f"LLM returned {len(sections)} sections")
     return [_parse_section(s) for s in sections]
@@ -205,7 +209,7 @@ async def _analyze_chunked(
                     temperature=0.1,
                     max_tokens=32768,
                 )
-                sections = result if isinstance(result, list) else result.get("sections", [])
+                sections = _extract_sections(result)
                 logger.info(f"Chunk {idx}: got {len(sections)} sections")
                 cb(f"Chunk {idx}/{total_chunks}: LLM returned {len(sections)} sections")
                 return [_parse_section(s) for s in sections]
@@ -224,6 +228,31 @@ async def _analyze_chunked(
     logger.info(f"Total: {len(all_sections)} raw sections -> {len(merged)} merged sections")
     cb(f"Merged: {len(all_sections)} raw -> {len(merged)} sections")
     return merged
+
+
+def _extract_sections(result) -> list[dict]:
+    """Pull the list of section dicts out of an LLM JSON response.
+
+    Models are inconsistent under json_object mode: some return a bare array,
+    some wrap it as {"sections": [...]}, and some (e.g. Qwen) return a SINGLE
+    section object. Normalize all of these to a list of dicts.
+    """
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        # Wrapped array under a known/any key
+        for key in ("sections", "result", "results", "data"):
+            val = result.get(key)
+            if isinstance(val, list):
+                return val
+        # A single section object returned directly (has section-ish keys)
+        if any(k in result for k in ("type", "section_type", "start_line", "title")):
+            return [result]
+        # Fallback: first list-valued field, if any
+        for val in result.values():
+            if isinstance(val, list):
+                return val
+    return []
 
 
 def _parse_section(data: dict) -> DetectedSection:

@@ -48,8 +48,30 @@ For each recipe, extract:
   - unit: measurement unit, e.g. "золотник", "фунт", "ведро", "штоф", "бутылка", "стакан"
   - original: the ingredient phrase as written in the original text
 
-Return a JSON array of recipe objects.
+Return a JSON object with a single key "recipes" whose value is an ARRAY of recipe objects \
+(one element per recipe). Example shape: {"recipes": [ {"name": ...}, {"name": ...} ]}.
 Important: preserve the EXACT original text of each recipe. Do not modify, correct, or modernize it."""
+
+
+def _extract_recipes(result) -> list[dict]:
+    """Normalize an LLM JSON response to a list of recipe dicts.
+
+    Handles bare arrays, {"recipes": [...]} wrappers, a single recipe object,
+    and other single list-valued fields (models differ under json_object mode).
+    """
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        for key in ("recipes", "result", "results", "data"):
+            val = result.get(key)
+            if isinstance(val, list):
+                return val
+        if any(k in result for k in ("name", "ingredients", "original_text")):
+            return [result]
+        for val in result.values():
+            if isinstance(val, list):
+                return val
+    return []
 
 
 async def extract_recipes_from_section(
@@ -125,7 +147,7 @@ async def _extract_single(
         max_tokens=32768,
     )
 
-    recipes = result if isinstance(result, list) else result.get("recipes", [])
+    recipes = _extract_recipes(result)
     return [_parse_recipe(r) for r in recipes if _is_valid_recipe(r)]
 
 
