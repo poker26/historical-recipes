@@ -83,9 +83,15 @@ async def _do_request(body: dict, model: str) -> str:
             json=body,
         )
 
-    if response.status_code in RETRYABLE_STATUS:
-        raise _RetryableLLMError(f"HTTP {response.status_code}")
-    response.raise_for_status()
+    if response.status_code >= 400:
+        # Surface OpenRouter's error body — it explains *why* (credits, data
+        # policy, model access, disabled key). raise_for_status() hides it.
+        body_text = response.text[:1000]
+        if response.status_code in RETRYABLE_STATUS:
+            raise _RetryableLLMError(f"HTTP {response.status_code}: {body_text}")
+        logger.error(f"LLM HTTP {response.status_code}: {body_text}")
+        raise ValueError(f"LLM API error HTTP {response.status_code}: {body_text}")
+
     data = response.json()
 
     # Check for errors in response body
