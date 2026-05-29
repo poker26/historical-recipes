@@ -75,9 +75,12 @@ export default function WizardPage() {
 
   // Auto-scroll the log box to its own bottom — scroll ONLY the inner
   // container, never the window (scrollIntoView would yank the whole page down).
+  // And only when the user is already near the bottom, so manual scroll-up sticks.
   useEffect(() => {
     const box = logBoxRef.current;
-    if (box) box.scrollTop = box.scrollHeight;
+    if (!box) return;
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+    if (nearBottom) box.scrollTop = box.scrollHeight;
   }, [progress?.messages]);
 
   // Poll progress when a step is running
