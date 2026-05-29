@@ -1,0 +1,50 @@
+# Track 2: GPU batch re-OCR of the PDF corpus with PaddleOCR-VL.
+#
+# Two services:
+#   vllm-server  — official Baidu image; serves the VLM on the GPU (port 8118).
+#   batch        — our client; reads ./data/pdfs, writes ./data/output as .md.
+#
+# Requires the host to have: NVIDIA driver, Docker, and NVIDIA Container Toolkit
+# (`nvidia-ctk runtime configure --runtime=docker`). See setup_vds.sh + README.
+#
+# Usage on the VDS:
+#   docker compose up -d vllm-server      # start GPU server, wait until ready
+#   docker compose run --rm batch         # run the batch (foreground, resumable)
+
+services:
+  vllm-server:
+    image: ${VLLM_IMAGE:-ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu}
+    command: >
+      paddleocr genai_server
+      --model_name ${VL_MODEL_NAME:-PaddleOCR-VL-1.5-0.9B}
+      --host 0.0.0.0
+      --port 8118
+      --backend vllm
+    ports:
+      - "8118:8118"
+    volumes:
+      - ./data/hf-cache:/root/.cache    # cache downloaded model weights
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: "8gb"
+    restart: unless-stopped
+
+  batch:
+    build: .
+    depends_on:
+      - vllm-server
+    environment:
+      VL_SERVER_URL: ${VL_SERVER_URL:-http://vllm-server:8118/v1}
+      VL_MODEL_NAME: ${VL_MODEL_NAME:-PaddleOCR-VL-1.5-0.9B}
+      INPUT_DIR: /data/pdfs
+      OUTPUT_DIR: /data/output
+    volumes:
+      - ./data:/data
+      - ./data/model-cache:/models
+    # one-shot: `docker compose run --rm batch`
+    restart: "no"

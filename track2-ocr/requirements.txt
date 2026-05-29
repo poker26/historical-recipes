@@ -1,0 +1,7 @@
+# Batch-runner (client) deps. The GPU/VLM side lives in the official
+# paddleocr-genai-vllm-server image — NOT here.
+#
+# paddleocr[doc-parser] pulls paddlepaddle (CPU) + the layout/orientation
+# models the pipeline runs locally before sending regions to the vLLM server.
+paddleocr[doc-parser]>=3.0.0
+httpx>=0.27
