@@ -43,7 +43,7 @@ export default function WizardPage() {
   // Progress state (polled)
   const [progress, setProgress] = useState<WizardProgress | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const logEndRef = useRef<HTMLDivElement>(null);
+  const logBoxRef = useRef<HTMLDivElement>(null);
 
   // Step-specific state
   const [classifyResult, setClassifyResult] = useState<Record<string, unknown> | null>(null);
@@ -73,9 +73,11 @@ export default function WizardPage() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // Auto-scroll log to bottom
+  // Auto-scroll the log box to its own bottom — scroll ONLY the inner
+  // container, never the window (scrollIntoView would yank the whole page down).
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const box = logBoxRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
   }, [progress?.messages]);
 
   // Poll progress when a step is running
@@ -587,7 +589,7 @@ export default function WizardPage() {
 
         {/* Live progress messages (when a step is running or just finished) */}
         {progress && progress.messages.length > 0 && (
-          <div style={{
+          <div ref={logBoxRef} style={{
             background: "var(--bg)",
             border: "1px solid var(--border)",
             borderRadius: 8,
@@ -606,7 +608,6 @@ export default function WizardPage() {
                 {msg}
               </div>
             ))}
-            <div ref={logEndRef} />
           </div>
         )}
 
