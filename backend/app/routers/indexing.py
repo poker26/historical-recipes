@@ -121,15 +121,16 @@ async def delete_book_vectors(book_id: uuid.UUID, db: AsyncSession = Depends(get
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
 
-    # Delete from recipes collection
-    await qdrant_svc.delete_by_filter(
-        settings.qdrant_collection_recipes, "source_book", str(book_id)
-    )
-
-    # Delete from herbalism collection
-    await qdrant_svc.delete_by_filter(
-        settings.qdrant_collection_herbalism, "source_book", str(book_id)
-    )
+    # Only touch collections that actually exist — on the shared Qdrant the
+    # herbalism collection may be absent, and deleting from a missing
+    # collection 404s (previously surfaced as a 500 for the whole request).
+    existing = set(await qdrant_svc.list_collections())
+    for collection in (
+        settings.qdrant_collection_recipes,
+        settings.qdrant_collection_herbalism,
+    ):
+        if collection in existing:
+            await qdrant_svc.delete_by_filter(collection, "source_book", str(book_id))
 
     # Clear Qdrant references in recipes
     await db.execute(
