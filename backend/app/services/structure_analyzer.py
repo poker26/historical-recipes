@@ -293,6 +293,13 @@ def _merge_sections(sections: list[DetectedSection]) -> list[DetectedSection]:
             if s.recipe_pattern and not prev.recipe_pattern:
                 prev.recipe_pattern = s.recipe_pattern
         else:
+            # Different types that overlap (e.g. a recipe_block the LLM also
+            # swept into a broad introduction). Clip the earlier section so the
+            # later one owns the contested lines — recipe content shouldn't be
+            # double-counted under an introduction. Cosmetic: keeps boundaries
+            # disjoint without dropping either section.
+            if s.start_line <= prev.end_line and s.start_line > prev.start_line:
+                prev.end_line = s.start_line - 1
             merged.append(s)
 
     return merged

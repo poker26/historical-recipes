@@ -14,6 +14,18 @@ from app.services.llm import chat_completion_json
 # of input keeps the JSON response inside the 32K-token budget.
 MAX_CHARS_PER_CALL = 12_000
 
+# Whitelist of recipe categories. Anything the LLM returns outside this set
+# (e.g. "дистиллят", "кальвадос") collapses to "другое" so the facet stays clean.
+VALID_CATEGORIES = {
+    "водка", "ликёр", "настойка", "бальзам", "масло", "вода",
+    "эссенция", "эликсир", "тинктура", "ратафия", "розолия", "другое",
+}
+
+# A real recipe has at least this much body text. Below it we're almost always
+# looking at a stray section header the LLM mistook for a recipe
+# (e.g. "Оборудование", "Сырьё", "Пропорции").
+MIN_RECIPE_TEXT_LEN = 150
+
 
 @dataclass
 class ExtractedIngredient:
@@ -167,14 +179,26 @@ async def _extract_single(
 
 
 def _is_valid_recipe(data: dict) -> bool:
-    """Check if extracted data looks like a real recipe."""
+    """Check if extracted data looks like a real recipe.
+
+    Rejects bare section headers and tiny fragments: a genuine recipe (prose or
+    structured) carries a preparation process, which never fits in <150 chars.
+    A short body with no ingredients is almost certainly a misclassified header
+    (Оборудование / Сырьё / Пропорции).
+    """
     name = data.get("name", "").strip()
     if not name or len(name) < 3:
         return False
-    text = data.get("original_text", "")
-    if len(text) < 30:
+    text = (data.get("original_text") or "").strip()
+    if len(text) < MIN_RECIPE_TEXT_LEN:
         return False
     return True
+
+
+def _normalize_category(raw: str) -> str:
+    """Map an LLM-returned category to the whitelist; unknown -> 'другое'."""
+    cat = (raw or "").strip().lower()
+    return cat if cat in VALID_CATEGORIES else "другое"
 
 
 def _parse_recipe(data: dict) -> ExtractedRecipe:
@@ -190,7 +214,7 @@ def _parse_recipe(data: dict) -> ExtractedRecipe:
 
     return ExtractedRecipe(
         name=data.get("name", "").strip(),
-        category=data.get("category", "другое"),
+        category=_normalize_category(data.get("category", "другое")),
         original_text=data.get("original_text", ""),
         ingredients=ingredients,
     )
