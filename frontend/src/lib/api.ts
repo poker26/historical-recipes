@@ -83,12 +83,27 @@ export interface ProcessingLog {
 export interface Recipe {
   id: string;
   book_id: string;
+  book_title: string | null;
+  book_author: string | null;
+  book_year: number | null;
   name: string;
   category: string | null;
   original_text: string | null;
   normalized_text: string | null;
   year: number | null;
   indexed_at: string | null;
+}
+
+export interface RecipeIngredient {
+  id: string;
+  name: string;
+  original_name: string | null;
+  amount: string | null;
+  unit: string | null;
+}
+
+export interface RecipeDetail extends Recipe {
+  ingredients: RecipeIngredient[];
 }
 
 export interface Plant {
@@ -224,7 +239,7 @@ export const api = {
     const s = qs.toString();
     return apiFetch<Recipe[]>(`/api/recipes/${s ? `?${s}` : ""}`);
   },
-  getRecipe: (id: string) => apiFetch<Recipe>(`/api/recipes/${id}/`),
+  getRecipe: (id: string) => apiFetch<RecipeDetail>(`/api/recipes/${id}/`),
 
   // Plants
   listPlants: (q?: string) => apiFetch<Plant[]>(`/api/plants/${q ? `?q=${q}` : ""}`),

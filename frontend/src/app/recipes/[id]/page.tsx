@@ -3,12 +3,12 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { api, Recipe } from "@/lib/api";
+import { api, RecipeDetail } from "@/lib/api";
 
 export default function RecipeDetailPage() {
   const params = useParams();
   const id = params.id as string;
-  const [recipe, setRecipe] = useState<Recipe | null>(null);
+  const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -26,6 +26,23 @@ export default function RecipeDetailPage() {
           <h1>{recipe.name}</h1>
         </div>
         {recipe.category && <span className="badge badge-blue">{recipe.category}</span>}
+      </div>
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 24, flexWrap: "wrap", fontSize: 14 }}>
+          <div>
+            <span style={{ color: "var(--text-muted)" }}>Source book: </span>
+            {recipe.book_title ? (
+              <Link href={`/books/${recipe.book_id}`}>{recipe.book_title}</Link>
+            ) : "—"}
+          </div>
+          {recipe.book_author && (
+            <div><span style={{ color: "var(--text-muted)" }}>Author: </span>{recipe.book_author}</div>
+          )}
+          {(recipe.year || recipe.book_year) && (
+            <div><span style={{ color: "var(--text-muted)" }}>Year: </span>{recipe.year || recipe.book_year}</div>
+          )}
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>

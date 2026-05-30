@@ -21,7 +21,9 @@ async def list_recipes(
     db: AsyncSession = Depends(get_db),
 ):
     """List recipes with search and filters."""
-    stmt = select(Recipe).join(Book, Recipe.book_id == Book.id)
+    stmt = select(Recipe, Book.title, Book.author, Book.year).join(
+        Book, Recipe.book_id == Book.id
+    )
 
     if category:
         stmt = stmt.where(Recipe.category == category)
@@ -35,12 +37,15 @@ async def list_recipes(
 
     stmt = stmt.order_by(Recipe.created_at.desc())
     result = await db.execute(stmt)
-    recipes = result.scalars().all()
+    rows = result.all()
 
     return [
         {
             "id": str(r.id),
             "book_id": str(r.book_id),
+            "book_title": book_title,
+            "book_author": book_author,
+            "book_year": book_year,
             "name": r.name,
             "category": r.category,
             "original_text": r.original_text,
@@ -48,7 +53,7 @@ async def list_recipes(
             "year": r.year,
             "indexed_at": r.indexed_at.isoformat() if r.indexed_at else None,
         }
-        for r in recipes
+        for (r, book_title, book_author, book_year) in rows
     ]
 
 
@@ -64,9 +69,16 @@ async def get_recipe(recipe_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     if not recipe:
         raise HTTPException(status_code=404, detail="Recipe not found")
 
+    book = (
+        await db.execute(select(Book).where(Book.id == recipe.book_id))
+    ).scalar_one_or_none()
+
     return {
         "id": str(recipe.id),
         "book_id": str(recipe.book_id),
+        "book_title": book.title if book else None,
+        "book_author": book.author if book else None,
+        "book_year": book.year if book else None,
         "name": recipe.name,
         "category": recipe.category,
         "original_text": recipe.original_text,

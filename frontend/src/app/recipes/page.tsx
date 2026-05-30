@@ -46,14 +46,21 @@ export default function RecipesPage() {
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>Name</th><th>Category</th><th>Year</th><th>Indexed</th></tr>
+                <tr><th>Name</th><th>Book</th><th>Category</th><th>Year</th><th>Indexed</th></tr>
               </thead>
               <tbody>
                 {recipes.map((r) => (
                   <tr key={r.id}>
                     <td><Link href={`/recipes/${r.id}`}>{r.name}</Link></td>
+                    <td>
+                      {r.book_title ? (
+                        <Link href={`/books/${r.book_id}`} style={{ color: "var(--text-muted)" }}>
+                          {r.book_title}
+                        </Link>
+                      ) : "—"}
+                    </td>
                     <td>{r.category ? <span className="badge badge-blue">{r.category}</span> : "—"}</td>
-                    <td>{r.year || "—"}</td>
+                    <td>{r.year || r.book_year || "—"}</td>
                     <td>{r.indexed_at ? <span className="badge badge-green">indexed</span> : <span className="badge badge-gray">no</span>}</td>
                   </tr>
                 ))}
