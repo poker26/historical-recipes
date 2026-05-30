@@ -12,8 +12,11 @@ from app.schemas.book import (
     BookOut, BookDetailOut, BookPageOut, BookChunkOut, ChunkUpdate, ProcessingLogOut,
 )
 from app.services import minio as minio_svc
+from app.services import qdrant as qdrant_svc
 
 router = APIRouter()
+
+QDRANT_COLLECTION = "recipes_v2"
 
 
 @router.get("/", response_model=list[BookOut])
@@ -149,6 +152,13 @@ async def delete_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     files = minio_svc.list_files(f"books/{book_id}/")
     for f in files:
         minio_svc.delete_file(f)
+
+    # Delete this book's vectors from Qdrant (else they linger in search after
+    # the Postgres rows are gone). Best-effort: don't block deletion on it.
+    try:
+        await qdrant_svc.delete_by_filter(QDRANT_COLLECTION, "book_id", str(book_id))
+    except Exception:
+        pass
 
     await db.delete(book)
     await db.commit()
