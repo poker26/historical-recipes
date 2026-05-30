@@ -29,12 +29,6 @@ export default function BookDetailPage() {
   if (loading) return <div className="empty"><span className="spinner" /></div>;
   if (!book) return <div className="empty">Book not found</div>;
 
-  const handleProcess = async () => {
-    await api.processBook(id);
-    const updated = await api.getBook(id);
-    setBook(updated);
-  };
-
   const handleIndex = async () => {
     await api.indexBook(id);
     const updated = await api.getBook(id);
@@ -50,7 +44,6 @@ export default function BookDetailPage() {
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <Link href={`/books/${id}/wizard`} className="btn btn-primary">Open Wizard</Link>
-          <button className="btn btn-outline" onClick={handleProcess}>Process (n8n)</button>
           <button className="btn btn-outline" onClick={handleIndex}>Index</button>
         </div>
       </div>
