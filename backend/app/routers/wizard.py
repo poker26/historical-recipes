@@ -868,6 +868,95 @@ async def _bg_index(book_id: uuid.UUID, tp: TaskProgress):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Temporal: run the WHOLE pipeline as one durable workflow
+# ──────────────────────────────────────────────────────────────────────
+#
+# This is the durable replacement for chaining the individual /classify,
+# /extract, ... endpoints from the frontend.  One workflow runs every step
+# end-to-end; it survives a backend/worker restart and retries transient LLM
+# and HTTP failures.  Imports are local so the rest of the wizard (and the test
+# suite) doesn't hard-depend on the temporalio package being installed.
+
+def _workflow_id(book_id: uuid.UUID) -> str:
+    return f"book-pipeline-{book_id}"
+
+
+@router.post("/{book_id}/run")
+async def run_pipeline(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Start the end-to-end durable pipeline workflow for a book."""
+    await _get_book(book_id, db)  # 404 if missing
+
+    from temporalio.service import RPCError
+    from app.config import settings
+    from app.temporal.client import get_temporal_client
+    from app.temporal.workflows import BookPipelineWorkflow
+
+    client = await get_temporal_client()
+    wf_id = _workflow_id(book_id)
+
+    # Reject if one is already running for this book.
+    try:
+        desc = await client.get_workflow_handle(wf_id).describe()
+        if desc.status and desc.status.name == "RUNNING":
+            raise HTTPException(status_code=409, detail="Pipeline already running for this book")
+    except RPCError:
+        pass  # no existing workflow — fine
+
+    handle = await client.start_workflow(
+        BookPipelineWorkflow.run,
+        str(book_id),
+        id=wf_id,
+        task_queue=settings.temporal_task_queue,
+    )
+    return {"status": "started", "workflow_id": handle.id, "run_id": handle.result_run_id}
+
+
+@router.get("/{book_id}/workflow")
+async def workflow_status(book_id: uuid.UUID):
+    """Describe the durable pipeline workflow (status + last known result)."""
+    from temporalio.service import RPCError
+    from app.temporal.client import get_temporal_client
+
+    client = await get_temporal_client()
+    handle = client.get_workflow_handle(_workflow_id(book_id))
+    try:
+        desc = await handle.describe()
+    except RPCError:
+        return {"exists": False, "status": "none"}
+
+    status = desc.status.name if desc.status else "UNKNOWN"
+    result = None
+    if status == "COMPLETED":
+        try:
+            result = await handle.result()
+        except Exception as e:  # pragma: no cover - defensive
+            result = {"error": str(e)}
+    return {
+        "exists": True,
+        "workflow_id": handle.id,
+        "status": status,
+        "start_time": desc.start_time.isoformat() if desc.start_time else None,
+        "close_time": desc.close_time.isoformat() if desc.close_time else None,
+        "result": result,
+    }
+
+
+@router.post("/{book_id}/workflow/cancel")
+async def workflow_cancel(book_id: uuid.UUID):
+    """Cancel a running pipeline workflow."""
+    from temporalio.service import RPCError
+    from app.temporal.client import get_temporal_client
+
+    client = await get_temporal_client()
+    handle = client.get_workflow_handle(_workflow_id(book_id))
+    try:
+        await handle.cancel()
+    except RPCError as e:
+        raise HTTPException(status_code=404, detail=f"No workflow to cancel: {e}")
+    return {"status": "cancel_requested"}
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Status
 # ──────────────────────────────────────────────────────────────────────
 

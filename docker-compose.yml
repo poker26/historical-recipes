@@ -34,3 +34,17 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+
+  # === Temporal worker ===
+  # Runs the durable book-pipeline activities/workflows.  Reuses the backend
+  # image (same code + deps) but its command is the worker entrypoint instead
+  # of uvicorn.  No published ports: it only makes outbound gRPC calls to the
+  # shared Temporal cluster on server 3.
+  worker:
+    build: ./backend
+    env_file: .env
+    command: python -m app.temporal.worker
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

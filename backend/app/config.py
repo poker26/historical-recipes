@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     n8n_base_url: str = "http://n8n:5678"
     n8n_webhook_secret: str = ""
 
+    # Temporal (durable orchestration of the long-running book pipeline).
+    # The shared cluster lives on server 3; gRPC frontend is plain (no TLS/auth).
+    temporal_address: str = "45.12.72.157:7233"
+    temporal_namespace: str = "default"
+    temporal_task_queue: str = "historical-recipes"
+
     # CORS
     cors_origins: list[str] = ["http://localhost:3000", "http://frontend:3000"]
 
