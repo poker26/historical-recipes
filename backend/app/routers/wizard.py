@@ -882,14 +882,29 @@ def _workflow_id(book_id: uuid.UUID) -> str:
 
 
 @router.post("/{book_id}/run")
-async def run_pipeline(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Start the end-to-end durable pipeline workflow for a book."""
+async def run_pipeline(
+    book_id: uuid.UUID,
+    start_step: str = "classify",
+    db: AsyncSession = Depends(get_db),
+):
+    """Start the end-to-end durable pipeline workflow for a book.
+
+    ``start_step`` (query param) optionally resumes the pipeline partway
+    through — useful when earlier steps are already committed and re-running
+    them would waste expensive LLM work.
+    """
     await _get_book(book_id, db)  # 404 if missing
 
     from temporalio.service import RPCError
     from app.config import settings
     from app.temporal.client import get_temporal_client
-    from app.temporal.workflows import BookPipelineWorkflow
+    from app.temporal.workflows import BookPipelineWorkflow, STEP_NAMES
+
+    if start_step not in STEP_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid start_step '{start_step}'. Must be one of: {', '.join(STEP_NAMES)}",
+        )
 
     client = await get_temporal_client()
     wf_id = _workflow_id(book_id)
@@ -904,11 +919,12 @@ async def run_pipeline(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
     handle = await client.start_workflow(
         BookPipelineWorkflow.run,
-        str(book_id),
+        args=[str(book_id), start_step],
         id=wf_id,
         task_queue=settings.temporal_task_queue,
     )
-    return {"status": "started", "workflow_id": handle.id, "run_id": handle.result_run_id}
+    return {"status": "started", "workflow_id": handle.id,
+            "run_id": handle.result_run_id, "start_step": start_step}
 
 
 @router.get("/{book_id}/workflow")
