@@ -13,6 +13,7 @@ from app.schemas.book import (
 )
 from app.services import minio as minio_svc
 from app.services import qdrant as qdrant_svc
+from app.services import ingest as ingest_svc
 
 router = APIRouter()
 
@@ -75,16 +76,40 @@ async def upload_book(
     year: int | None = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload a PDF book to MinIO and create a book record."""
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+    """Upload a book (PDF / DjVu / TXT / DOCX) to MinIO and create a record.
+
+    DjVu is converted to PDF on ingest so the rest of the pipeline only ever
+    deals with PDFs.  Born-text formats (txt/docx) keep their text and skip OCR.
+    """
+    source_format = ingest_svc.detect_source_format(file.filename or "")
+    if not source_format:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Accepted: .pdf, .djvu, .txt, .docx",
+        )
 
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    # Detect PDF type (image vs text) by checking for text extraction capability
-    pdf_type = _detect_pdf_type(content)
+    # Normalise DjVu to PDF up front; downstream treats it as a PDF.
+    if source_format == "djvu":
+        try:
+            content = ingest_svc.djvu_to_pdf(content)
+        except Exception as e:  # noqa: BLE001 — surface conversion failure to the client
+            raise HTTPException(status_code=400, detail=f"DjVu conversion failed: {e}")
+
+    # Determine stored object + preliminary pdf_type.
+    if source_format in ingest_svc.BORN_TEXT_FORMATS:
+        stored_ext = source_format
+        content_type = "text/plain" if source_format == "txt" else (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        pdf_type = "text"
+    else:  # pdf, or djvu now converted to pdf
+        stored_ext = "pdf"
+        content_type = "application/pdf"
+        pdf_type = _detect_pdf_type(content)
 
     # Create book record first to get ID
     book = Book(
@@ -94,18 +119,21 @@ async def upload_book(
         author=author,
         year=year,
         pdf_type=pdf_type,
+        source_format=source_format,
         status="uploaded",
     )
     db.add(book)
     await db.flush()
 
-    # Upload to MinIO: books/{id}/original.pdf
-    file_path = f"books/{book.id}/original.pdf"
-    minio_svc.upload_file(content, file_path, content_type="application/pdf")
+    # Upload to MinIO: books/{id}/original.{ext}
+    file_path = f"books/{book.id}/original.{stored_ext}"
+    minio_svc.upload_file(content, file_path, content_type=content_type)
     book.file_path = file_path
 
     # Log
-    log = ProcessingLog(book_id=book.id, step="upload", status="completed", details={"size": len(content), "pdf_type": pdf_type})
+    log = ProcessingLog(book_id=book.id, step="upload", status="completed",
+                        details={"size": len(content), "pdf_type": pdf_type,
+                                 "source_format": source_format})
     db.add(log)
 
     await db.commit()

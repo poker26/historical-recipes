@@ -31,6 +31,7 @@ export interface Book {
   year: number | null;
   language: string;
   pdf_type: string;
+  source_format: string;
   domain: string;
   file_path: string | null;
   status: string;

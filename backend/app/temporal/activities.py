@@ -23,6 +23,7 @@ from app.models.book import Book, BookPage, BookSection, ProcessingLog
 from app.models.recipe import Recipe, RecipeIngredient
 from app.models.ingredient import Ingredient, IngredientSynonym
 from app.services import minio as minio_svc
+from app.services.ingest import BORN_TEXT_FORMATS, extract_text_from_document
 from app.services.preprocessor import split_pdf_smart
 from app.services.ocr import ocr_page_with_fallback
 from app.services.postprocessor import clean_ocr_text
@@ -66,6 +67,22 @@ def _hb(msg: str):
         pass
 
 
+def _detect_language(sample_text: str) -> tuple[int, float, str]:
+    """Classify Russian orthography from a text sample.
+
+    Returns (yat_char_count, final-hard-sign ratio, language). Pre-reform
+    Russian shows yat/i-decimal/fita letters and word-final hard signs.
+    """
+    yat_chars = sum(1 for c in sample_text if c in "ѣѢіІѳѲ")
+    words = sample_text.split()
+    final_hard = sum(
+        1 for w in words if w.strip(".,;:!?()[]«»\"'—-–…").endswith(("ъ", "Ъ"))
+    )
+    hard_ratio = final_hard / max(1, len(words))
+    language = "pre_reform_ru" if (yat_chars > 3 or hard_ratio > 0.08) else "modern_ru"
+    return yat_chars, hard_ratio, language
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Step 1: Classify
 # ──────────────────────────────────────────────────────────────────────
@@ -76,37 +93,49 @@ async def classify_activity(book_id: str) -> dict:
     async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         if not book.file_path:
-            raise ValueError("Book has no PDF file")
+            raise ValueError("Book has no source file")
+        source_format = book.source_format or "pdf"
+        file_path = book.file_path
 
-        pdf_bytes = minio_svc.download_file(book.file_path)
+    if source_format in BORN_TEXT_FORMATS:
+        # Born-text (txt/docx): text is already in the file, no OCR/PDF split.
+        _hb(f"Reading born-text document ({source_format})")
+        data = minio_svc.download_file(file_path)
+        text = extract_text_from_document(data, source_format)
+        pdf_type = "text"
+        total_pages = 1
+        yat_chars, hard_ratio, language = _detect_language(text[:5000])
+        details = {"pdf_type": pdf_type, "language": language, "source_format": source_format,
+                   "text_length": len(text), "yat_chars": yat_chars,
+                   "final_hard_ratio": round(hard_ratio, 3)}
+    else:
+        # PDF (incl. DjVu already converted to PDF on upload).
+        pdf_bytes = minio_svc.download_file(file_path)
         pages = split_pdf_smart(pdf_bytes)
+        total_pages = len(pages)
 
         check_pages = pages[1:6] if len(pages) > 1 else pages[:5]
         text_pages = sum(1 for p in check_pages if p["page_type"] == "text")
         pdf_type = "text" if text_pages >= len(check_pages) * 0.5 else "image"
 
         sample_text = " ".join(p["text"] for p in check_pages if p["text"])
-        yat_chars = sum(1 for c in sample_text if c in "ѣѢіІѳѲ")
-        words = sample_text.split()
-        final_hard = sum(
-            1 for w in words if w.strip(".,;:!?()[]«»\"'—-–…").endswith(("ъ", "Ъ"))
-        )
-        hard_ratio = final_hard / max(1, len(words))
-        language = "pre_reform_ru" if (yat_chars > 3 or hard_ratio > 0.08) else "modern_ru"
+        yat_chars, hard_ratio, language = _detect_language(sample_text)
+        details = {"pdf_type": pdf_type, "language": language, "source_format": source_format,
+                   "pages_checked": len(check_pages), "text_pages": text_pages,
+                   "yat_chars": yat_chars, "final_hard_ratio": round(hard_ratio, 3),
+                   "total_pages": total_pages}
 
+    async with async_session() as db:
+        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         book.pdf_type = pdf_type
         book.language = language
         book.wizard_step = 2
         book.status = "classified"
-        db.add(ProcessingLog(book_id=bid, step="classify", status="completed",
-                             details={"pdf_type": pdf_type, "language": language,
-                                      "pages_checked": len(check_pages), "text_pages": text_pages,
-                                      "yat_chars": yat_chars, "final_hard_ratio": round(hard_ratio, 3),
-                                      "total_pages": len(pages)}))
+        db.add(ProcessingLog(book_id=bid, step="classify", status="completed", details=details))
         await db.commit()
 
-    _hb(f"classified: pdf_type={pdf_type} language={language} pages={len(pages)}")
-    return {"pdf_type": pdf_type, "language": language, "total_pages": len(pages)}
+    _hb(f"classified: pdf_type={pdf_type} language={language} pages={total_pages}")
+    return {"pdf_type": pdf_type, "language": language, "total_pages": total_pages}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -119,10 +148,36 @@ async def extract_activity(book_id: str) -> dict:
     async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         if not book.file_path:
-            raise ValueError("Book has no PDF file")
+            raise ValueError("Book has no source file")
         file_path = book.file_path
-        pdf_type = book.pdf_type
+        source_format = book.source_format or "pdf"
 
+    # Born-text (txt/docx): the file already holds text — no PDF split, no OCR.
+    if source_format in BORN_TEXT_FORMATS:
+        _hb(f"Reading born-text document ({source_format})")
+        data = minio_svc.download_file(file_path)
+        full_text = extract_text_from_document(data, source_format)
+        async with async_session() as db:
+            existing = await db.execute(select(BookPage).where(BookPage.book_id == bid))
+            for p in existing.scalars().all():
+                await db.delete(p)
+            await db.flush()
+            db.add(BookPage(
+                book_id=bid, page_number=1, image_path=None, raw_text=full_text,
+                dpi=0, ocr_confidence=100.0, needs_review=False, status="text_extracted",
+            ))
+            book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
+            book.full_text = full_text
+            book.wizard_step = 3
+            book.status = "extracted"
+            db.add(ProcessingLog(book_id=bid, step="extract", status="completed",
+                                 details={"total_pages": 1, "text_length": len(full_text),
+                                          "source_format": source_format}))
+            await db.commit()
+        _hb(f"extracted: born-text {source_format}, {len(full_text)} chars")
+        return {"total_pages": 1, "text_length": len(full_text)}
+
+    async with async_session() as db:
         _hb("Downloading PDF from storage")
         pdf_bytes = minio_svc.download_file(file_path)
         _hb("Splitting PDF into pages")

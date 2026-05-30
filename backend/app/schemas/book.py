@@ -30,6 +30,7 @@ class BookOut(BaseModel):
     year: int | None
     language: str
     pdf_type: str
+    source_format: str
     domain: str
     file_path: str | None
     status: str

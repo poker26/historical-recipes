@@ -1,9 +1,10 @@
 FROM python:3.12-slim
 
-# Install Tesseract OCR with Russian language
+# Tesseract OCR (+ Russian) and djvulibre (ddjvu: DjVu -> PDF conversion)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-rus \
+    djvulibre-bin \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -18,6 +18,7 @@ class Book(Base):
     year: Mapped[int | None] = mapped_column(Integer)
     language: Mapped[str] = mapped_column(String(20), default="modern_ru")  # modern_ru, pre_reform_ru
     pdf_type: Mapped[str] = mapped_column(String(10), default="text")  # image, text, mixed
+    source_format: Mapped[str] = mapped_column(String(10), default="pdf")  # pdf, djvu, txt, docx
     domain: Mapped[str] = mapped_column(String(20), default="recipes")  # recipes, herbalism
     file_path: Mapped[str | None] = mapped_column(Text)  # path in MinIO
     status: Mapped[str] = mapped_column(String(20), default="uploaded")

@@ -50,8 +50,8 @@ export default function BooksPage() {
           <h2 style={{ marginBottom: 16 }}>Upload New Book</h2>
           <form onSubmit={handleUpload}>
             <div className="form-group">
-              <label>PDF File</label>
-              <input type="file" name="file" accept=".pdf" required />
+              <label>File (PDF, DjVu, TXT, DOCX)</label>
+              <input type="file" name="file" accept=".pdf,.djvu,.txt,.docx" required />
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div className="form-group">
