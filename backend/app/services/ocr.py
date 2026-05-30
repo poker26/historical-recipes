@@ -1,18 +1,22 @@
-"""OCR service: Tesseract primary + LLM fallback via OpenRouter.
+"""OCR service: Tesseract primary + vision-LLM fallback via OpenRouter.
 
-Tesseract handles most pages. For pages with low confidence (<60%),
-we fall back to multimodal LLM (Gemini Flash/Pro) which handles
-unusual fonts and degraded scans better.
+Tesseract handles most pages. For low-confidence pages we fall back to a
+multimodal LLM (Qwen3-VL) which handles unusual fonts and degraded scans
+better. The fallback is best-effort: if the vision call fails it degrades to
+the Tesseract text rather than aborting extraction.
 """
 
 import base64
 import io
+import logging
 
 import pytesseract
 from PIL import Image
 
 from app.config import settings
 from app.services.llm import chat_completion
+
+logger = logging.getLogger(__name__)
 
 
 def ocr_page(image_bytes: bytes) -> tuple[str, float]:
@@ -80,11 +84,17 @@ async def ocr_page_with_fallback(image_bytes: bytes) -> tuple[str, float, str]:
     if confidence >= settings.ocr_confidence_auto:
         return text, confidence, "tesseract"
 
+    # Low/medium confidence: escalate to a vision LLM. If that call fails
+    # (rate limit, provider ToS 403, transient error), degrade gracefully to
+    # the Tesseract text we already have rather than aborting the whole book.
     if confidence >= settings.ocr_confidence_review:
-        # Medium confidence: try Gemini Flash
-        llm_text = await ocr_page_llm(image_bytes, task="ocr_fallback")
-        return llm_text, confidence, "llm_flash"
+        task, method = "ocr_fallback", "llm_fallback"
+    else:
+        task, method = "ocr_hard", "llm_hard"
 
-    # Low confidence: use Gemini Pro
-    llm_text = await ocr_page_llm(image_bytes, task="ocr_hard")
-    return llm_text, confidence, "llm_pro"
+    try:
+        llm_text = await ocr_page_llm(image_bytes, task=task)
+        return llm_text, confidence, method
+    except Exception as e:
+        logger.warning(f"LLM OCR ({task}) failed: {e}; keeping Tesseract text")
+        return text, confidence, "tesseract_fallback"

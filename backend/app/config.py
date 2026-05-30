@@ -29,8 +29,12 @@ class Settings(BaseSettings):
 
     # LLM models per task
     llm_model_default: str = "qwen/qwen3-235b-a22b"
-    llm_model_ocr_fallback: str = "google/gemini-2.5-flash"
-    llm_model_ocr_hard: str = "google/gemini-2.5-pro"
+    # OCR vision models. Were Google Gemini, but Google ToS-blocks the book
+    # content (alcohol distillates / medicinal preparations) with HTTP 403 on
+    # the vision path too — same issue as the text tasks. Qwen3-VL handles
+    # Cyrillic / pre-reform glyphs and doesn't ToS-filter.
+    llm_model_ocr_fallback: str = "qwen/qwen3-vl-32b-instruct"
+    llm_model_ocr_hard: str = "qwen/qwen3-vl-235b-a22b-instruct"
     llm_model_lightweight: str = "qwen/qwen3-32b"
     # Large-context model for text-only wizard tasks (structure analysis,
     # recipe extraction). Was google/gemini-2.5-pro, but Google ToS-blocks the
