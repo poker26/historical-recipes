@@ -171,6 +171,26 @@ export interface WizardRecipe {
   text_preview: string;
 }
 
+// Durable Temporal pipeline workflow state.
+export interface WizardWorkflow {
+  exists: boolean;
+  workflow_id?: string;
+  status: string;            // none | RUNNING | COMPLETED | FAILED | CANCELED | TERMINATED | UNKNOWN
+  start_time?: string | null;
+  close_time?: string | null;
+  current_step?: string | null;     // canonical step name of the running activity
+  current_detail?: string | null;   // latest heartbeat message ("Chunk 14/81")
+  current_attempt?: number | null;   // retry attempt of the running activity
+  completed_steps?: string[];        // canonical step names already done
+  result?: Record<string, unknown> | null;
+}
+
+// Canonical pipeline step order (matches backend STEP_NAMES).
+export const PIPELINE_STEP_NAMES = [
+  "classify", "extract", "cleanup", "translate",
+  "analyze", "extract_recipes", "match_ingredients", "index",
+];
+
 // === API functions ===
 
 export const api = {
@@ -261,4 +281,15 @@ export const api = {
     apiFetch<{ status: string; matched: number; new_created: number }>(`/api/wizard/${bookId}/match-ingredients`, { method: "POST" }),
   wizardIndex: (bookId: string) =>
     apiFetch<{ status: string; points_indexed: number; collection: string }>(`/api/wizard/${bookId}/index`, { method: "POST" }),
+
+  // Durable Temporal pipeline (run the whole pipeline as one workflow)
+  wizardRun: (bookId: string, startStep?: string) =>
+    apiFetch<{ status: string; workflow_id: string; run_id: string; start_step: string }>(
+      `/api/wizard/${bookId}/run${startStep ? `?start_step=${startStep}` : ""}`,
+      { method: "POST" },
+    ),
+  wizardWorkflow: (bookId: string) =>
+    apiFetch<WizardWorkflow>(`/api/wizard/${bookId}/workflow`),
+  wizardWorkflowCancel: (bookId: string) =>
+    apiFetch<{ status: string }>(`/api/wizard/${bookId}/workflow/cancel`, { method: "POST" }),
 };

@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { api, WizardStatus, WizardProgress, WizardSection, WizardRecipe } from "@/lib/api";
+import { api, WizardStatus, WizardProgress, WizardSection, WizardRecipe, WizardWorkflow } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
 const STEPS = [
@@ -15,6 +15,27 @@ const STEPS = [
   { num: 6, label: "Ingredients", key: "match-ingredients", action: "Matching ingredients..." },
   { num: 7, label: "Index", key: "index", action: "Indexing to Qdrant..." },
 ];
+
+// Canonical workflow step name (backend, 8 steps incl. cleanup) -> the 7-box
+// indicator. Cleanup is folded into the "Extract Text" box.
+const CANON_TO_STEPNUM: Record<string, number> = {
+  classify: 1, extract: 2, cleanup: 2, translate: 3,
+  analyze: 4, extract_recipes: 5, match_ingredients: 6, index: 7,
+};
+
+// Resume-from choices for the durable run (label -> canonical step name).
+const RESUME_CHOICES: { value: string; label: string }[] = [
+  { value: "classify", label: "С начала (Classify)" },
+  { value: "extract", label: "Extract Text" },
+  { value: "cleanup", label: "Cleanup" },
+  { value: "translate", label: "Translate" },
+  { value: "analyze", label: "Analyze" },
+  { value: "extract_recipes", label: "Extract Recipes" },
+  { value: "match_ingredients", label: "Match Ingredients" },
+  { value: "index", label: "Index" },
+];
+
+const WF_ACTIVE = (s?: string) => s === "RUNNING";
 
 const SECTION_TYPES = [
   "recipe_block", "bibliography", "toc", "introduction",
@@ -44,6 +65,11 @@ export default function WizardPage() {
   const [progress, setProgress] = useState<WizardProgress | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logBoxRef = useRef<HTMLDivElement>(null);
+
+  // Durable Temporal workflow state (polled separately from the manual steps)
+  const [wf, setWf] = useState<WizardWorkflow | null>(null);
+  const wfPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [resumeStep, setResumeStep] = useState("classify");
 
   // Step-specific state
   const [classifyResult, setClassifyResult] = useState<Record<string, unknown> | null>(null);
@@ -130,9 +156,88 @@ export default function WizardPage() {
     }
   }, [ws?.progress?.running, startPolling]);
 
+  // ── Durable Temporal workflow polling ──────────────────────────────
+  const refreshWorkflow = useCallback(async () => {
+    try {
+      const w = await api.wizardWorkflow(bookId);
+      setWf(w);
+      return w;
+    } catch {
+      return null;
+    }
+  }, [bookId]);
+
+  const stopWfPolling = useCallback(() => {
+    if (wfPollingRef.current) {
+      clearInterval(wfPollingRef.current);
+      wfPollingRef.current = null;
+    }
+  }, []);
+
+  const startWfPolling = useCallback(() => {
+    if (wfPollingRef.current) return;
+    wfPollingRef.current = setInterval(async () => {
+      const w = await refreshWorkflow();
+      if (w && !WF_ACTIVE(w.status)) {
+        stopWfPolling();
+        await refresh();  // pull final DB state (recipes, logs, wizard_step)
+      }
+    }, 3000);
+  }, [refreshWorkflow, stopWfPolling, refresh]);
+
+  // Detect an in-flight workflow on load (e.g. a run started elsewhere) and
+  // begin polling so the UI reflects it live.
+  useEffect(() => {
+    refreshWorkflow().then((w) => {
+      if (w && WF_ACTIVE(w.status)) startWfPolling();
+    });
+    return () => stopWfPolling();
+  }, [refreshWorkflow, startWfPolling, stopWfPolling]);
+
+  const handleRunAll = async () => {
+    setError(null);
+    try {
+      await api.wizardRun(bookId, resumeStep === "classify" ? undefined : resumeStep);
+      const w = await refreshWorkflow();
+      if (w && WF_ACTIVE(w.status)) startWfPolling();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleCancelWf = async () => {
+    try {
+      await api.wizardWorkflowCancel(bookId);
+    } catch (e) {
+      setError(String(e));
+    }
+    await refreshWorkflow();
+  };
+
   const busy = progress?.running === true;
   const runningStep = busy ? progress?.step : null;
   const runningLabel = runningStep ? STEPS.find(s => s.key === runningStep)?.action || `Running ${runningStep}...` : null;
+
+  // Durable-workflow derived state
+  const wfRunning = WF_ACTIVE(wf?.status);
+  const anyBusy = busy || wfRunning;  // disable manual controls while either runs
+  const wfCurrentNum = wf?.current_step ? CANON_TO_STEPNUM[wf.current_step] ?? null : null;
+  const wfCompletedNums = new Set((wf?.completed_steps || []).map((s) => CANON_TO_STEPNUM[s]));
+
+  // Per-box state for the step indicator. When a workflow is active/finished it
+  // drives the boxes; otherwise we fall back to the manual (DB wizard_step) view.
+  const boxState = (num: number): { done: boolean; running: boolean } => {
+    if (wf && (wf.status === "RUNNING" || wf.status === "COMPLETED")) {
+      if (wf.status === "COMPLETED") return { done: true, running: false };
+      const running = wfCurrentNum === num;
+      return { done: !running && wfCompletedNums.has(num), running };
+    }
+    const currentStepLocal = ws?.wizard_step || 1;
+    return {
+      done: currentStepLocal > num,
+      running: runningStep === STEPS.find((s) => s.num === num)?.key,
+    };
+  };
 
   // Fire a step: POST to backend, start polling
   const runStep = async (stepKey: string, fn: () => Promise<unknown>) => {
@@ -209,7 +314,6 @@ export default function WizardPage() {
   if (loading) return <div className="empty"><span className="spinner" /></div>;
   if (!ws) return <div className="empty">Book not found</div>;
 
-  const currentStep = ws.wizard_step || 1;
   const formatElapsed = (s: number) => s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 
   return (
@@ -222,6 +326,89 @@ export default function WizardPage() {
           <h1>Processing Wizard</h1>
         </div>
         <StatusBadge status={ws.status} />
+      </div>
+
+      {/* Durable pipeline (Temporal): run all steps as one workflow */}
+      <div className="card" style={{ marginBottom: 16, border: "1px solid var(--blue)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 240px" }}>
+            <div style={{ fontWeight: 600, fontSize: 15 }}>
+              ⚙️ Конвейер целиком (Temporal)
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              Запускает все 7 шагов как один устойчивый workflow — переживает перезапуски и повторяет сбойные шаги.
+            </div>
+          </div>
+
+          {!wfRunning && (
+            <>
+              <div>
+                <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block" }}>Начать с шага</label>
+                <select
+                  value={resumeStep}
+                  onChange={(e) => setResumeStep(e.target.value)}
+                  style={{ width: 200 }}
+                  disabled={anyBusy}
+                >
+                  {RESUME_CHOICES.map((c) => (
+                    <option key={c.value} value={c.value}>{c.label}</option>
+                  ))}
+                </select>
+              </div>
+              <button className="btn btn-primary" onClick={handleRunAll} disabled={anyBusy}>
+                Запустить конвейер
+              </button>
+            </>
+          )}
+
+          {wfRunning && (
+            <button
+              className="btn btn-outline"
+              onClick={handleCancelWf}
+              style={{ borderColor: "var(--red, #ef4444)", color: "var(--red, #ef4444)" }}
+            >
+              Остановить workflow
+            </button>
+          )}
+        </div>
+
+        {/* Live workflow state */}
+        {wf && wf.exists && (
+          <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+            {wfRunning ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14 }}>
+                <span className="spinner" />
+                <span style={{ fontWeight: 500 }}>
+                  {RESUME_CHOICES.find((c) => c.value === wf.current_step)?.label || wf.current_step || "Запуск..."}
+                </span>
+                {wf.current_detail && (
+                  <span style={{ color: "var(--text-muted)", fontFamily: "monospace", fontSize: 12 }}>
+                    {wf.current_detail}
+                  </span>
+                )}
+                {typeof wf.current_attempt === "number" && wf.current_attempt > 1 && (
+                  <span className="badge badge-yellow">попытка {wf.current_attempt}</span>
+                )}
+                <span style={{ marginLeft: "auto", color: "var(--text-muted)", fontSize: 12 }}>
+                  {wf.start_time ? formatElapsed((Date.now() - new Date(wf.start_time).getTime()) / 1000) : ""}
+                </span>
+              </div>
+            ) : wf.status === "COMPLETED" ? (
+              <div style={{ fontSize: 13, color: "var(--green)" }}>
+                ✓ Workflow завершён
+                {wf.result && typeof (wf.result as Record<string, unknown>).index === "object" && (
+                  <span style={{ color: "var(--text-muted)", marginLeft: 8 }}>
+                    — проиндексировано {String(((wf.result as Record<string, Record<string, unknown>>).index)?.points_indexed ?? "?")} рецептов
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: "var(--red)" }}>
+                Workflow: {wf.status}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Global running banner */}
@@ -255,9 +442,10 @@ export default function WizardPage() {
       {/* Step indicator */}
       <div style={{ display: "flex", gap: 4, marginBottom: 24 }}>
         {STEPS.map((step) => {
-          const done = currentStep > step.num;
+          const bs = boxState(step.num);
+          const done = bs.done;
           const active = activeStep === step.num;
-          const isRunning = runningStep === step.key;
+          const isRunning = bs.running;
           return (
             <button
               key={step.num}
@@ -306,7 +494,7 @@ export default function WizardPage() {
             <p style={{ color: "var(--text-muted)", marginBottom: 16 }}>
               Detect whether this is a text PDF or image PDF, and whether the language is modern or pre-reform Russian.
             </p>
-            <button className="btn btn-primary" onClick={handleClassify} disabled={busy}>
+            <button className="btn btn-primary" onClick={handleClassify} disabled={anyBusy}>
               Classify
             </button>
             {(classifyResult || ws.pdf_type) && (
@@ -336,10 +524,10 @@ export default function WizardPage() {
               Extract text from all pages. Text PDFs use PyMuPDF, image PDFs use OCR + LLM fallback.
             </p>
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-              <button className="btn btn-primary" onClick={handleExtract} disabled={busy}>
+              <button className="btn btn-primary" onClick={handleExtract} disabled={anyBusy}>
                 Extract All Pages
               </button>
-              <button className="btn btn-outline" onClick={handleCleanup} disabled={busy}>
+              <button className="btn btn-outline" onClick={handleCleanup} disabled={anyBusy}>
                 LLM Cleanup
               </button>
             </div>
@@ -373,7 +561,7 @@ export default function WizardPage() {
             <button
               className="btn btn-primary"
               onClick={handleTranslate}
-              disabled={busy || ws.language === "modern_ru"}
+              disabled={anyBusy || ws.language === "modern_ru"}
             >
               {ws.language === "modern_ru" ? "Not Needed" : "Translate"}
             </button>
@@ -388,7 +576,7 @@ export default function WizardPage() {
               LLM analyzes the book text and identifies sections: recipe blocks, bibliography, TOC, etc.
               You can correct section types or delete false positives.
             </p>
-            <button className="btn btn-primary" onClick={handleAnalyze} disabled={busy}>
+            <button className="btn btn-primary" onClick={handleAnalyze} disabled={anyBusy}>
               Analyze Structure
             </button>
             {sections.length > 0 && (
@@ -455,7 +643,7 @@ export default function WizardPage() {
               LLM extracts structured recipes from identified recipe blocks.
               Review results and delete any false positives.
             </p>
-            <button className="btn btn-primary" onClick={handleExtractRecipes} disabled={busy}>
+            <button className="btn btn-primary" onClick={handleExtractRecipes} disabled={anyBusy}>
               Extract Recipes
             </button>
             {recipes.length > 0 && (
@@ -508,7 +696,7 @@ export default function WizardPage() {
               Match extracted ingredients against the global dictionary.
               New ingredients are added automatically.
             </p>
-            <button className="btn btn-primary" onClick={handleMatchIngredients} disabled={busy}>
+            <button className="btn btn-primary" onClick={handleMatchIngredients} disabled={anyBusy}>
               Match Ingredients
             </button>
             {ingredientResult && (
@@ -537,7 +725,7 @@ export default function WizardPage() {
             <p style={{ color: "var(--text-muted)", marginBottom: 16 }}>
               Generate BGE-M3 embeddings (dense + sparse) and index recipes to Qdrant collection recipes_v2.
             </p>
-            <button className="btn btn-primary" onClick={handleIndex} disabled={busy}>
+            <button className="btn btn-primary" onClick={handleIndex} disabled={anyBusy}>
               Index to Qdrant
             </button>
             {indexResult && (
@@ -565,7 +753,7 @@ export default function WizardPage() {
         >
           Back
         </button>
-        <button className="btn btn-outline" onClick={refresh} disabled={busy}>
+        <button className="btn btn-outline" onClick={refresh} disabled={anyBusy}>
           Refresh
         </button>
         <button

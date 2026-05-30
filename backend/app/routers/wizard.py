@@ -929,9 +929,16 @@ async def run_pipeline(
 
 @router.get("/{book_id}/workflow")
 async def workflow_status(book_id: uuid.UUID):
-    """Describe the durable pipeline workflow (status + last known result)."""
+    """Describe the durable pipeline workflow.
+
+    Surfaces enough for a live UI: overall status, the currently-running step,
+    that step's latest heartbeat detail (e.g. "Chunk 14/81"), the retry attempt,
+    the list of completed steps (to drive the step indicator), and the final
+    per-step result once the workflow finishes.
+    """
     from temporalio.service import RPCError
     from app.temporal.client import get_temporal_client
+    from app.temporal.workflows import STEP_NAMES
 
     client = await get_temporal_client()
     handle = client.get_workflow_handle(_workflow_id(book_id))
@@ -941,18 +948,52 @@ async def workflow_status(book_id: uuid.UUID):
         return {"exists": False, "status": "none"}
 
     status = desc.status.name if desc.status else "UNKNOWN"
+
+    # Inspect the running activity (if any) from the raw describe response.
+    current_step = None
+    current_detail = None
+    current_attempt = None
+    try:
+        pending = list(getattr(desc.raw_description, "pending_activities", []))
+        if pending:
+            pa = pending[0]
+            current_step = pa.activity_type.name.replace("_activity", "")
+            current_attempt = pa.attempt
+            hb = getattr(pa, "heartbeat_details", None)
+            if hb and getattr(hb, "payloads", None):
+                decoded = await client.data_converter.decode(list(hb.payloads))
+                if decoded:
+                    current_detail = decoded[0]
+    except Exception:  # pragma: no cover - defensive against SDK shape changes
+        pass
+
     result = None
     if status == "COMPLETED":
         try:
             result = await handle.result()
         except Exception as e:  # pragma: no cover - defensive
             result = {"error": str(e)}
+
+    # Derive completed steps for the UI indicator.  The workflow runs strictly
+    # in order, so everything before the running step is done; once finished,
+    # everything is done.
+    if status == "COMPLETED":
+        completed_steps = list(STEP_NAMES)
+    elif current_step in STEP_NAMES:
+        completed_steps = STEP_NAMES[: STEP_NAMES.index(current_step)]
+    else:
+        completed_steps = []
+
     return {
         "exists": True,
         "workflow_id": handle.id,
         "status": status,
         "start_time": desc.start_time.isoformat() if desc.start_time else None,
         "close_time": desc.close_time.isoformat() if desc.close_time else None,
+        "current_step": current_step,
+        "current_detail": current_detail,
+        "current_attempt": current_attempt,
+        "completed_steps": completed_steps,
         "result": result,
     }
 
