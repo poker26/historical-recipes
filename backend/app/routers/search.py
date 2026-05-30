@@ -38,12 +38,17 @@ async def search(request: SearchRequest):
 
     # 2. Determine collections to search
     if request.collection:
-        collections = [request.collection]
+        requested = [request.collection]
     else:
-        collections = [
+        requested = [
             settings.qdrant_collection_recipes,
             settings.qdrant_collection_herbalism,
         ]
+
+    # Only query collections that actually exist — on the shared Qdrant some
+    # (e.g. herbalism) may not be created yet, and querying a missing one 500s.
+    existing = set(await qdrant_svc.list_collections())
+    collections = [c for c in requested if c in existing]
 
     # 3. Search
     all_results = []

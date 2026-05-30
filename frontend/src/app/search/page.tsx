@@ -56,7 +56,7 @@ export default function SearchPage() {
               <label style={{ fontSize: 12, color: "var(--text-muted)" }}>Collection</label>
               <select value={collection} onChange={(e) => setCollection(e.target.value)} style={{ width: 160 }}>
                 <option value="">Both collections</option>
-                <option value="recipes">Recipes</option>
+                <option value="recipes_v2">Recipes</option>
                 <option value="herbalism">Herbalism</option>
               </select>
             </div>

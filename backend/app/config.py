@@ -15,13 +15,19 @@ class Settings(BaseSettings):
     # Qdrant (self-hosted)
     qdrant_url: str = "http://qdrant:6333"
     qdrant_api_key: str = ""
-    qdrant_collection_recipes: str = "recipes"
+    # NOTE: the indexing pipeline writes recipes to "recipes_v2" (the bare
+    # "recipes" name collides with a foreign collection on the shared Qdrant).
+    # Search must query the SAME collection, so this default must match.
+    qdrant_collection_recipes: str = "recipes_v2"
     qdrant_collection_herbalism: str = "herbalism"
 
     # BGE-M3 (self-hosted embeddings)
     bge_m3_url: str = "http://bge-m3:8100"
     bge_m3_port: int = 8100
     bge_m3_timeout: float = 60.0
+    # The prod BGE-M3 endpoint is HTTPS with a self-signed cert on an internal
+    # IP; set BGE_M3_VERIFY_SSL=false there so httpx doesn't reject the cert.
+    bge_m3_verify_ssl: bool = True
 
     # OpenRouter (LLM gateway)
     openrouter_api_key: str = ""
