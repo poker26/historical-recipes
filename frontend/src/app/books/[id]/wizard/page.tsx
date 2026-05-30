@@ -37,6 +37,56 @@ const RESUME_CHOICES: { value: string; label: string }[] = [
 
 const WF_ACTIVE = (s?: string) => s === "RUNNING";
 
+// Human-readable Russian labels for the pipeline step names stored in the DB
+// processing log (and emitted by the Temporal workflow).
+const STEP_LABELS_RU: Record<string, string> = {
+  classify: "Классификация",
+  extract: "Извлечение текста",
+  cleanup: "Очистка OCR",
+  translate: "Перевод на современный",
+  analyze: "Анализ структуры",
+  extract_recipes: "Извлечение рецептов",
+  match_ingredients: "Сопоставление ингредиентов",
+  index: "Индексация в Qdrant",
+};
+
+// Turn a raw processing-log `details` object into a short readable summary,
+// instead of dumping JSON at the user.
+function summarizeLogDetails(step: string, d: Record<string, unknown> | null): string {
+  if (!d || Object.keys(d).length === 0) return "";
+  const g = (k: string): string => {
+    const v = d[k];
+    return v === undefined || v === null ? "?" : String(v);
+  };
+  const num = (k: string) => (typeof d[k] === "number" ? (d[k] as number) : undefined);
+  const k1000 = (k: string) => {
+    const v = num(k);
+    return v === undefined ? "?" : `${Math.round(v / 1000)}K`;
+  };
+  switch (step) {
+    case "classify":
+      return `${g("pdf_type")}, ${g("language")}, ${g("total_pages")} стр.`;
+    case "extract":
+      return `${g("total_pages")} стр., ${k1000("text_length")} символов`;
+    case "cleanup":
+      return `${k1000("text_length")} символов${d.used_llm ? ", LLM-очистка" : ", без LLM"}`;
+    case "translate":
+      return `${k1000("original_length")} → ${k1000("translated_length")} символов`;
+    case "analyze":
+      return `${g("sections_found")} секций, из них ${num("recipe_blocks") ?? 0} с рецептами`;
+    case "extract_recipes": {
+      const failed = num("sections_failed");
+      return `${num("recipes_count") ?? 0} рецептов из ${num("sections_processed") ?? 0} секций${failed ? `, ошибок: ${failed}` : ""}`;
+    }
+    case "match_ingredients":
+      return `совпало ${num("matched") ?? 0}, добавлено новых ${num("new_created") ?? 0}`;
+    case "index":
+      return `${num("points_indexed") ?? 0} рецептов → ${g("collection")}`;
+    default:
+      return Object.entries(d).map(([k, v]) => `${k}: ${String(v)}`).join(", ");
+  }
+}
+
 const SECTION_TYPES = [
   "recipe_block", "bibliography", "toc", "introduction",
   "appendix", "chapter_header", "other",
@@ -765,57 +815,65 @@ export default function WizardPage() {
         </button>
       </div>
 
-      {/* Live Progress Log */}
+      {/* Processing history + live monospace log (manual runs) */}
       <div className="card" style={{ marginTop: 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <h3>
-            {busy ? (
-              <><span className="spinner" style={{ marginRight: 8 }} />Live Progress</>
-            ) : "Processing Log"}
-          </h3>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <h3>Журнал обработки</h3>
           <button className="btn btn-outline" onClick={refresh} style={{ fontSize: 12, padding: "4px 10px" }}>
-            Refresh
+            Обновить
           </button>
         </div>
+        <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
+          История завершённых шагов по этой книге — что было сделано и с каким результатом.
+        </p>
 
-        {/* Live progress messages (when a step is running or just finished) */}
-        {progress && progress.messages.length > 0 && (
-          <div ref={logBoxRef} style={{
-            background: "var(--bg)",
-            border: "1px solid var(--border)",
-            borderRadius: 8,
-            padding: 12,
-            marginBottom: 16,
-            maxHeight: 300,
-            overflowY: "auto",
-            fontFamily: "monospace",
-            fontSize: 12,
-            lineHeight: 1.6,
-          }}>
-            {progress.messages.map((msg, i) => (
-              <div key={i} style={{
-                color: msg.includes("ERROR") ? "var(--red)" : msg.includes("Done") ? "var(--green)" : "var(--text-secondary)",
-              }}>
-                {msg}
-              </div>
-            ))}
+        {/* Live monospace messages — only for MANUAL step runs. A Temporal run
+            shows its live progress in the pipeline panel at the top instead. */}
+        {busy && progress && progress.messages.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--blue)", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+              <span className="spinner" /> Текущий шаг: {STEP_LABELS_RU[runningStep || ""] || runningStep}
+            </div>
+            <div ref={logBoxRef} style={{
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              padding: 12,
+              maxHeight: 240,
+              overflowY: "auto",
+              fontFamily: "monospace",
+              fontSize: 12,
+              lineHeight: 1.6,
+            }}>
+              {progress.messages.map((msg, i) => (
+                <div key={i} style={{
+                  color: msg.includes("ERROR") ? "var(--red)" : msg.includes("Done") ? "var(--green)" : "var(--text-secondary)",
+                }}>
+                  {msg}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
-        {/* Historical logs from DB */}
-        {ws.logs.length === 0 && (!progress || progress.messages.length === 0) ? (
-          <div style={{ color: "var(--text-muted)" }}>No logs yet. Run a step to start processing.</div>
-        ) : ws.logs.length > 0 && (
+        {/* Completed-step history from the DB, rendered readably */}
+        {ws.logs.length === 0 ? (
+          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>
+            Пока пусто. Запустите конвейер или отдельный шаг — здесь появится история.
+          </div>
+        ) : (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Step</th><th>Status</th><th>Details</th><th>Time</th></tr></thead>
+              <thead><tr><th>Шаг</th><th>Статус</th><th>Результат</th><th>Время</th></tr></thead>
               <tbody>
                 {ws.logs.map((log, i) => (
                   <tr key={i}>
-                    <td>{log.step}</td>
+                    <td style={{ fontWeight: 500 }}>{STEP_LABELS_RU[log.step] || log.step}</td>
                     <td><StatusBadge status={log.status} /></td>
-                    <td style={{ fontSize: 12, color: "var(--text-muted)" }}>{log.details ? JSON.stringify(log.details) : ""}</td>
-                    <td style={{ color: "var(--text-muted)", fontSize: 12 }}>{log.created_at ? new Date(log.created_at).toLocaleString("ru") : ""}</td>
+                    <td style={{ fontSize: 13 }}>{summarizeLogDetails(log.step, log.details)}</td>
+                    <td style={{ color: "var(--text-muted)", fontSize: 12, whiteSpace: "nowrap" }}>
+                      {log.created_at ? new Date(log.created_at).toLocaleString("ru") : ""}
+                    </td>
                   </tr>
                 ))}
               </tbody>
