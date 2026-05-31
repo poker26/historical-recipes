@@ -40,6 +40,7 @@ async def main():
             activities.translate_activity,
             activities.analyze_activity,
             activities.extract_recipes_activity,
+            activities.extract_plant_entries_activity,
             activities.match_ingredients_activity,
             activities.index_activity,
             activities.ping_activity,

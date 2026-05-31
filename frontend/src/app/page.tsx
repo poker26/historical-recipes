@@ -2,13 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { api, Book, ActiveWorkflow, PIPELINE_STEP_NAMES } from "@/lib/api";
+import { api, Book, ActiveWorkflow, stepNamesForDomain } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
-function StepProgress({ completed, current }: { completed: string[]; current: string | null }) {
+function StepProgress({ steps, completed, current }: { steps: string[]; completed: string[]; current: string | null }) {
   return (
     <div style={{ display: "flex", gap: 3, marginTop: 6 }}>
-      {PIPELINE_STEP_NAMES.map((step) => {
+      {steps.map((step) => {
         const done = completed.includes(step);
         const active = step === current;
         const bg = done ? "var(--green)" : active ? "var(--blue)" : "var(--border)";
@@ -95,6 +95,7 @@ export default function Dashboard() {
           {active.map((w, i) => {
             const completed = w.completed_steps || [];
             const done = completed.length;
+            const steps = stepNamesForDomain(w.domain);
             const retrying = (w.current_attempt ?? 1) > 1;
             return (
               <div
@@ -112,11 +113,11 @@ export default function Dashboard() {
                     {retrying && <span className="badge badge-yellow">retry {w.current_attempt}</span>}
                     <span className="badge badge-blue">{w.current_step || w.status}</span>
                     <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                      {done}/{PIPELINE_STEP_NAMES.length}
+                      {done}/{steps.length}
                     </span>
                   </div>
                 </div>
-                <StepProgress completed={completed} current={w.current_step ?? null} />
+                <StepProgress steps={steps} completed={completed} current={w.current_step ?? null} />
                 {w.current_detail && (
                   <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 6 }}>
                     {w.current_detail}

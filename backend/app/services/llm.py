@@ -27,6 +27,7 @@ MODELS = {
     # Wizard-specific tasks — use large-context models
     "structure_analysis": settings.llm_model_long_context,  # qwen3-235b-2507 (262K context)
     "recipe_extraction": settings.llm_model_long_context,   # qwen3-235b-2507 (precise extraction)
+    "plant_extraction": settings.llm_model_long_context,    # qwen3-235b-2507 (herbalism monographs)
     "text_cleanup": settings.llm_model_default,          # qwen3-235b (good Russian)
     "translation": settings.llm_model_default,           # qwen3-235b (pre-reform Russian)
     "ingredient_matching": settings.llm_model_lightweight,  # qwen3-32b (many small calls)

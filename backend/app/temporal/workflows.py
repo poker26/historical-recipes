@@ -19,6 +19,7 @@ with workflow.unsafe.imports_passed_through():
         translate_activity,
         analyze_activity,
         extract_recipes_activity,
+        extract_plant_entries_activity,
         match_ingredients_activity,
         index_activity,
         ping_activity,
@@ -45,12 +46,16 @@ _RETRY = RetryPolicy(
 )
 
 
-# Ordered pipeline definition: (step name, activity, start_to_close, heartbeat).
-# A single source of truth so the workflow and the API agree on step order.
-# heartbeat_timeout is set only for steps that heartbeat frequently; classify is
-# trivially fast and match_ingredients heartbeats just once, so they stay None to
-# avoid false heartbeat timeouts.
-PIPELINE_STEPS = [
+# Ordered pipeline definitions, one per domain: (step, activity, start_to_close,
+# heartbeat).  A single source of truth so the workflow and the API agree on
+# step order.  heartbeat_timeout is set only for steps that heartbeat frequently;
+# classify is trivially fast and match_ingredients heartbeats just once, so they
+# stay None to avoid false heartbeat timeouts.
+#
+# The two domains share the first four steps (ingest + text prep) and diverge at
+# structuring: recipes go analyze -> extract_recipes -> match_ingredients, while
+# herbalism parses plant monographs in a single extract_plant_entries step.
+PIPELINE_STEPS_RECIPES = [
     ("classify", classify_activity, _SHORT, None),
     ("extract", extract_activity, _LONG, _HEARTBEAT),
     ("cleanup", cleanup_activity, _LONG, _HEARTBEAT),
@@ -60,6 +65,27 @@ PIPELINE_STEPS = [
     ("match_ingredients", match_ingredients_activity, _SHORT, None),
     ("index", index_activity, _LONG, _HEARTBEAT),
 ]
+PIPELINE_STEPS_HERBALISM = [
+    ("classify", classify_activity, _SHORT, None),
+    ("extract", extract_activity, _LONG, _HEARTBEAT),
+    ("cleanup", cleanup_activity, _LONG, _HEARTBEAT),
+    ("translate", translate_activity, _LONG, _HEARTBEAT),
+    ("extract_plant_entries", extract_plant_entries_activity, _LONG, _HEARTBEAT),
+    ("index", index_activity, _LONG, _HEARTBEAT),
+]
+
+
+def steps_for_domain(domain: str):
+    return PIPELINE_STEPS_HERBALISM if (domain or "").lower() == "herbalism" else PIPELINE_STEPS_RECIPES
+
+
+def step_names_for_domain(domain: str) -> list[str]:
+    return [s[0] for s in steps_for_domain(domain)]
+
+
+# Default (recipes) step order — kept for back-compat with callers that import
+# STEP_NAMES / PIPELINE_STEPS without a domain.
+PIPELINE_STEPS = PIPELINE_STEPS_RECIPES
 STEP_NAMES = [s[0] for s in PIPELINE_STEPS]
 
 
@@ -78,13 +104,15 @@ class BookPipelineWorkflow:
     """
 
     @workflow.run
-    async def run(self, book_id: str, start_step: str = "classify") -> dict:
-        if start_step not in STEP_NAMES:
+    async def run(self, book_id: str, start_step: str = "classify", domain: str = "recipes") -> dict:
+        steps = steps_for_domain(domain)
+        step_names = [s[0] for s in steps]
+        if start_step not in step_names:
             start_step = "classify"
-        start_idx = STEP_NAMES.index(start_step)
+        start_idx = step_names.index(start_step)
 
-        results: dict = {"_started_at_step": start_step}
-        for name, fn, timeout, heartbeat in PIPELINE_STEPS[start_idx:]:
+        results: dict = {"_started_at_step": start_step, "_domain": domain}
+        for name, fn, timeout, heartbeat in steps[start_idx:]:
             workflow.logger.info(f"pipeline step start: {name}")
             kwargs = {"start_to_close_timeout": timeout, "retry_policy": _RETRY}
             if heartbeat is not None:

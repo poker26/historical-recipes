@@ -15,13 +15,17 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from temporalio import activity
 
 from app.database import async_session
 from app.models.book import Book, BookPage, BookSection, ProcessingLog
 from app.models.recipe import Recipe, RecipeIngredient
 from app.models.ingredient import Ingredient, IngredientSynonym
+from app.models.plant import (
+    Plant, MedicinalAction, PlantMedicinalUse, PlantCompound,
+    PlantHarvest, PlantHabitat, PlantToxicity, PlantBookMention,
+)
 from app.services import minio as minio_svc
 from app.services.ingest import BORN_TEXT_FORMATS, extract_text_from_document
 from app.services.preprocessor import split_pdf_smart
@@ -30,6 +34,7 @@ from app.services.postprocessor import clean_ocr_text
 from app.services.normalizer import normalize_orthography
 from app.services.structure_analyzer import analyze_book_structure
 from app.services.recipe_extractor import extract_recipes_from_section
+from app.services.plant_extractor import extract_plants_from_text
 from app.services.text_transform import transform_text_chunked
 from app.services.embedder import create_embedding
 from app.services import qdrant as qdrant_svc
@@ -37,6 +42,7 @@ from app.services import qdrant as qdrant_svc
 logger = logging.getLogger(__name__)
 
 QDRANT_COLLECTION = "recipes_v2"
+QDRANT_PLANTS_COLLECTION = "plants_v2"
 
 # Prompts — copied verbatim from wizard.py so behaviour is identical.
 CLEANUP_SYSTEM_PROMPT = (
@@ -443,6 +449,161 @@ async def extract_recipes_activity(book_id: str) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Herbalism branch: Extract Plant Monographs
+# ──────────────────────────────────────────────────────────────────────
+
+def _norm(s: str | None) -> str:
+    return (s or "").strip().lower()
+
+
+async def _resolve_plant(db, ep) -> Plant:
+    """Find an existing plant (by Latin name, else Russian name) or create one.
+
+    Plants are shared across source books — a herbal enriches an existing plant
+    rather than duplicating it. Identity fields are filled in only when missing
+    so the first/most-complete source wins; ``parts_used`` is merged.
+    """
+    plant = None
+    if ep.name_latin:
+        plant = (await db.execute(
+            select(Plant).where(func.lower(Plant.name_latin) == _norm(ep.name_latin))
+        )).scalars().first()
+    if plant is None and ep.name:
+        plant = (await db.execute(
+            select(Plant).where(func.lower(Plant.name) == _norm(ep.name))
+        )).scalars().first()
+
+    if plant is None:
+        plant = Plant(name=ep.name, name_latin=ep.name_latin or None,
+                      qdrant_collection=QDRANT_PLANTS_COLLECTION)
+        db.add(plant)
+        await db.flush()
+
+    # Fill identity fields only if currently empty (don't clobber a richer source).
+    if not plant.name_latin and ep.name_latin:
+        plant.name_latin = ep.name_latin
+    if not plant.family and ep.family:
+        plant.family = ep.family
+    if not plant.family_latin and ep.family_latin:
+        plant.family_latin = ep.family_latin
+    if not plant.description and ep.description:
+        plant.description = ep.description
+    if ep.is_toxic:
+        plant.is_toxic = True
+    # Merge parts_used and historical names (union, order-preserving).
+    if ep.parts_used:
+        merged = list(plant.parts_used or [])
+        for p in ep.parts_used:
+            if p and p not in merged:
+                merged.append(p)
+        plant.parts_used = merged
+    if ep.names_historical:
+        merged = list(plant.names_historical or [])
+        for n in ep.names_historical:
+            if n and n not in merged:
+                merged.append(n)
+        plant.names_historical = merged
+    return plant
+
+
+@activity.defn
+async def extract_plant_entries_activity(book_id: str) -> dict:
+    """Herbalism counterpart of extract_recipes: parse plant monographs from the
+    book text into Plant + medicinal-use/compound/harvest/habitat/toxicity rows.
+
+    Idempotent: this book's previously-extracted facts are deleted first, so a
+    retry re-derives them cleanly while leaving other books' contributions and
+    the shared Plant rows intact.
+    """
+    bid = uuid.UUID(book_id)
+    async with async_session() as db:
+        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
+        if not book.full_text:
+            raise ValueError("No text available")
+        book_title = book.title
+        full_text = book.full_text
+
+        # Normalization map: action term / modern synonym -> MedicinalAction.id
+        actions = (await db.execute(select(MedicinalAction))).scalars().all()
+        action_map: dict[str, uuid.UUID] = {}
+        for a in actions:
+            action_map[_norm(a.name)] = a.id
+            if a.name_modern:
+                action_map[_norm(a.name_modern)] = a.id
+
+    _hb(f"Extracting plant monographs from {len(full_text)} chars")
+    plants = await extract_plants_from_text(full_text, book_title=book_title, progress_callback=_hb)
+    if not plants:
+        raise ValueError("No plants extracted")
+
+    async with async_session() as db:
+        # Clear this book's prior contributions (retry-safe). Shared Plant rows stay.
+        for tbl in (PlantMedicinalUse, PlantCompound, PlantHarvest, PlantHabitat, PlantToxicity):
+            await db.execute(delete(tbl).where(tbl.source_book_id == bid))
+        await db.execute(delete(PlantBookMention).where(PlantBookMention.book_id == bid))
+        await db.flush()
+
+        plants_count = 0
+        uses_count = 0
+        for idx, ep in enumerate(plants):
+            plant = await _resolve_plant(db, ep)
+
+            for u in ep.medicinal_uses:
+                db.add(PlantMedicinalUse(
+                    plant_id=plant.id, part=u.part or None,
+                    action_id=action_map.get(_norm(u.action)),
+                    action_raw=u.action or None,
+                    indications=u.indications or None,
+                    preparation=u.preparation or None,
+                    dosage=u.dosage or None,
+                    contraindications=u.contraindications or None,
+                    original_text=u.original_text or None,
+                    source_book_id=bid,
+                ))
+                uses_count += 1
+            for c in ep.compounds:
+                db.add(PlantCompound(
+                    plant_id=plant.id, compound=c.compound,
+                    compound_group=c.compound_group or None,
+                    part=c.part or None, notes=c.notes or None, source_book_id=bid,
+                ))
+            for h in ep.harvests:
+                db.add(PlantHarvest(
+                    plant_id=plant.id, part=h.part or None, season=h.season or None,
+                    method=h.method or None, original_text=h.original_text or None,
+                    source_book_id=bid,
+                ))
+            for hb in ep.habitats:
+                db.add(PlantHabitat(
+                    plant_id=plant.id, region=hb.region or None, biotope=hb.biotope or None,
+                    status=hb.status or None, original_text=hb.original_text or None,
+                    source_book_id=bid,
+                ))
+            for t in ep.toxicities:
+                db.add(PlantToxicity(
+                    plant_id=plant.id, toxic_parts=t.toxic_parts or None,
+                    symptoms=t.symptoms or None, antidote=t.antidote or None,
+                    severity=t.severity or None, original_text=t.original_text or None,
+                    source_book_id=bid,
+                ))
+            db.add(PlantBookMention(
+                plant_id=plant.id, book_id=bid, original_name=ep.name,
+                original_text=ep.original_text or None,
+            ))
+            plants_count += 1
+            if (idx + 1) % 5 == 0 or idx == len(plants) - 1:
+                _hb(f"Plant {idx+1}/{len(plants)}: {ep.name}")
+
+        book.wizard_step = 6
+        book.status = "plants_extracted"
+        db.add(ProcessingLog(book_id=bid, step="extract_plant_entries", status="completed",
+                             details={"plants_count": plants_count, "uses_count": uses_count}))
+        await db.commit()
+
+    return {"plants_count": plants_count, "uses_count": uses_count}
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Step 6: Match Ingredients
 # ──────────────────────────────────────────────────────────────────────
 
@@ -461,8 +622,27 @@ async def match_ingredients_activity(book_id: str) -> dict:
         name_to_ingredient = {i.canonical_name.lower(): i for i in all_ingredients}
         synonym_to_ingredient = {s.synonym.lower(): s.ingredient_id for s in all_synonyms}
 
+        # Bridge to the herbalism domain: resolve ingredients to known plants so a
+        # recipe ingredient can surface that plant's medicinal action. Look up by
+        # canonical/common name, historical names, and Latin name.
+        plants = (await db.execute(select(Plant))).scalars().all()
+        name_to_plant_id: dict[str, uuid.UUID] = {}
+        for p in plants:
+            for key in [p.name, p.name_latin, *(p.names_historical or [])]:
+                if key:
+                    name_to_plant_id.setdefault(key.lower().strip(), p.id)
+        ingredient_by_id = {i.id: i for i in all_ingredients}
+
+        def _resolve_plant_id(ri, ingredient_id):
+            ing = ingredient_by_id.get(ingredient_id)
+            for key in [ri.name, getattr(ing, "canonical_name", None)]:
+                if key and key.lower().strip() in name_to_plant_id:
+                    return name_to_plant_id[key.lower().strip()]
+            return None
+
         matched = 0
         new_created = 0
+        linked_to_plant = 0
         for ri_idx, recipe in enumerate(recipes):
             recipe_ingredients = (await db.execute(
                 select(RecipeIngredient).where(RecipeIngredient.recipe_id == recipe.id)
@@ -484,29 +664,116 @@ async def match_ingredients_activity(book_id: str) -> dict:
                     await db.flush()
                     ri.ingredient_id = new_ing.id
                     name_to_ingredient[name_lower] = new_ing
+                    ingredient_by_id[new_ing.id] = new_ing
                     new_created += 1
 
+                plant_id = _resolve_plant_id(ri, ri.ingredient_id)
+                if plant_id:
+                    ri.plant_id = plant_id
+                    linked_to_plant += 1
+                    # Persist the link on the shared Ingredient row too, when empty.
+                    ing = ingredient_by_id.get(ri.ingredient_id)
+                    if ing is not None and ing.plant_id is None:
+                        ing.plant_id = plant_id
+
             if (ri_idx + 1) % 5 == 0 or ri_idx == len(recipes) - 1:
-                _hb(f"Recipe {ri_idx+1}/{len(recipes)}: matched={matched}, new={new_created}")
+                _hb(f"Recipe {ri_idx+1}/{len(recipes)}: matched={matched}, new={new_created}, plants={linked_to_plant}")
 
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         book.wizard_step = 7
         db.add(ProcessingLog(book_id=bid, step="match_ingredients", status="completed",
-                             details={"matched": matched, "new_created": new_created}))
+                             details={"matched": matched, "new_created": new_created,
+                                      "linked_to_plant": linked_to_plant}))
         await db.commit()
 
-    return {"matched": matched, "new_created": new_created, "total": matched + new_created}
+    return {"matched": matched, "new_created": new_created,
+            "linked_to_plant": linked_to_plant, "total": matched + new_created}
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Step 7: Index to Qdrant
 # ──────────────────────────────────────────────────────────────────────
 
+async def _index_plants(db, book) -> dict:
+    """Index this book's plants into the herbalism Qdrant collection.
+
+    Embeds a compact monograph summary (name + medicinal actions + indications)
+    so the herbalism search can retrieve plants by symptom/action.
+    """
+    bid = book.id
+    _hb("Ensuring plants Qdrant collection exists")
+    await qdrant_svc.ensure_collection(QDRANT_PLANTS_COLLECTION)
+    await qdrant_svc.delete_by_filter(QDRANT_PLANTS_COLLECTION, "book_id", str(bid))
+
+    plant_ids = [m.plant_id for m in (await db.execute(
+        select(PlantBookMention).where(PlantBookMention.book_id == bid)
+    )).scalars().all()]
+    plant_ids = list(dict.fromkeys(plant_ids))  # dedupe, keep order
+    if not plant_ids:
+        raise ValueError("No plants to index")
+
+    _hb(f"Indexing {len(plant_ids)} plants")
+    points = []
+    for i, pid in enumerate(plant_ids):
+        plant = (await db.execute(select(Plant).where(Plant.id == pid))).scalar_one()
+        uses = (await db.execute(
+            select(PlantMedicinalUse).where(PlantMedicinalUse.plant_id == pid)
+        )).scalars().all()
+        actions = sorted({u.action_raw for u in uses if u.action_raw})
+        indications = sorted({u.indications for u in uses if u.indications})
+
+        embed_text = (
+            f"Растение: {plant.name}"
+            + (f" ({plant.name_latin})" if plant.name_latin else "")
+            + (f"\nДействие: {', '.join(actions)}" if actions else "")
+            + (f"\nПрименяется при: {'; '.join(indications)}" if indications else "")
+            + (f"\nОписание: {plant.description}" if plant.description else "")
+        )
+        _hb(f"Embedding {i+1}/{len(plant_ids)}: {plant.name}")
+        embedding = await create_embedding(embed_text)
+        point = {
+            "id": str(plant.id),
+            "dense": embedding["dense"],
+            "payload": {
+                "name": plant.name,
+                "name_latin": plant.name_latin or "",
+                "family": plant.family or "",
+                "actions": actions,
+                "indications": indications,
+                "parts_used": plant.parts_used or [],
+                "is_toxic": plant.is_toxic,
+                "source_book": book.title,
+                "book_id": str(bid),
+            },
+        }
+        if "sparse" in embedding and embedding["sparse"]:
+            point["sparse"] = embedding["sparse"]
+        points.append(point)
+
+        plant.qdrant_point_id = str(plant.id)
+        plant.qdrant_collection = QDRANT_PLANTS_COLLECTION
+
+    _hb("Upserting points to Qdrant")
+    for i in range(0, len(points), 50):
+        await qdrant_svc.upsert_points(QDRANT_PLANTS_COLLECTION, points[i:i + 50])
+        _hb(f"Upserted batch {i//50 + 1}")
+
+    book.wizard_step = 8
+    book.status = "indexed"
+    db.add(ProcessingLog(book_id=bid, step="index", status="completed",
+                         details={"points_indexed": len(points), "collection": QDRANT_PLANTS_COLLECTION}))
+    await db.commit()
+    return {"points_indexed": len(points), "collection": QDRANT_PLANTS_COLLECTION}
+
+
 @activity.defn
 async def index_activity(book_id: str) -> dict:
     bid = uuid.UUID(book_id)
     async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
+
+        if (book.domain or "").lower() == "herbalism":
+            return await _index_plants(db, book)
 
         _hb("Ensuring Qdrant collection exists")
         await qdrant_svc.ensure_collection(QDRANT_COLLECTION)

@@ -205,13 +205,20 @@ export interface WizardWorkflow {
 export interface ActiveWorkflow extends WizardWorkflow {
   book_id: string;
   title: string | null;
+  domain?: string;
 }
 
-// Canonical pipeline step order (matches backend STEP_NAMES).
+// Canonical pipeline step order per domain (matches backend step_names_for_domain).
 export const PIPELINE_STEP_NAMES = [
   "classify", "extract", "cleanup", "translate",
   "analyze", "extract_recipes", "match_ingredients", "index",
 ];
+export const PIPELINE_STEP_NAMES_HERBALISM = [
+  "classify", "extract", "cleanup", "translate",
+  "extract_plant_entries", "index",
+];
+export const stepNamesForDomain = (domain?: string): string[] =>
+  domain === "herbalism" ? PIPELINE_STEP_NAMES_HERBALISM : PIPELINE_STEP_NAMES;
 
 // === API functions ===
 

@@ -946,17 +946,19 @@ async def run_pipeline(
     through — useful when earlier steps are already committed and re-running
     them would waste expensive LLM work.
     """
-    await _get_book(book_id, db)  # 404 if missing
+    book = await _get_book(book_id, db)  # 404 if missing
+    domain = book.domain or "recipes"
 
     from temporalio.service import RPCError
     from app.config import settings
     from app.temporal.client import get_temporal_client
-    from app.temporal.workflows import BookPipelineWorkflow, STEP_NAMES
+    from app.temporal.workflows import BookPipelineWorkflow, step_names_for_domain
 
-    if start_step not in STEP_NAMES:
+    step_names = step_names_for_domain(domain)
+    if start_step not in step_names:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid start_step '{start_step}'. Must be one of: {', '.join(STEP_NAMES)}",
+            detail=f"Invalid start_step '{start_step}'. Must be one of: {', '.join(step_names)}",
         )
 
     client = await get_temporal_client()
@@ -972,24 +974,30 @@ async def run_pipeline(
 
     handle = await client.start_workflow(
         BookPipelineWorkflow.run,
-        args=[str(book_id), start_step],
+        args=[str(book_id), start_step, domain],
         id=wf_id,
         task_queue=settings.temporal_task_queue,
     )
     return {"status": "started", "workflow_id": handle.id,
-            "run_id": handle.result_run_id, "start_step": start_step}
+            "run_id": handle.result_run_id, "start_step": start_step, "domain": domain}
 
 
-async def _summarize_workflow(client, wf_id: str, want_result: bool = True) -> dict:
+async def _summarize_workflow(client, wf_id: str, want_result: bool = True,
+                              domain: str = "recipes") -> dict:
     """Build the live-UI summary for one pipeline workflow.
 
     Surfaces overall status, the currently-running step, that step's latest
     heartbeat detail (e.g. "Chunk 14/81"), the retry attempt, the completed
     steps (to drive a step indicator), and the final result once finished.
     Shared by the single-book and the dashboard ``/active`` endpoints.
+
+    ``domain`` selects the step order (recipes vs herbalism) used to derive the
+    completed-steps indicator.
     """
     from temporalio.service import RPCError
-    from app.temporal.workflows import STEP_NAMES
+    from app.temporal.workflows import step_names_for_domain
+
+    STEP_NAMES = step_names_for_domain(domain)
 
     handle = client.get_workflow_handle(wf_id)
     try:
@@ -1066,16 +1074,19 @@ async def active_workflows(db: AsyncSession = Depends(get_db)):
         ):
             wf_id = wf.id
             book_id_str = wf_id.removeprefix("book-pipeline-")
-            summary = await _summarize_workflow(client, wf_id, want_result=False)
             title = None
+            domain = "recipes"
             try:
                 book = (
                     await db.execute(select(Book).where(Book.id == uuid.UUID(book_id_str)))
                 ).scalar_one_or_none()
-                title = book.title if book else None
+                if book:
+                    title = book.title
+                    domain = book.domain or "recipes"
             except Exception:  # pragma: no cover - malformed id / missing book
                 pass
-            out.append({"book_id": book_id_str, "title": title, **summary})
+            summary = await _summarize_workflow(client, wf_id, want_result=False, domain=domain)
+            out.append({"book_id": book_id_str, "title": title, "domain": domain, **summary})
     except Exception as e:  # pragma: no cover - visibility query unsupported / cluster down
         logger.warning(f"active_workflows list failed: {e}")
     # Most-recently-started first.
@@ -1084,12 +1095,15 @@ async def active_workflows(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{book_id}/workflow")
-async def workflow_status(book_id: uuid.UUID):
+async def workflow_status(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Describe the durable pipeline workflow for one book."""
     from app.temporal.client import get_temporal_client
 
+    book = await _get_book(book_id, db)
     client = await get_temporal_client()
-    return await _summarize_workflow(client, _workflow_id(book_id), want_result=True)
+    return await _summarize_workflow(
+        client, _workflow_id(book_id), want_result=True, domain=book.domain or "recipes",
+    )
 
 
 @router.post("/{book_id}/workflow/cancel")

@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import String, Integer, Text, ForeignKey, ARRAY
+from sqlalchemy import String, Integer, Float, Text, Boolean, ForeignKey, ARRAY
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -8,19 +8,142 @@ from app.database import Base
 
 
 class Plant(Base):
+    """A medicinal/culinary plant — the single identity for the herbalism domain.
+
+    One row per botanical species (keyed conceptually by ``name_latin``). Facts
+    from different source books accumulate as child rows (medicinal uses,
+    compounds, harvest notes, toxicity), each carrying its own ``source_book_id``
+    and verbatim ``original_text`` — sources enrich a plant in layers rather than
+    overwriting each other.
+    """
+
     __tablename__ = "plants"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(Text)
-    name_latin: Mapped[str | None] = mapped_column(Text)
-    names_historical: Mapped[list[str] | None] = mapped_column(ARRAY(String))
-    family: Mapped[str | None] = mapped_column(Text)
-    parts_used: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    name: Mapped[str] = mapped_column(Text)                       # canonical modern Russian name
+    name_latin: Mapped[str | None] = mapped_column(Text)          # binomial + author, e.g. "Rubus caesius L."
+    names_historical: Mapped[list[str] | None] = mapped_column(ARRAY(String))  # "другие названия" / folk / pre-reform
+    family: Mapped[str | None] = mapped_column(Text)              # Russian family name, e.g. "розовые"
+    family_latin: Mapped[str | None] = mapped_column(Text)        # e.g. "Rosaceae"
+    description: Mapped[str | None] = mapped_column(Text)         # botanical morphology + phenology (free text)
+    parts_used: Mapped[list[str] | None] = mapped_column(ARRAY(String))  # лист, корень, цвет, кора, семя, плод, трава
+    is_toxic: Mapped[bool] = mapped_column(Boolean, default=False)
     qdrant_point_id: Mapped[str | None] = mapped_column(String(100))
     qdrant_collection: Mapped[str | None] = mapped_column(String(50))
 
     properties: Mapped[list["PlantProperty"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     mentions: Mapped[list["PlantBookMention"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
+    medicinal_uses: Mapped[list["PlantMedicinalUse"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
+    compounds: Mapped[list["PlantCompound"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
+    harvests: Mapped[list["PlantHarvest"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
+    habitats: Mapped[list["PlantHabitat"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
+    toxicities: Mapped[list["PlantToxicity"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
+
+
+class MedicinalAction(Base):
+    """Controlled, hierarchical vocabulary of medicinal actions.
+
+    Two levels: a top-level functional ``group`` (e.g. "действие на ЖКТ") with
+    ``parent_id`` NULL, and concrete actions (e.g. "вяжущее", "мочегонное")
+    pointing at their group. Normalizing actions here lets the catalogue answer
+    "show all diuretic plants" instead of fighting 20 LLM spellings of one term.
+    """
+
+    __tablename__ = "medicinal_actions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("medicinal_actions.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(Text, unique=True)         # canonical action term, e.g. "мочегонное"
+    name_modern: Mapped[str | None] = mapped_column(Text)        # modern/clinical synonym, e.g. "диуретическое"
+    system: Mapped[str | None] = mapped_column(String(50))       # body system tag: ЖКТ, ССС, ЦНС, дыхание, ...
+
+
+class PlantMedicinalUse(Base):
+    """One medicinal-use fact: a plant part, prepared a certain way, has an
+    action for certain indications — as stated by one source."""
+
+    __tablename__ = "plant_medicinal_uses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
+    part: Mapped[str | None] = mapped_column(String(50))         # лист / корень / цвет / трава / плод ...
+    action_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("medicinal_actions.id", ondelete="SET NULL"))
+    action_raw: Mapped[str | None] = mapped_column(Text)         # action as written, before normalization to action_id
+    indications: Mapped[str | None] = mapped_column(Text)        # what it treats: "лихорадка, кашель"
+    preparation: Mapped[str | None] = mapped_column(String(50))  # настой / отвар / настойка / мазь / припарка / сок
+    dosage: Mapped[str | None] = mapped_column(Text)             # method & dose of use
+    contraindications: Mapped[str | None] = mapped_column(Text)
+    original_text: Mapped[str | None] = mapped_column(Text)      # verbatim source sentence(s)
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
+    confidence: Mapped[float | None] = mapped_column(Float)
+
+    plant: Mapped["Plant"] = relationship(back_populates="medicinal_uses")
+    action: Mapped["MedicinalAction | None"] = relationship()
+
+
+class PlantCompound(Base):
+    """An active/chemical constituent of a plant part (scientific-source layer)."""
+
+    __tablename__ = "plant_compounds"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
+    compound: Mapped[str] = mapped_column(Text)                  # дубильные вещества, гликозиды, эфирное масло ...
+    compound_group: Mapped[str | None] = mapped_column(String(60))  # алкалоиды / флавоноиды / сапонины / витамины ...
+    part: Mapped[str | None] = mapped_column(String(50))         # в плодах / в листьях / в корнях
+    notes: Mapped[str | None] = mapped_column(Text)
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
+
+    plant: Mapped["Plant"] = relationship(back_populates="compounds")
+
+
+class PlantHarvest(Base):
+    """Collection & preparation note: which part, when, and how to gather/dry/store."""
+
+    __tablename__ = "plant_harvests"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
+    part: Mapped[str | None] = mapped_column(String(50))
+    season: Mapped[str | None] = mapped_column(Text)            # "май–июнь, во время цветения"
+    method: Mapped[str | None] = mapped_column(Text)            # how to collect / dry / store
+    original_text: Mapped[str | None] = mapped_column(Text)
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
+
+    plant: Mapped["Plant"] = relationship(back_populates="harvests")
+
+
+class PlantHabitat(Base):
+    """Where a plant grows, per a source — region/biotope + conservation status."""
+
+    __tablename__ = "plant_habitats"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
+    region: Mapped[str | None] = mapped_column(Text)           # geographic range
+    biotope: Mapped[str | None] = mapped_column(Text)          # "опушки лесов, разнотравные степи"
+    status: Mapped[str | None] = mapped_column(String(60))     # "редкое", "Красная книга", ...
+    original_text: Mapped[str | None] = mapped_column(Text)
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
+
+    plant: Mapped["Plant"] = relationship(back_populates="habitats")
+
+
+class PlantToxicity(Base):
+    """Toxicity note: which parts are poisonous, symptoms, antidote, severity."""
+
+    __tablename__ = "plant_toxicities"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
+    toxic_parts: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    symptoms: Mapped[str | None] = mapped_column(Text)
+    antidote: Mapped[str | None] = mapped_column(Text)
+    severity: Mapped[str | None] = mapped_column(String(30))   # слабо / умеренно / сильно ядовито
+    original_text: Mapped[str | None] = mapped_column(Text)
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
+
+    plant: Mapped["Plant"] = relationship(back_populates="toxicities")
 
 
 class PlantProperty(Base):
@@ -57,6 +180,6 @@ class PlantBookMention(Base):
     chunk_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("book_chunks.id", ondelete="SET NULL"))
     original_name: Mapped[str | None] = mapped_column(Text)
     original_text: Mapped[str | None] = mapped_column(Text)
-    page_number: Mapped[int | None] = mapped_column()
+    page_number: Mapped[int | None] = mapped_column(Integer)
 
     plant: Mapped["Plant"] = relationship(back_populates="mentions")
