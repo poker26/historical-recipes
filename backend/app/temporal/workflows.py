@@ -29,6 +29,13 @@ with workflow.unsafe.imports_passed_through():
 # non-transient errors (bad input raises ValueError → no point retrying).
 _LONG = timedelta(hours=3)
 _SHORT = timedelta(minutes=20)
+# Heartbeat timeout: without it, a worker restart mid-activity orphans the
+# attempt, and Temporal only retries after start_to_close elapses (up to 3h) —
+# a long, confusing stall. The long OCR/LLM steps heartbeat per page/chunk/
+# recipe, so a heartbeat timeout lets Temporal detect a dead worker and retry
+# within minutes. It must comfortably exceed the gap between heartbeats (one
+# LLM call can take up to the 600s httpx timeout, plus 429 retry backoff).
+_HEARTBEAT = timedelta(minutes=15)
 _RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=10),
     backoff_coefficient=2.0,
@@ -38,17 +45,20 @@ _RETRY = RetryPolicy(
 )
 
 
-# Ordered pipeline definition: (step name, activity, per-step timeout).
+# Ordered pipeline definition: (step name, activity, start_to_close, heartbeat).
 # A single source of truth so the workflow and the API agree on step order.
+# heartbeat_timeout is set only for steps that heartbeat frequently; classify is
+# trivially fast and match_ingredients heartbeats just once, so they stay None to
+# avoid false heartbeat timeouts.
 PIPELINE_STEPS = [
-    ("classify", classify_activity, _SHORT),
-    ("extract", extract_activity, _LONG),
-    ("cleanup", cleanup_activity, _LONG),
-    ("translate", translate_activity, _LONG),
-    ("analyze", analyze_activity, _LONG),
-    ("extract_recipes", extract_recipes_activity, _LONG),
-    ("match_ingredients", match_ingredients_activity, _SHORT),
-    ("index", index_activity, _LONG),
+    ("classify", classify_activity, _SHORT, None),
+    ("extract", extract_activity, _LONG, _HEARTBEAT),
+    ("cleanup", cleanup_activity, _LONG, _HEARTBEAT),
+    ("translate", translate_activity, _LONG, _HEARTBEAT),
+    ("analyze", analyze_activity, _LONG, _HEARTBEAT),
+    ("extract_recipes", extract_recipes_activity, _LONG, _HEARTBEAT),
+    ("match_ingredients", match_ingredients_activity, _SHORT, None),
+    ("index", index_activity, _LONG, _HEARTBEAT),
 ]
 STEP_NAMES = [s[0] for s in PIPELINE_STEPS]
 
@@ -74,11 +84,12 @@ class BookPipelineWorkflow:
         start_idx = STEP_NAMES.index(start_step)
 
         results: dict = {"_started_at_step": start_step}
-        for name, fn, timeout in PIPELINE_STEPS[start_idx:]:
+        for name, fn, timeout, heartbeat in PIPELINE_STEPS[start_idx:]:
             workflow.logger.info(f"pipeline step start: {name}")
-            res = await workflow.execute_activity(
-                fn, book_id, start_to_close_timeout=timeout, retry_policy=_RETRY,
-            )
+            kwargs = {"start_to_close_timeout": timeout, "retry_policy": _RETRY}
+            if heartbeat is not None:
+                kwargs["heartbeat_timeout"] = heartbeat
+            res = await workflow.execute_activity(fn, book_id, **kwargs)
             results[name] = res
             workflow.logger.info(f"pipeline step done: {name} -> {res}")
 
