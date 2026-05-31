@@ -980,21 +980,18 @@ async def run_pipeline(
             "run_id": handle.result_run_id, "start_step": start_step}
 
 
-@router.get("/{book_id}/workflow")
-async def workflow_status(book_id: uuid.UUID):
-    """Describe the durable pipeline workflow.
+async def _summarize_workflow(client, wf_id: str, want_result: bool = True) -> dict:
+    """Build the live-UI summary for one pipeline workflow.
 
-    Surfaces enough for a live UI: overall status, the currently-running step,
-    that step's latest heartbeat detail (e.g. "Chunk 14/81"), the retry attempt,
-    the list of completed steps (to drive the step indicator), and the final
-    per-step result once the workflow finishes.
+    Surfaces overall status, the currently-running step, that step's latest
+    heartbeat detail (e.g. "Chunk 14/81"), the retry attempt, the completed
+    steps (to drive a step indicator), and the final result once finished.
+    Shared by the single-book and the dashboard ``/active`` endpoints.
     """
     from temporalio.service import RPCError
-    from app.temporal.client import get_temporal_client
     from app.temporal.workflows import STEP_NAMES
 
-    client = await get_temporal_client()
-    handle = client.get_workflow_handle(_workflow_id(book_id))
+    handle = client.get_workflow_handle(wf_id)
     try:
         desc = await handle.describe()
     except RPCError:
@@ -1021,7 +1018,7 @@ async def workflow_status(book_id: uuid.UUID):
         pass
 
     result = None
-    if status == "COMPLETED":
+    if want_result and status == "COMPLETED":
         try:
             result = await handle.result()
         except Exception as e:  # pragma: no cover - defensive
@@ -1039,7 +1036,7 @@ async def workflow_status(book_id: uuid.UUID):
 
     return {
         "exists": True,
-        "workflow_id": handle.id,
+        "workflow_id": wf_id,
         "status": status,
         "start_time": desc.start_time.isoformat() if desc.start_time else None,
         "close_time": desc.close_time.isoformat() if desc.close_time else None,
@@ -1049,6 +1046,50 @@ async def workflow_status(book_id: uuid.UUID):
         "completed_steps": completed_steps,
         "result": result,
     }
+
+
+@router.get("/active")
+async def active_workflows(db: AsyncSession = Depends(get_db)):
+    """List currently-running pipeline workflows for a live dashboard.
+
+    Returns one entry per RUNNING ``BookPipelineWorkflow`` with the book title
+    and its current step/detail/attempt, so the UI can show progress for every
+    in-flight book at once instead of opening each wizard individually.
+    """
+    from app.temporal.client import get_temporal_client
+
+    client = await get_temporal_client()
+    out: list[dict] = []
+    try:
+        async for wf in client.list_workflows(
+            "WorkflowType = 'BookPipelineWorkflow' AND ExecutionStatus = 'Running'"
+        ):
+            wf_id = wf.id
+            book_id_str = wf_id.removeprefix("book-pipeline-")
+            summary = await _summarize_workflow(client, wf_id, want_result=False)
+            title = None
+            try:
+                book = (
+                    await db.execute(select(Book).where(Book.id == uuid.UUID(book_id_str)))
+                ).scalar_one_or_none()
+                title = book.title if book else None
+            except Exception:  # pragma: no cover - malformed id / missing book
+                pass
+            out.append({"book_id": book_id_str, "title": title, **summary})
+    except Exception as e:  # pragma: no cover - visibility query unsupported / cluster down
+        logger.warning(f"active_workflows list failed: {e}")
+    # Most-recently-started first.
+    out.sort(key=lambda w: w.get("start_time") or "", reverse=True)
+    return out
+
+
+@router.get("/{book_id}/workflow")
+async def workflow_status(book_id: uuid.UUID):
+    """Describe the durable pipeline workflow for one book."""
+    from app.temporal.client import get_temporal_client
+
+    client = await get_temporal_client()
+    return await _summarize_workflow(client, _workflow_id(book_id), want_result=True)
 
 
 @router.post("/{book_id}/workflow/cancel")

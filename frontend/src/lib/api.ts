@@ -201,6 +201,12 @@ export interface WizardWorkflow {
   result?: Record<string, unknown> | null;
 }
 
+// A running workflow plus the book it belongs to (dashboard /active feed).
+export interface ActiveWorkflow extends WizardWorkflow {
+  book_id: string;
+  title: string | null;
+}
+
 // Canonical pipeline step order (matches backend STEP_NAMES).
 export const PIPELINE_STEP_NAMES = [
   "classify", "extract", "cleanup", "translate",
@@ -306,6 +312,7 @@ export const api = {
     ),
   wizardWorkflow: (bookId: string) =>
     apiFetch<WizardWorkflow>(`/api/wizard/${bookId}/workflow`),
+  activeWorkflows: () => apiFetch<ActiveWorkflow[]>("/api/wizard/active"),
   wizardWorkflowCancel: (bookId: string) =>
     apiFetch<{ status: string }>(`/api/wizard/${bookId}/workflow/cancel`, { method: "POST" }),
 };
