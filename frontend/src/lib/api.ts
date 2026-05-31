@@ -113,7 +113,78 @@ export interface Plant {
   name_latin: string | null;
   names_historical: string[] | null;
   family: string | null;
+  family_latin: string | null;
   parts_used: string[] | null;
+  is_toxic: boolean;
+  uses_count: number;
+}
+
+export interface PlantMedicinalUse {
+  id: string;
+  part: string | null;
+  action: string | null;
+  action_system: string | null;
+  indications: string | null;
+  preparation: string | null;
+  dosage: string | null;
+  contraindications: string | null;
+  original_text: string | null;
+  confidence: number | null;
+  source: string | null;
+}
+
+export interface PlantCompound {
+  id: string;
+  compound: string;
+  compound_group: string | null;
+  part: string | null;
+  notes: string | null;
+  source: string | null;
+}
+
+export interface PlantHarvest {
+  id: string;
+  part: string | null;
+  season: string | null;
+  method: string | null;
+  original_text: string | null;
+  source: string | null;
+}
+
+export interface PlantHabitat {
+  id: string;
+  region: string | null;
+  biotope: string | null;
+  status: string | null;
+  original_text: string | null;
+  source: string | null;
+}
+
+export interface PlantToxicity {
+  id: string;
+  toxic_parts: string[] | null;
+  symptoms: string | null;
+  antidote: string | null;
+  severity: string | null;
+  original_text: string | null;
+  source: string | null;
+}
+
+export interface PlantMention {
+  id: string;
+  book: string | null;
+  original_name: string | null;
+  page_number: number | null;
+}
+
+export interface PlantDetail extends Plant {
+  description: string | null;
+  medicinal_uses: PlantMedicinalUse[];
+  compounds: PlantCompound[];
+  harvests: PlantHarvest[];
+  habitats: PlantHabitat[];
+  toxicities: PlantToxicity[];
+  mentions: PlantMention[];
 }
 
 export interface DictionaryTerm {
@@ -256,8 +327,8 @@ export const api = {
   getRecipe: (id: string) => apiFetch<RecipeDetail>(`/api/recipes/${id}/`),
 
   // Plants
-  listPlants: (q?: string) => apiFetch<Plant[]>(`/api/plants/${q ? `?q=${q}` : ""}`),
-  getPlant: (id: string) => apiFetch<Plant>(`/api/plants/${id}/`),
+  listPlants: (q?: string) => apiFetch<Plant[]>(`/api/plants/${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  getPlant: (id: string) => apiFetch<PlantDetail>(`/api/plants/${id}`),
 
   // Dictionaries
   listTerms: (category?: string) =>

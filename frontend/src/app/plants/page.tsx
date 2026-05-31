@@ -34,9 +34,16 @@ export default function PlantsPage() {
           <div className="card-grid">
             {plants.map((p) => (
               <Link href={`/plants/${p.id}`} key={p.id} className="card" style={{ textDecoration: "none", color: "inherit" }}>
-                <h3>{p.name}</h3>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                  <h3 style={{ margin: 0 }}>{p.name}</h3>
+                  {p.is_toxic && <span className="badge badge-red" title="Toxic plant">⚠ toxic</span>}
+                </div>
                 {p.name_latin && <div style={{ fontSize: 13, fontStyle: "italic", color: "var(--text-muted)" }}>{p.name_latin}</div>}
-                {p.family && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>{p.family}</div>}
+                {(p.family || p.family_latin) && (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+                    {p.family}{p.family && p.family_latin ? " · " : ""}{p.family_latin}
+                  </div>
+                )}
                 {p.parts_used && p.parts_used.length > 0 && (
                   <div style={{ marginTop: 8, display: "flex", gap: 4, flexWrap: "wrap" }}>
                     {p.parts_used.map((part) => (
@@ -47,6 +54,11 @@ export default function PlantsPage() {
                 {p.names_historical && p.names_historical.length > 0 && (
                   <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
                     Historical: {p.names_historical.join(", ")}
+                  </div>
+                )}
+                {p.uses_count > 0 && (
+                  <div style={{ fontSize: 12, color: "var(--blue)", marginTop: 6 }}>
+                    {p.uses_count} medicinal use{p.uses_count === 1 ? "" : "s"}
                   </div>
                 )}
               </Link>
