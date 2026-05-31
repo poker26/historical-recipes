@@ -12,8 +12,22 @@ from app.services.llm import chat_completion_json
 
 logger = logging.getLogger(__name__)
 
-MAX_CHARS_SINGLE_CALL = 400_000  # ~200K tokens — safe limit for Gemini 2.5 Pro
-CHUNK_SIZE = 150_000  # chars of book text per chunk (~75K tokens; Gemini handles 1M)
+# Single-call budget. structure_analysis runs on qwen3-235b (262 144-token
+# context window), NOT Gemini. The whole line-numbered book PLUS the reserved
+# output tokens must fit. Cyrillic tokenizes densely (~1 token/char worst case),
+# so the old 400 000-char threshold (calibrated for Gemini's 1M context + Latin
+# text) overflowed on large Russian books (e.g. a 333K-char book became ~256K
+# input tokens → HTTP 400 → non-retryable ValueError → workflow failure).
+# Derive the char budget from the real token budget with conservative headroom.
+_MODEL_CONTEXT_TOKENS = 262_144
+_OUTPUT_TOKEN_RESERVE = 16_384       # must match max_tokens in _analyze_single
+_PROMPT_OVERHEAD_TOKENS = 2_000      # system prompt + user wrapper
+_CHARS_PER_TOKEN = 0.85              # conservative for dense Cyrillic
+MAX_CHARS_SINGLE_CALL = int(
+    (_MODEL_CONTEXT_TOKENS - _OUTPUT_TOKEN_RESERVE - _PROMPT_OVERHEAD_TOKENS)
+    * _CHARS_PER_TOKEN
+)  # ≈ 207 000 chars of line-numbered text; larger books go chunked
+CHUNK_SIZE = 120_000  # chars of book text per chunk (~120K tokens worst case, safe under 262K)
 CHUNK_OVERLAP = 6_000  # chars of overlap between consecutive chunks
 MAX_CONCURRENT_CHUNKS = 2  # parallel LLM calls (kept low: free Qwen tier rate-limits at 4)
 
