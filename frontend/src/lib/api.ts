@@ -220,7 +220,7 @@ export const api = {
   },
   getBook: (id: string) => apiFetch<BookDetail>(`/api/books/${id}/`),
   uploadBook: (formData: FormData) => apiUpload<Book>("/api/books/upload", formData),
-  deleteBook: (id: string) => apiFetch<{ status: string }>(`/api/books/${id}/`, { method: "DELETE" }),
+  deleteBook: (id: string) => apiFetch<{ status: string }>(`/api/books/${id}`, { method: "DELETE" }),
   processBook: (id: string) => apiFetch<{ status: string }>(`/api/books/${id}/process`, { method: "POST" }),
   getPages: (bookId: string) => apiFetch<BookPage[]>(`/api/books/${bookId}/pages/`),
   getChunks: (bookId: string) => apiFetch<BookChunk[]>(`/api/books/${bookId}/chunks/`),
