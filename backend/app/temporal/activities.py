@@ -376,9 +376,77 @@ async def analyze_activity(book_id: str) -> dict:
 # Step 5: Extract Recipes
 # ──────────────────────────────────────────────────────────────────────
 
+# Per-section completion marker (ProcessingLog step) for resumable recipe
+# extraction — the recipe counterpart of _PLANT_CHUNK_STEP.
+_RECIPE_SECTION_STEP = "extract_recipes:section"
+
+
+async def _save_recipe_section(bid: uuid.UUID, section_index: int, extracted: list) -> int:
+    """Persist one recipe section's recipes + ingredients + its completion marker,
+    atomically. Mirrors :func:`_save_plant_chunk`.
+
+    The marker (ProcessingLog ``extract_recipes:section``) is committed in the SAME
+    transaction as the rows, so a section is either fully saved-and-marked or not at
+    all. A later retry skips marked sections, so no duplicates are created and no
+    already-extracted section is ever re-sent to the LLM.
+    """
+    recipes_count = 0
+    async with async_session() as db:
+        for er in extracted:
+            recipe = Recipe(
+                book_id=bid, name=er.name, category=er.category,
+                original_text=er.original_text, qdrant_collection=QDRANT_COLLECTION,
+            )
+            db.add(recipe)
+            await db.flush()
+            for ing in er.ingredients:
+                db.add(RecipeIngredient(
+                    recipe_id=recipe.id, name=ing.name,
+                    original_name=ing.original, amount=ing.amount, unit=ing.unit,
+                ))
+            recipes_count += 1
+        db.add(ProcessingLog(
+            book_id=bid, step=_RECIPE_SECTION_STEP, status="completed",
+            details={"section": section_index, "recipes": recipes_count},
+        ))
+        await db.commit()
+    return recipes_count
+
+
+async def _mark_recipe_section_failed(bid: uuid.UUID, section_index: int, error: str):
+    """Record that a section could not be extracted so a retry skips it instead of
+    re-sending it to the LLM forever. The section gets another chance on a fresh
+    (attempt 1) re-run, which clears these markers."""
+    async with async_session() as db:
+        db.add(ProcessingLog(
+            book_id=bid, step=_RECIPE_SECTION_STEP, status="failed",
+            details={"section": section_index, "error": (error or "")[:500]},
+        ))
+        await db.commit()
+
+
 @activity.defn
 async def extract_recipes_activity(book_id: str) -> dict:
+    """Parse recipe sections (BookSection ``recipe_block``) into Recipe +
+    RecipeIngredient rows.
+
+    Resumable by design (mirrors :func:`extract_plant_entries_activity`). Each
+    section's recipes are committed to the DB *immediately*, together with a
+    per-section completion marker, in one transaction. So if the activity is
+    interrupted — worker restart, cancellation, heartbeat timeout, or a transient
+    LLM error — the retry resumes from the next unprocessed section instead of
+    re-extracting the whole book and re-spending tokens on sections already done.
+
+    Fresh vs. resume is keyed on ``activity.info().attempt``:
+      * attempt 1  -> fresh run: drop this book's prior recipes + stale section
+                      markers, then process every section.
+      * attempt >1 -> retry: keep committed sections, skip them, do the rest.
+    A single section that fails to parse is logged + skipped (not fatal) so one bad
+    section never dooms the whole book.
+    """
     bid = uuid.UUID(book_id)
+    attempt = activity.info().attempt
+
     async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         if not book.full_text:
@@ -406,53 +474,73 @@ async def extract_recipes_activity(book_id: str) -> dict:
                 "recipe_pattern": s.recipe_pattern,
             })
 
-    _hb(f"Processing {len(section_data)} recipe sections")
+    n = len(section_data)
+    _hb(f"Recipe extraction: {n} section(s) (attempt {attempt})")
 
     async with async_session() as db:
-        await db.execute(delete(Recipe).where(Recipe.book_id == bid))
-        await db.flush()
+        if attempt == 1:
+            # Fresh run: drop this book's prior recipes AND stale section markers
+            # so everything is re-derived cleanly. (Recipe delete cascades to
+            # RecipeIngredient.)
+            await db.execute(delete(Recipe).where(Recipe.book_id == bid))
+            await db.execute(delete(ProcessingLog).where(
+                ProcessingLog.book_id == bid, ProcessingLog.step == _RECIPE_SECTION_STEP))
+            await db.commit()
+            done_sections: set[int] = set()
+        else:
+            logs = (await db.execute(select(ProcessingLog).where(
+                ProcessingLog.book_id == bid,
+                ProcessingLog.step == _RECIPE_SECTION_STEP,
+            ))).scalars().all()
+            done_sections = {
+                lg.details["section"] for lg in logs
+                if lg.details and lg.details.get("section") is not None
+            }
 
-        recipes_count = 0
-        failed_sections = 0
-        for i, sd in enumerate(section_data):
-            _hb(f"Section {i+1}/{len(section_data)}: {sd['title']} ({len(sd['text'])} chars)")
-            try:
-                extracted = await extract_recipes_from_section(
+    if done_sections:
+        _hb(f"Resuming recipe extraction: {len(done_sections)}/{n} section(s) already committed")
+
+    failed = 0
+    for i, sd in enumerate(section_data):
+        if i in done_sections:
+            continue
+        _hb(f"Section {i+1}/{n}: {sd['title']} ({len(sd['text'])} chars)")
+        try:
+            extracted = await _with_heartbeat(
+                extract_recipes_from_section(
                     sd["text"], book_title=book_title,
                     recipe_pattern=sd["recipe_pattern"], progress_callback=_hb,
-                )
-            except Exception as e:
-                failed_sections += 1
-                logger.exception(f"Section {i+1} extraction failed")
-                _hb(f"Section {i+1}: ERROR - {e} (skipped)")
-                continue
+                ),
+                _hb, f"Section {i+1}/{n}",
+            )
+        except asyncio.CancelledError:
+            # Temporal is tearing the activity down (timeout / worker shutdown).
+            # Committed sections are safe; let it propagate so the retry resumes.
+            raise
+        except Exception as e:
+            failed += 1
+            logger.exception(f"Section {i+1} extraction failed")
+            _hb(f"Section {i+1}: ERROR - {e} (skipped)")
+            await _mark_recipe_section_failed(bid, i, str(e))
+            continue
+        rc = await _save_recipe_section(bid, i, extracted)
+        _hb(f"Section {i+1}/{n}: saved {rc} recipes")
 
-            _hb(f"Section {i+1}: extracted {len(extracted)} recipes")
-            for er in extracted:
-                recipe = Recipe(
-                    book_id=bid, name=er.name, category=er.category,
-                    original_text=er.original_text, qdrant_collection=QDRANT_COLLECTION,
-                )
-                db.add(recipe)
-                await db.flush()
-                for ing in er.ingredients:
-                    db.add(RecipeIngredient(
-                        recipe_id=recipe.id, name=ing.name,
-                        original_name=ing.original, amount=ing.amount, unit=ing.unit,
-                    ))
-                recipes_count += 1
-
+    # Finalize: count this book's committed recipes across fresh + resumed sections.
+    async with async_session() as db:
+        recipes_count = (await db.execute(
+            select(func.count()).select_from(Recipe).where(Recipe.book_id == bid))).scalar() or 0
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         book.wizard_step = 6
         book.status = "recipes_extracted"
         db.add(ProcessingLog(book_id=bid, step="extract_recipes", status="completed",
                              details={"recipes_count": recipes_count,
-                                      "sections_processed": len(section_data),
-                                      "sections_failed": failed_sections}))
+                                      "sections_processed": n,
+                                      "sections_failed": failed}))
         await db.commit()
 
-    return {"recipes_count": recipes_count, "sections_processed": len(section_data),
-            "sections_failed": failed_sections}
+    return {"recipes_count": recipes_count, "sections_processed": n,
+            "sections_failed": failed}
 
 
 # ──────────────────────────────────────────────────────────────────────
