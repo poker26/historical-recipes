@@ -86,6 +86,25 @@ export default function PlantDetailPage() {
         )}
       </div>
 
+      {/* Cross-domain link: recipes that use this plant */}
+      {plant.recipes && plant.recipes.length > 0 && (
+        <Section title="Used in recipes" count={plant.recipes.length}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {plant.recipes.map((r) => (
+              <div key={r.id} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 14 }}>
+                <Link href={`/recipes/${r.id}`} style={{ fontWeight: 500 }}>{r.name}</Link>
+                {r.category && <span className="badge badge-blue">{r.category}</span>}
+                {r.book && (
+                  <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                    {r.book}{r.year ? ` · ${r.year}` : ""}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
       {/* Toxicity — surfaced first when present */}
       {plant.toxicities.length > 0 && (
         <Section title="⚠ Toxicity" count={plant.toxicities.length}>

@@ -44,6 +44,7 @@ from app.services.plant_extractor import (
 from app.services.text_transform import transform_text_chunked
 from app.services.embedder import create_embedding
 from app.services import qdrant as qdrant_svc
+from app.services.plant_matching import PlantMatcher, relink_recipe_ingredients
 
 logger = logging.getLogger(__name__)
 
@@ -722,22 +723,23 @@ async def match_ingredients_activity(book_id: str) -> dict:
         synonym_to_ingredient = {s.synonym.lower(): s.ingredient_id for s in all_synonyms}
 
         # Bridge to the herbalism domain: resolve ingredients to known plants so a
-        # recipe ingredient can surface that plant's medicinal action. Look up by
-        # canonical/common name, historical names, and Latin name.
+        # recipe ingredient can surface that plant's medicinal action. Normalized,
+        # alt-name-aware matching across plant name/latin/historical names and the
+        # ingredient's recipe name/original_name/canonical name/synonyms.
         plants = (await db.execute(select(Plant))).scalars().all()
-        name_to_plant_id: dict[str, uuid.UUID] = {}
-        for p in plants:
-            for key in [p.name, p.name_latin, *(p.names_historical or [])]:
-                if key:
-                    name_to_plant_id.setdefault(key.lower().strip(), p.id)
+        matcher = PlantMatcher(plants)
         ingredient_by_id = {i.id: i for i in all_ingredients}
+        syn_by_ing: dict[uuid.UUID, list[str]] = {}
+        for s in all_synonyms:
+            syn_by_ing.setdefault(s.ingredient_id, []).append(s.synonym)
 
         def _resolve_plant_id(ri, ingredient_id):
             ing = ingredient_by_id.get(ingredient_id)
-            for key in [ri.name, getattr(ing, "canonical_name", None)]:
-                if key and key.lower().strip() in name_to_plant_id:
-                    return name_to_plant_id[key.lower().strip()]
-            return None
+            names = [ri.name, ri.original_name]
+            if ing is not None:
+                names.append(ing.canonical_name)
+                names.extend(syn_by_ing.get(ing.id, []))
+            return matcher.match(names)
 
         matched = 0
         new_created = 0
@@ -862,7 +864,14 @@ async def _index_plants(db, book) -> dict:
     db.add(ProcessingLog(book_id=bid, step="index", status="completed",
                          details={"points_indexed": len(points), "collection": QDRANT_PLANTS_COLLECTION}))
     await db.commit()
-    return {"points_indexed": len(points), "collection": QDRANT_PLANTS_COLLECTION}
+
+    # This book just added/enriched plants — relink existing recipe ingredients
+    # so the recipe↔herbarium cross-links pick up the new species. Cheap,
+    # in-memory name matching; safe to run on the full corpus each time.
+    _hb("Relinking recipe ingredients to plants")
+    relink = await relink_recipe_ingredients(db)
+    _hb(f"Relinked recipes↔plants: {relink}")
+    return {"points_indexed": len(points), "collection": QDRANT_PLANTS_COLLECTION, "relink": relink}
 
 
 @activity.defn

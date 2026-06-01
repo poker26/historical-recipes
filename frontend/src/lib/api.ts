@@ -101,6 +101,8 @@ export interface RecipeIngredient {
   original_name: string | null;
   amount: string | null;
   unit: string | null;
+  plant_id: string | null;
+  plant_name: string | null;
 }
 
 export interface RecipeDetail extends Recipe {
@@ -177,6 +179,14 @@ export interface PlantMention {
   page_number: number | null;
 }
 
+export interface PlantRecipeRef {
+  id: string;
+  name: string;
+  category: string | null;
+  book: string | null;
+  year: number | null;
+}
+
 export interface PlantDetail extends Plant {
   description: string | null;
   medicinal_uses: PlantMedicinalUse[];
@@ -185,6 +195,7 @@ export interface PlantDetail extends Plant {
   habitats: PlantHabitat[];
   toxicities: PlantToxicity[];
   mentions: PlantMention[];
+  recipes: PlantRecipeRef[];
 }
 
 export interface DictionaryTerm {

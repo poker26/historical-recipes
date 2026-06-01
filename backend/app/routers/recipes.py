@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models.recipe import Recipe, RecipeIngredient
 from app.models.book import Book
+from app.models.plant import Plant
 
 router = APIRouter()
 
@@ -73,6 +74,16 @@ async def get_recipe(recipe_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         await db.execute(select(Book).where(Book.id == recipe.book_id))
     ).scalar_one_or_none()
 
+    # Resolve plant names for ingredients linked to the herbarium, so the recipe
+    # page can render each as an active link to the plant monograph.
+    plant_ids = {ing.plant_id for ing in recipe.ingredients if ing.plant_id}
+    plant_names: dict[uuid.UUID, str] = {}
+    if plant_ids:
+        rows = (await db.execute(
+            select(Plant.id, Plant.name).where(Plant.id.in_(plant_ids))
+        )).all()
+        plant_names = {pid: name for pid, name in rows}
+
     return {
         "id": str(recipe.id),
         "book_id": str(recipe.book_id),
@@ -92,6 +103,8 @@ async def get_recipe(recipe_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
                 "original_name": ing.original_name,
                 "amount": ing.amount,
                 "unit": ing.unit,
+                "plant_id": str(ing.plant_id) if ing.plant_id else None,
+                "plant_name": plant_names.get(ing.plant_id) if ing.plant_id else None,
             }
             for ing in recipe.ingredients
         ],

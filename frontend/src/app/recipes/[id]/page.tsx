@@ -45,6 +45,35 @@ export default function RecipeDetailPage() {
         </div>
       </div>
 
+      {recipe.ingredients && recipe.ingredients.length > 0 && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <h3 style={{ marginBottom: 12, color: "var(--text-muted)", fontSize: 13, textTransform: "uppercase" }}>Ingredients</h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {recipe.ingredients.map((ing) => (
+              <div key={ing.id} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 14 }}>
+                {ing.plant_id ? (
+                  <Link href={`/plants/${ing.plant_id}`} title={ing.plant_name ? `Herbarium: ${ing.plant_name}` : "View in herbarium"} style={{ fontWeight: 500 }}>
+                    🌿 {ing.name}
+                  </Link>
+                ) : (
+                  <span>{ing.name}</span>
+                )}
+                {(ing.amount || ing.unit) && (
+                  <span style={{ color: "var(--text-muted)" }}>
+                    {[ing.amount, ing.unit].filter(Boolean).join(" ")}
+                  </span>
+                )}
+                {ing.original_name && ing.original_name !== ing.name && (
+                  <span style={{ color: "var(--text-muted)", fontSize: 12, fontStyle: "italic" }}>
+                    ({ing.original_name})
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         <div className="card">
           <h3 style={{ marginBottom: 12, color: "var(--text-muted)", fontSize: 13, textTransform: "uppercase" }}>Original Text</h3>

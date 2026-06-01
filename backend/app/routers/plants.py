@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.book import Book
+from app.models.recipe import Recipe, RecipeIngredient
 from app.models.plant import (
     Plant,
     PlantMedicinalUse,
@@ -16,8 +17,21 @@ from app.models.plant import (
     PlantToxicity,
     PlantBookMention,
 )
+from app.services.plant_matching import relink_recipe_ingredients
 
 router = APIRouter()
+
+
+@router.post("/relink-recipes")
+async def relink_recipes(db: AsyncSession = Depends(get_db)):
+    """Backfill recipe↔plant links across the whole corpus.
+
+    Recipe books processed before any herbalism book have NULL plant links
+    (the plants table was empty at match time). This re-runs the normalized,
+    alt-name-aware matcher over every ingredient now that plants exist.
+    """
+    result = await relink_recipe_ingredients(db)
+    return {"status": "completed", **result}
 
 
 def _plant_summary(p: Plant, uses_count: int = 0) -> dict:
@@ -115,6 +129,26 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     def src(book_id) -> str | None:
         return titles.get(str(book_id)) if book_id else None
 
+    # Cross-domain link: recipes whose ingredients resolved to this plant.
+    recipe_rows = (await db.execute(
+        select(Recipe.id, Recipe.name, Recipe.category, Book.title, Book.year)
+        .join(RecipeIngredient, RecipeIngredient.recipe_id == Recipe.id)
+        .join(Book, Recipe.book_id == Book.id)
+        .where(RecipeIngredient.plant_id == plant_id)
+        .distinct()
+        .order_by(Recipe.name)
+    )).all()
+    recipes = [
+        {
+            "id": str(rid),
+            "name": rname,
+            "category": rcat,
+            "book": btitle,
+            "year": byear,
+        }
+        for (rid, rname, rcat, btitle, byear) in recipe_rows
+    ]
+
     return {
         "id": str(plant.id),
         "name": plant.name,
@@ -195,4 +229,5 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
             }
             for m in plant.mentions
         ],
+        "recipes": recipes,
     }
