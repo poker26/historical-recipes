@@ -502,7 +502,7 @@ async def _save_recipe_section(bid: uuid.UUID, section_index: int, extracted: li
     async with async_session() as db:
         for er in extracted:
             recipe = Recipe(
-                book_id=bid, name=er.name, category=er.category,
+                book_id=bid, name=er.name, category=_clip(er.category, 30),
                 original_text=er.original_text, qdrant_collection=QDRANT_COLLECTION,
             )
             db.add(recipe)
@@ -510,7 +510,7 @@ async def _save_recipe_section(bid: uuid.UUID, section_index: int, extracted: li
             for ing in er.ingredients:
                 db.add(RecipeIngredient(
                     recipe_id=recipe.id, name=ing.name,
-                    original_name=ing.original, amount=ing.amount, unit=ing.unit,
+                    original_name=ing.original, amount=ing.amount, unit=_clip(ing.unit, 50),
                 ))
             recipes_count += 1
         db.add(ProcessingLog(
@@ -631,7 +631,18 @@ async def extract_recipes_activity(book_id: str) -> dict:
             _hb(f"Section {i+1}: ERROR - {e} (skipped)")
             await _mark_recipe_section_failed(bid, i, str(e))
             continue
-        rc = await _save_recipe_section(bid, i, extracted)
+        try:
+            rc = await _save_recipe_section(bid, i, extracted)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # A save failure (e.g. an over-long value or constraint violation) must
+            # not doom the whole book: skip this section, mark it failed, keep going.
+            failed += 1
+            logger.exception(f"Section {i+1} save failed")
+            _hb(f"Section {i+1}: SAVE ERROR - {e} (skipped)")
+            await _mark_recipe_section_failed(bid, i, str(e))
+            continue
         _hb(f"Section {i+1}/{n}: saved {rc} recipes")
 
     # Finalize: count this book's committed recipes across fresh + resumed sections.
@@ -657,6 +668,25 @@ async def extract_recipes_activity(book_id: str) -> dict:
 
 def _norm(s: str | None) -> str:
     return (s or "").strip().lower()
+
+
+def _clip(value: str | None, maxlen: int) -> str | None:
+    """Trim an LLM free-text value so it fits a narrow ``VARCHAR(n)`` column.
+
+    The short plant-fact columns (``part``, ``preparation``, ``compound_group``,
+    ``status``, ``severity`` …) are meant to hold a controlled-vocabulary term,
+    but the model sometimes returns a whole phrase — which overflows the column
+    and aborts the whole chunk's INSERT (asyncpg ``StringDataRightTruncationError``).
+    Clipping is lossless in practice: the full, verbatim wording is always also
+    stored in a companion ``Text`` column (``original_text`` / ``indications`` /
+    ``dosage`` …), so nothing from the source is dropped.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    return value[:maxlen]
 
 
 async def _resolve_plant(db, ep) -> Plant:
@@ -729,11 +759,11 @@ async def _save_plant_chunk(bid: uuid.UUID, chunk_index: int, plants: list, acti
             plant = await _resolve_plant(db, ep)
             for u in ep.medicinal_uses:
                 db.add(PlantMedicinalUse(
-                    plant_id=plant.id, part=u.part or None,
+                    plant_id=plant.id, part=_clip(u.part, 50),
                     action_id=action_map.get(_norm(u.action)),
                     action_raw=u.action or None,
                     indications=u.indications or None,
-                    preparation=u.preparation or None,
+                    preparation=_clip(u.preparation, 50),
                     dosage=u.dosage or None,
                     contraindications=u.contraindications or None,
                     original_text=u.original_text or None,
@@ -743,26 +773,26 @@ async def _save_plant_chunk(bid: uuid.UUID, chunk_index: int, plants: list, acti
             for c in ep.compounds:
                 db.add(PlantCompound(
                     plant_id=plant.id, compound=c.compound,
-                    compound_group=c.compound_group or None,
-                    part=c.part or None, notes=c.notes or None, source_book_id=bid,
+                    compound_group=_clip(c.compound_group, 60),
+                    part=_clip(c.part, 50), notes=c.notes or None, source_book_id=bid,
                 ))
             for h in ep.harvests:
                 db.add(PlantHarvest(
-                    plant_id=plant.id, part=h.part or None, season=h.season or None,
+                    plant_id=plant.id, part=_clip(h.part, 50), season=h.season or None,
                     method=h.method or None, original_text=h.original_text or None,
                     source_book_id=bid,
                 ))
             for hb in ep.habitats:
                 db.add(PlantHabitat(
                     plant_id=plant.id, region=hb.region or None, biotope=hb.biotope or None,
-                    status=hb.status or None, original_text=hb.original_text or None,
+                    status=_clip(hb.status, 60), original_text=hb.original_text or None,
                     source_book_id=bid,
                 ))
             for t in ep.toxicities:
                 db.add(PlantToxicity(
                     plant_id=plant.id, toxic_parts=t.toxic_parts or None,
                     symptoms=t.symptoms or None, antidote=t.antidote or None,
-                    severity=t.severity or None, original_text=t.original_text or None,
+                    severity=_clip(t.severity, 30), original_text=t.original_text or None,
                     source_book_id=bid,
                 ))
             db.add(PlantBookMention(
@@ -874,7 +904,18 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
             await _mark_plant_chunk_failed(bid, i, str(e))
             failed += 1
             continue
-        pc, uc = await _save_plant_chunk(bid, i, plants, action_map)
+        try:
+            pc, uc = await _save_plant_chunk(bid, i, plants, action_map)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # A save failure (e.g. a stray over-long value slipping past _clip, or a
+            # constraint violation) must not doom the whole book: roll past this
+            # chunk, mark it failed, and keep going so the rest still commits.
+            activity.logger.exception(f"Plant chunk {i+1}/{n} save failed, skipping")
+            await _mark_plant_chunk_failed(bid, i, str(e))
+            failed += 1
+            continue
         _hb(f"Plant chunk {i+1}/{n}: saved {pc} plants ({uc} uses)")
 
     # Finalize: count this book's committed facts for an accurate total across
