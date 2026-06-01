@@ -155,9 +155,29 @@ async def classify_activity(book_id: str) -> dict:
 # Step 2: Extract Text
 # ──────────────────────────────────────────────────────────────────────
 
+async def _save_page(bid: uuid.UUID, page_num: int, image_path: str | None,
+                     raw_text: str | None, dpi: int | None, confidence: float | None,
+                     status: str) -> None:
+    """Commit one OCR'd/extracted page immediately, in its own transaction.
+
+    The BookPage row's *existence* (keyed by page_number) is the per-page
+    completion marker — no separate ProcessingLog needed. A retry re-derives the
+    same page list deterministically from ``split_pdf_smart`` and skips any page
+    already present, so OCR is never re-run for a committed page.
+    """
+    async with async_session() as db:
+        db.add(BookPage(
+            book_id=bid, page_number=page_num, image_path=image_path,
+            raw_text=raw_text, dpi=dpi, ocr_confidence=confidence,
+            needs_review=confidence is not None and confidence < 60.0, status=status,
+        ))
+        await db.commit()
+
+
 @activity.defn
 async def extract_activity(book_id: str) -> dict:
     bid = uuid.UUID(book_id)
+    attempt = activity.info().attempt
     async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         if not book.file_path:
@@ -190,67 +210,125 @@ async def extract_activity(book_id: str) -> dict:
         _hb(f"extracted: born-text {source_format}, {len(full_text)} chars")
         return {"total_pages": 1, "text_length": len(full_text)}
 
+    # PDF/OCR path — resumable per page. The page list is deterministic
+    # (split_pdf_smart), each page is OCR'd and committed immediately, and a
+    # retry skips pages already in the DB. So an interruption (worker restart,
+    # cancellation, heartbeat timeout) only re-OCRs the pages not yet committed
+    # instead of re-running OCR over the whole book.
+    _hb("Downloading PDF from storage")
+    pdf_bytes = minio_svc.download_file(file_path)
+    _hb("Splitting PDF into pages")
+    pages = split_pdf_smart(pdf_bytes)
+    n = len(pages)
+    _hb(f"Found {n} pages (attempt {attempt})")
+
     async with async_session() as db:
-        _hb("Downloading PDF from storage")
-        pdf_bytes = minio_svc.download_file(file_path)
-        _hb("Splitting PDF into pages")
-        pages = split_pdf_smart(pdf_bytes)
-        _hb(f"Found {len(pages)} pages")
+        if attempt == 1:
+            # Fresh run: drop this book's prior pages so everything is re-OCR'd.
+            existing = await db.execute(select(BookPage).where(BookPage.book_id == bid))
+            for p in existing.scalars().all():
+                await db.delete(p)
+            await db.commit()
+            done_pages: set[int] = set()
+        else:
+            done_pages = set((await db.execute(
+                select(BookPage.page_number).where(BookPage.book_id == bid))).scalars().all())
 
-        existing = await db.execute(select(BookPage).where(BookPage.book_id == bid))
-        for p in existing.scalars().all():
-            await db.delete(p)
-        await db.flush()
+    if done_pages:
+        _hb(f"Resuming extraction: {len(done_pages)}/{n} page(s) already committed")
 
-        all_texts = []
-        for i, page_data in enumerate(pages):
-            page_num = page_data["page_number"]
-            page_type = page_data["page_type"]
-            _hb(f"Page {page_num}/{len(pages)} ({page_type})")
+    for page_data in pages:
+        page_num = page_data["page_number"]
+        if page_num in done_pages:
+            continue
+        page_type = page_data["page_type"]
+        _hb(f"Page {page_num}/{n} ({page_type})")
 
-            image_path = None
-            raw_text = page_data["text"]
-            confidence = 100.0 if page_type == "text" else None
-            method = "pdf_extract" if page_type == "text" else None
-            status = "text_extracted" if page_type == "text" else "needs_ocr"
+        image_path = None
+        raw_text = page_data["text"]
+        confidence = 100.0 if page_type == "text" else None
+        status = "text_extracted" if page_type == "text" else "needs_ocr"
 
-            if page_type == "image" and page_data["image_bytes"]:
-                image_path = f"books/{bid}/pages/{page_num:04d}.png"
-                minio_svc.upload_file(page_data["image_bytes"], image_path, content_type="image/png")
-                text, conf, ocr_method = await ocr_page_with_fallback(page_data["image_bytes"])
-                raw_text = text
-                confidence = conf
-                method = ocr_method
-                status = "ocr_done"
+        if page_type == "image" and page_data["image_bytes"]:
+            image_path = f"books/{bid}/pages/{page_num:04d}.png"
+            minio_svc.upload_file(page_data["image_bytes"], image_path, content_type="image/png")
+            text, conf, _ocr_method = await _with_heartbeat(
+                ocr_page_with_fallback(page_data["image_bytes"]),
+                _hb, f"OCR page {page_num}/{n}",
+            )
+            raw_text = text
+            confidence = conf
+            status = "ocr_done"
 
-            db.add(BookPage(
-                book_id=bid, page_number=page_num, image_path=image_path,
-                raw_text=raw_text, dpi=page_data["dpi"], ocr_confidence=confidence,
-                needs_review=confidence is not None and confidence < 60.0, status=status,
-            ))
-            if raw_text:
-                all_texts.append(raw_text)
+        await _save_page(bid, page_num, image_path, raw_text,
+                         page_data["dpi"], confidence, status)
 
-        full_text = "\n\n".join(all_texts)
+    # Finalize: rebuild full_text from every committed page, in order. (Pages from
+    # both this run and any prior attempt are read straight from the DB.)
+    async with async_session() as db:
+        page_texts = (await db.execute(
+            select(BookPage.raw_text).where(BookPage.book_id == bid)
+            .order_by(BookPage.page_number))).scalars().all()
+        full_text = "\n\n".join(t for t in page_texts if t)
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         book.full_text = full_text
         book.wizard_step = 3
         book.status = "extracted"
         db.add(ProcessingLog(book_id=bid, step="extract", status="completed",
-                             details={"total_pages": len(pages), "text_length": len(full_text)}))
+                             details={"total_pages": n, "text_length": len(full_text)}))
         await db.commit()
 
-    _hb(f"extracted: {len(pages)} pages, {len(full_text)} chars")
-    return {"total_pages": len(pages), "text_length": len(full_text)}
+    _hb(f"extracted: {n} pages, {len(full_text)} chars")
+    return {"total_pages": n, "text_length": len(full_text)}
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Step 2b: Cleanup
 # ──────────────────────────────────────────────────────────────────────
 
+# Per-chunk text markers for resumable LLM cleanup/translation. Each marker
+# stores one chunk's transformed output keyed by its 1-based index; they're
+# bulky (~chunk-sized) but transient — deleted once full_text is persisted.
+_CLEANUP_CHUNK_STEP = "cleanup:chunk"
+_TRANSLATE_CHUNK_STEP = "translate:chunk"
+
+
+async def _load_chunk_outputs(bid: uuid.UUID, step: str) -> dict[int, str]:
+    """Load per-chunk transformed outputs persisted by an earlier attempt:
+    ``{1-based-idx: text}``. Used to resume a chunked transform without re-sending
+    completed chunks to the LLM."""
+    async with async_session() as db:
+        logs = (await db.execute(select(ProcessingLog).where(
+            ProcessingLog.book_id == bid, ProcessingLog.step == step))).scalars().all()
+    out: dict[int, str] = {}
+    for lg in logs:
+        if lg.details and lg.details.get("chunk") is not None:
+            out[lg.details["chunk"]] = lg.details.get("text", "")
+    return out
+
+
+def _make_chunk_saver(bid: uuid.UUID, step: str):
+    """Build an async ``on_chunk_done(idx, text)`` hook that commits one chunk's
+    output atomically, so a transform can resume past it after an interruption."""
+    async def _save(idx: int, text: str) -> None:
+        async with async_session() as db:
+            db.add(ProcessingLog(book_id=bid, step=step, status="completed",
+                                 details={"chunk": idx, "text": text}))
+            await db.commit()
+    return _save
+
+
+async def _clear_chunk_markers(bid: uuid.UUID, step: str) -> None:
+    async with async_session() as db:
+        await db.execute(delete(ProcessingLog).where(
+            ProcessingLog.book_id == bid, ProcessingLog.step == step))
+        await db.commit()
+
+
 @activity.defn
 async def cleanup_activity(book_id: str) -> dict:
     bid = uuid.UUID(book_id)
+    attempt = activity.info().attempt
     async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         if not book.full_text:
@@ -264,15 +342,30 @@ async def cleanup_activity(book_id: str) -> dict:
 
     use_llm = pdf_type == "image" or language == "pre_reform_ru"
     if use_llm:
+        # Resumable per chunk. full_text is only overwritten at the very end, so
+        # `cleaned` (hence the chunk boundaries) is stable across retries.
+        if attempt == 1:
+            await _clear_chunk_markers(bid, _CLEANUP_CHUNK_STEP)
+            done_outputs: dict[int, str] = {}
+        else:
+            done_outputs = await _load_chunk_outputs(bid, _CLEANUP_CHUNK_STEP)
+            if done_outputs:
+                _hb(f"Resuming cleanup: {len(done_outputs)} chunk(s) already done")
         _hb(f"Sending to LLM for OCR artifact cleanup (chunked, {len(cleaned)} chars)")
         cleaned = await transform_text_chunked(
             cleaned, system_prompt=CLEANUP_SYSTEM_PROMPT, task="text_cleanup", cb=_hb,
+            done_outputs=done_outputs,
+            on_chunk_done=_make_chunk_saver(bid, _CLEANUP_CHUNK_STEP),
         )
         _hb("LLM cleanup complete")
 
     async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         book.full_text = cleaned
+        if use_llm:
+            # Drop the bulky per-chunk text markers now that full_text holds them.
+            await db.execute(delete(ProcessingLog).where(
+                ProcessingLog.book_id == bid, ProcessingLog.step == _CLEANUP_CHUNK_STEP))
         db.add(ProcessingLog(book_id=bid, step="cleanup", status="completed",
                              details={"text_length": len(cleaned), "used_llm": use_llm}))
         await db.commit()
@@ -287,6 +380,7 @@ async def cleanup_activity(book_id: str) -> dict:
 @activity.defn
 async def translate_activity(book_id: str) -> dict:
     bid = uuid.UUID(book_id)
+    attempt = activity.info().attempt
     async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         if not book.full_text:
@@ -302,9 +396,21 @@ async def translate_activity(book_id: str) -> dict:
     normalized = normalize_orthography(full_text)
     _hb(f"Normalized: {len(normalized)} chars")
 
+    # Resumable per chunk. full_text is only overwritten at the very end, so
+    # `normalized` (hence the chunk boundaries) is stable across retries.
+    if attempt == 1:
+        await _clear_chunk_markers(bid, _TRANSLATE_CHUNK_STEP)
+        done_outputs: dict[int, str] = {}
+    else:
+        done_outputs = await _load_chunk_outputs(bid, _TRANSLATE_CHUNK_STEP)
+        if done_outputs:
+            _hb(f"Resuming translation: {len(done_outputs)} chunk(s) already done")
+
     _hb(f"Sending to LLM for archaic language translation (chunked, {len(normalized)} chars)")
     translated = await transform_text_chunked(
         normalized, system_prompt=TRANSLATE_SYSTEM_PROMPT, task="translation", cb=_hb,
+        done_outputs=done_outputs,
+        on_chunk_done=_make_chunk_saver(bid, _TRANSLATE_CHUNK_STEP),
     )
     _hb(f"Translated: {len(translated)} chars")
 
@@ -312,6 +418,8 @@ async def translate_activity(book_id: str) -> dict:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         book.full_text = translated
         book.wizard_step = 4
+        await db.execute(delete(ProcessingLog).where(
+            ProcessingLog.book_id == bid, ProcessingLog.step == _TRANSLATE_CHUNK_STEP))
         db.add(ProcessingLog(book_id=bid, step="translate", status="completed",
                              details={"original_length": len(normalized), "translated_length": len(translated)}))
         await db.commit()
