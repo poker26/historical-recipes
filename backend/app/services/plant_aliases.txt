@@ -1,0 +1,35 @@
+# Curated plant-name knowledge — alternative / historical names that are NOT
+# reliably present in the source books or in open data, and that we therefore
+# teach the matcher by hand. This file is the analog of MEMORY.md for the
+# herbalism↔recipe bridge: version-controlled, human-edited, and never touched
+# by extraction (so re-extracting a book can't overwrite it).
+#
+# It is read by plant_matching.py::PlantMatcher (same dir), so it applies to
+# BOTH matching paths automatically: the recipe-extraction pipeline
+# (match_ingredients_activity) and the full-corpus backfill
+# (POST /api/plants/relink-recipes). When phase-2 LLM matching is added, the
+# same facts become its grounding context.
+#
+# ─── Format ──────────────────────────────────────────────────────────────
+#   <canonical plant> = alias1, alias2, ...
+#
+#   * left side: the plant as it appears in the herbarium — its primary name
+#     OR Latin name OR a distinctive single word of the primary name
+#     (e.g. "кориандр" resolves to "Кориандр посевной"). If no plant matches
+#     yet (the book hasn't been extracted), the line is silently ignored and
+#     activates automatically once that plant appears.
+#   * right side: one or more surface names a recipe might use. Each becomes a
+#     full-string (exact) key AND a noun-token key for that plant, so inflected
+#     forms ("семена кишнеца") also resolve.
+#
+# ─── Rule ────────────────────────────────────────────────────────────────
+#   Add ONLY distinctive names. Never add a common food/spice word that also
+#   means a different ingredient in recipes (гвоздика, вишня, перец, яблоко,
+#   мелисса, …) — that re-creates the false-match clusters this matcher was
+#   carefully built to avoid. When in doubt, leave it out.
+#
+# ─── Examples (uncomment / edit as the herbarium grows) ────────────────────
+# майоран садовый = майорана, амаракус
+# любисток лекарственный = зоря, дудник, любим-трава
+
+кориандр = кишнец, коляндра, колендра

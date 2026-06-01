@@ -23,6 +23,7 @@ match exactly — never through the subset tier — to avoid spurious links.
 
 import re
 import uuid
+from pathlib import Path
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -141,6 +142,35 @@ def _noun_keys(s: str | None) -> set[str]:
     return out
 
 
+# Curated alias knowledge (see plant_aliases.txt for the format and rationale).
+# Edited by hand, version-controlled, never written by extraction.
+_ALIASES_PATH = Path(__file__).resolve().parent / "plant_aliases.txt"
+
+
+def load_plant_aliases(path: Path = _ALIASES_PATH) -> dict[str, list[str]]:
+    """Parse the curated ``<canonical> = alias1, alias2, ...`` knowledge file.
+
+    Returns ``{canonical_name: [alias, ...]}`` with surface forms verbatim
+    (normalization happens at use-site). Missing/unparseable lines are skipped
+    so a malformed entry never breaks matching. A missing file yields ``{}``.
+    """
+    out: dict[str, list[str]] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        canon, _, rhs = line.partition("=")
+        canon = canon.strip()
+        aliases = [a.strip() for a in rhs.split(",") if a.strip()]
+        if canon and aliases:
+            out.setdefault(canon, []).extend(aliases)
+    return out
+
+
 class PlantMatcher:
     """Resolves a set of candidate ingredient names to a plant id.
 
@@ -158,6 +188,11 @@ class PlantMatcher:
     вишня=белладонна, яблоко=кирказон, перец=копытень, мелисса=змееголовник)
     that would mass-match the real spice/fruit ingredients meant in recipes.
     Folk names therefore only ever match as complete exact strings (tier 1).
+
+    On top of the plant data, a curated knowledge file (plant_aliases.txt next
+    to this module) injects hand-vetted alternative names that aren't reliably
+    in the source books (e.g. "кишнец"→Кориандр). Because they're vetted and
+    distinctive, curated aliases feed both tiers (exact AND noun-token).
     """
 
     def __init__(self, plants):
@@ -182,6 +217,36 @@ class PlantMatcher:
             # excluded — see class docstring).
             for key in _noun_keys(p.name):
                 self._noun_key.setdefault(key, p.id)
+
+        # Curated knowledge: fold hand-maintained aliases into both tiers. These
+        # are vetted, distinctive names (e.g. "кишнец"→Кориандр), so unlike
+        # auto-extracted folk names they ARE allowed to seed noun-token keys.
+        self._merge_aliases(load_plant_aliases())
+
+    def _resolve_canonical(self, canon: str) -> uuid.UUID | None:
+        """Find the plant a curated alias line points at: by exact full name
+        (primary/latin/historical), else by a single distinctive noun token."""
+        nv = normalize(canon)
+        if not nv:
+            return None
+        if nv in self._exact:
+            return self._exact[nv]
+        keys = _noun_keys(canon)
+        if len(keys) == 1:
+            return self._noun_key.get(next(iter(keys)))
+        return None
+
+    def _merge_aliases(self, aliases: dict[str, list[str]]) -> None:
+        for canon, names in aliases.items():
+            pid = self._resolve_canonical(canon)
+            if pid is None:
+                continue  # target plant not in the herbarium yet — activates later
+            for alias in names:
+                nv = normalize(alias)
+                if nv:
+                    self._exact.setdefault(nv, pid)
+                for key in _noun_keys(alias):
+                    self._noun_key.setdefault(key, pid)
 
     def match(self, names: list[str | None]) -> uuid.UUID | None:
         clean = [n for n in names if n]
