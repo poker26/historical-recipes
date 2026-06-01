@@ -56,6 +56,18 @@ _STOPWORDS = {
     "за", "к", "о", "об", "а", "но", "же", "ли", "или", "да",
 }
 
+# Bare common-ingredient nouns. When one of these stands ALONE as a folk /
+# historical plant name it collides exactly with the spice/fruit a recipe
+# actually means (Зорька's folk name "гвоздика" must not capture the clove
+# spice; Змееголовник's "мелисса"; Василёк-named species), so it is never
+# indexed as a sole exact key. Multi-word folk names that merely contain such
+# a noun ("барская гвоздика", "земляное яблоко") remain distinctive and kept.
+_AMBIGUOUS_FOLK = {
+    "гвоздика", "гвоздики", "вишня", "вишни", "яблоко", "яблоки",
+    "перец", "мелисса", "василек", "дерево", "ладан", "мак", "лук",
+    "роза", "фиалка", "мята", "орех", "лимон", "миндаль", "корица",
+}
+
 _VOWEL_ENDINGS = "аяоеёыиуюьйъ"
 _PUNCT_RE = re.compile(r"[^\w\s-]", re.UNICODE)
 _SPACE_RE = re.compile(r"\s+")
@@ -135,23 +147,41 @@ class PlantMatcher:
     Build once from all plants, then call :meth:`match` per ingredient. Two
     tiers, conservative by design (a wrong link is worse than a missing one):
 
-      1. exact normalized full-name match;
-      2. a distinctive *noun* token of a plant name (зверобой, валериан,
-         копытен) appears among the ingredient's tokens. Adjective-only folk
-         names (e.g. "винный корень" → "винный") are excluded so common
-         descriptors can't mass-match unrelated ingredients.
+      1. exact normalized full-name match — across ALL names (primary, latin,
+         historical/folk). A folk name like "винный корень" matches only when
+         the ingredient reproduces it verbatim, which is rare and safe.
+      2. a distinctive *noun* token of the plant's **primary** botanical name
+         (зверобой, валериан, копытен) appears among the ingredient's tokens.
+
+    The loose token tier intentionally does NOT draw keys from historical/folk
+    names: those are heavily metaphorical common nouns (гвоздика=Зорька,
+    вишня=белладонна, яблоко=кирказон, перец=копытень, мелисса=змееголовник)
+    that would mass-match the real spice/fruit ingredients meant in recipes.
+    Folk names therefore only ever match as complete exact strings (tier 1).
     """
 
     def __init__(self, plants):
         self._exact: dict[str, uuid.UUID] = {}
         self._noun_key: dict[str, uuid.UUID] = {}
         for p in plants:
-            for variant in [p.name, p.name_latin, *(p.names_historical or [])]:
+            # Tier 1 keys, scientific identity: primary + latin name as full
+            # strings (a recipe is free to name a plant by either).
+            for variant in (p.name, p.name_latin):
                 nv = normalize(variant)
                 if nv:
                     self._exact.setdefault(nv, p.id)
-                for key in _noun_keys(variant):
-                    self._noun_key.setdefault(key, p.id)
+            # Tier 1 keys, folk names: kept as full strings, but a single bare
+            # common-ingredient noun (гвоздика, мелисса, …) is dropped so it
+            # can't capture the real spice/fruit meant in recipes.
+            for variant in (p.names_historical or []):
+                nv = normalize(variant)
+                if not nv or (" " not in nv and nv in _AMBIGUOUS_FOLK):
+                    continue
+                self._exact.setdefault(nv, p.id)
+            # Tier 2 keys: noun tokens of the PRIMARY name only (folk names
+            # excluded — see class docstring).
+            for key in _noun_keys(p.name):
+                self._noun_key.setdefault(key, p.id)
 
     def match(self, names: list[str | None]) -> uuid.UUID | None:
         clean = [n for n in names if n]
