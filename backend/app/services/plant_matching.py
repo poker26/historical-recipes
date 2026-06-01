@@ -60,7 +60,26 @@ _VOWEL_ENDINGS = "аяоеёыиуюьйъ"
 _PUNCT_RE = re.compile(r"[^\w\s-]", re.UNICODE)
 _SPACE_RE = re.compile(r"\s+")
 _MIN_STEM = 3            # never stem a token below this length
-_MIN_SUBSET_TOKEN = 4    # single tokens shorter than this only match exactly
+_MIN_KEY_TOKEN = 4       # a plant noun-key must be at least this long (stemmed)
+
+# Adjectival suffixes (full + oblique + possessive). A plant must never be
+# identified by an adjective alone — folk names like "винный корень" or "малый
+# василёк" would otherwise match every "винный …"/"малый …" ingredient. Noun
+# heads (зверобой, валериана, копытень) don't carry these endings.
+_ADJ_SUFFIXES = (
+    "ный", "ная", "ное", "ные", "ным", "ной", "ную", "нее", "него", "ному",
+    "кий", "кая", "кое", "кие", "кого", "кому", "ким",
+    "ский", "ская", "ское", "ские", "цкий", "цкая",
+    "овый", "евый", "овая", "евая", "иный", "ьный",
+    "истый", "истая", "чатый", "чатая",
+    "лый", "лая", "лое", "лые", "ший", "шая", "шее", "щий", "щая",
+    "ова", "ева", "ина", "ына", "ьего", "ьих",
+)
+
+
+def _is_adjective(tok: str) -> bool:
+    """Heuristic: does a (normalized, pre-stem) token look like an adjective?"""
+    return len(tok) >= 5 and tok.endswith(_ADJ_SUFFIXES)
 
 
 def normalize(s: str | None) -> str:
@@ -96,30 +115,43 @@ def _stem_tokens(s: str | None) -> frozenset[str]:
     return frozenset(out)
 
 
+def _noun_keys(s: str | None) -> set[str]:
+    """Distinctive *noun* tokens of a plant name (stemmed), dropping adjectives,
+    part-words, stopwords and short noise. These are the tokens by which a plant
+    may be identified inside a longer ingredient phrase."""
+    out: set[str] = set()
+    for tok in normalize(s).split():
+        if not tok or tok in _PART_WORDS or tok in _STOPWORDS or _is_adjective(tok):
+            continue
+        st = _stem(tok)
+        if len(st) >= _MIN_KEY_TOKEN and not st.isdigit():
+            out.add(st)
+    return out
+
+
 class PlantMatcher:
     """Resolves a set of candidate ingredient names to a plant id.
 
-    Build once from all plants, then call :meth:`match` per ingredient.
+    Build once from all plants, then call :meth:`match` per ingredient. Two
+    tiers, conservative by design (a wrong link is worse than a missing one):
+
+      1. exact normalized full-name match;
+      2. a distinctive *noun* token of a plant name (зверобой, валериан,
+         копытен) appears among the ingredient's tokens. Adjective-only folk
+         names (e.g. "винный корень" → "винный") are excluded so common
+         descriptors can't mass-match unrelated ingredients.
     """
 
     def __init__(self, plants):
         self._exact: dict[str, uuid.UUID] = {}
-        # (plant_id, stems) for the subset tier, sorted most-specific first.
-        self._variants: list[tuple[uuid.UUID, frozenset[str]]] = []
+        self._noun_key: dict[str, uuid.UUID] = {}
         for p in plants:
             for variant in [p.name, p.name_latin, *(p.names_historical or [])]:
                 nv = normalize(variant)
                 if nv:
                     self._exact.setdefault(nv, p.id)
-                stems = _stem_tokens(variant)
-                if not stems:
-                    continue
-                # Single very short tokens are ambiguous — keep them exact-only.
-                if len(stems) == 1 and len(next(iter(stems))) < _MIN_SUBSET_TOKEN:
-                    continue
-                self._variants.append((p.id, stems))
-        # Prefer matching the most specific (largest token-set) plant name.
-        self._variants.sort(key=lambda t: len(t[1]), reverse=True)
+                for key in _noun_keys(variant):
+                    self._noun_key.setdefault(key, p.id)
 
     def match(self, names: list[str | None]) -> uuid.UUID | None:
         clean = [n for n in names if n]
@@ -128,16 +160,18 @@ class PlantMatcher:
             nn = normalize(n)
             if nn and nn in self._exact:
                 return self._exact[nn]
-        # Tier 2: stem-token subset — all of a plant's identifying words present.
+        # Tier 2: a distinctive plant noun token is present in the ingredient.
         ingredient_tokens: set[str] = set()
         for n in clean:
             ingredient_tokens |= _stem_tokens(n)
-        if not ingredient_tokens:
-            return None
-        for pid, stems in self._variants:
-            if stems <= ingredient_tokens:
-                return pid
-        return None
+        # Prefer the longest matching token (most specific) for determinism.
+        best: uuid.UUID | None = None
+        best_len = 0
+        for tok in ingredient_tokens:
+            pid = self._noun_key.get(tok)
+            if pid is not None and len(tok) > best_len:
+                best, best_len = pid, len(tok)
+        return best
 
 
 async def relink_recipe_ingredients(
