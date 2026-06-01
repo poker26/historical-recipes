@@ -734,8 +734,10 @@ async def match_ingredients_activity(book_id: str) -> dict:
             syn_by_ing.setdefault(s.ingredient_id, []).append(s.synonym)
 
         def _resolve_plant_id(ri, ingredient_id):
+            # Exclude ri.original_name — it is the verbatim recipe fragment with
+            # amounts/units and injects noise tokens. Match clean names only.
             ing = ingredient_by_id.get(ingredient_id)
-            names = [ri.name, ri.original_name]
+            names = [ri.name]
             if ing is not None:
                 names.append(ing.canonical_name)
                 names.extend(syn_by_ing.get(ing.id, []))

@@ -24,7 +24,7 @@ match exactly — never through the subset tier — to avoid spurious links.
 import re
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.recipe import RecipeIngredient
@@ -48,6 +48,12 @@ _PART_WORDS = {
     "веточки", "ветки", "ветка",
     "масло", "настойка", "настой", "отвар", "экстракт", "вытяжка",
     "сушеный", "сушеная", "свежий", "свежая",
+}
+
+# Prepositions / conjunctions that leak in from verbatim recipe phrases.
+_STOPWORDS = {
+    "по", "на", "для", "из", "от", "до", "и", "с", "со", "в", "во",
+    "за", "к", "о", "об", "а", "но", "же", "ли", "или", "да",
 }
 
 _VOWEL_ENDINGS = "аяоеёыиуюьйъ"
@@ -82,7 +88,9 @@ def _stem_tokens(s: str | None) -> frozenset[str]:
     """Normalized, part-word-stripped, stemmed identifying tokens of a name."""
     out: set[str] = set()
     for tok in normalize(s).split():
-        if not tok or tok in _PART_WORDS:
+        # Drop part-words, prepositions, numbers, units and very short noise so a
+        # verbatim recipe fragment ("по 6 золотников") can't inject stray tokens.
+        if not tok or len(tok) < 3 or tok.isdigit() or tok in _PART_WORDS or tok in _STOPWORDS:
             continue
         out.add(_stem(tok))
     return frozenset(out)
@@ -148,6 +156,12 @@ async def relink_recipe_ingredients(
         plants = (await db.execute(select(Plant))).scalars().all()
     matcher = PlantMatcher(plants)
 
+    # Authoritative full recompute: clear existing links first so the run is
+    # idempotent and self-healing (drops stale/incorrect links from earlier
+    # matcher versions or partial plant data).
+    await db.execute(update(RecipeIngredient).values(plant_id=None))
+    await db.execute(update(Ingredient).values(plant_id=None))
+
     ingredients = (await db.execute(select(Ingredient))).scalars().all()
     syn_by_ing: dict[uuid.UUID, list[str]] = {}
     for s in (await db.execute(select(IngredientSynonym))).scalars().all():
@@ -172,7 +186,10 @@ async def relink_recipe_ingredients(
                 ri.plant_id = ing.plant_id
                 linked_ri += 1
             continue
-        names: list[str | None] = [ri.name, ri.original_name]
+        # NB: deliberately exclude ri.original_name — it is the verbatim recipe
+        # fragment (with amounts/units like "по 6 золотников") and injects noise
+        # tokens that cause false matches. Match only on clean ingredient names.
+        names: list[str | None] = [ri.name]
         if ing is not None:
             names.append(ing.canonical_name)
             names.extend(syn_by_ing.get(ing.id, []))
