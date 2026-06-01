@@ -93,7 +93,17 @@ async def _do_request(body: dict, model: str) -> str:
         logger.error(f"LLM HTTP {response.status_code}: {body_text}")
         raise ValueError(f"LLM API error HTTP {response.status_code}: {body_text}")
 
-    data = response.json()
+    # OpenRouter sometimes returns 200 OK with a truncated/malformed body
+    # (interrupted stream, partial proxy response). Parsing that raw would raise
+    # JSONDecodeError that bubbles past all content-salvage logic and fails the
+    # whole multi-chunk activity. Treat a broken transport body as transient and
+    # retry just this single call.
+    try:
+        data = response.json()
+    except json.JSONDecodeError as e:
+        snippet = response.text[:500]
+        logger.warning(f"LLM returned unparseable body (HTTP 200): {e}; body[:500]={snippet!r}")
+        raise _RetryableLLMError(f"malformed response body: {e}")
 
     # Check for errors in response body
     if "error" in data:
