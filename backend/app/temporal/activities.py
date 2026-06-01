@@ -11,6 +11,7 @@ Each activity is a faithful port of the matching ``_bg_*`` background task from
   requires — workflow code must stay deterministic.
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -34,7 +35,12 @@ from app.services.postprocessor import clean_ocr_text
 from app.services.normalizer import normalize_orthography
 from app.services.structure_analyzer import analyze_book_structure
 from app.services.recipe_extractor import extract_recipes_from_section
-from app.services.plant_extractor import extract_plants_from_text
+from app.services.plant_extractor import (
+    extract_plants_from_text,
+    _split_into_chunks,
+    _extract_single,
+    _with_heartbeat,
+)
 from app.services.text_transform import transform_text_chunked
 from app.services.embedder import create_embedding
 from app.services import qdrant as qdrant_svc
@@ -506,48 +512,24 @@ async def _resolve_plant(db, ep) -> Plant:
     return plant
 
 
-@activity.defn
-async def extract_plant_entries_activity(book_id: str) -> dict:
-    """Herbalism counterpart of extract_recipes: parse plant monographs from the
-    book text into Plant + medicinal-use/compound/harvest/habitat/toxicity rows.
+# Per-chunk progress marker. Written atomically with each chunk's plant rows so
+# a retry can tell exactly which chunks are already committed and skip them.
+_PLANT_CHUNK_STEP = "extract_plant_entries:chunk"
 
-    Idempotent: this book's previously-extracted facts are deleted first, so a
-    retry re-derives them cleanly while leaving other books' contributions and
-    the shared Plant rows intact.
+
+async def _save_plant_chunk(bid: uuid.UUID, chunk_index: int, plants: list, action_map: dict) -> tuple[int, int]:
+    """Persist one chunk's extracted plants + its completion marker, atomically.
+
+    The marker (ProcessingLog ``extract_plant_entries:chunk``) is committed in the
+    SAME transaction as the rows, so a chunk is either fully saved-and-marked or
+    not at all. A later retry skips marked chunks, so no duplicates are created
+    and no already-extracted chunk is ever re-sent to the LLM.
     """
-    bid = uuid.UUID(book_id)
+    plants_count = 0
+    uses_count = 0
     async with async_session() as db:
-        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
-        if not book.full_text:
-            raise ValueError("No text available")
-        book_title = book.title
-        full_text = book.full_text
-
-        # Normalization map: action term / modern synonym -> MedicinalAction.id
-        actions = (await db.execute(select(MedicinalAction))).scalars().all()
-        action_map: dict[str, uuid.UUID] = {}
-        for a in actions:
-            action_map[_norm(a.name)] = a.id
-            if a.name_modern:
-                action_map[_norm(a.name_modern)] = a.id
-
-    _hb(f"Extracting plant monographs from {len(full_text)} chars")
-    plants = await extract_plants_from_text(full_text, book_title=book_title, progress_callback=_hb)
-    if not plants:
-        raise ValueError("No plants extracted")
-
-    async with async_session() as db:
-        # Clear this book's prior contributions (retry-safe). Shared Plant rows stay.
-        for tbl in (PlantMedicinalUse, PlantCompound, PlantHarvest, PlantHabitat, PlantToxicity):
-            await db.execute(delete(tbl).where(tbl.source_book_id == bid))
-        await db.execute(delete(PlantBookMention).where(PlantBookMention.book_id == bid))
-        await db.flush()
-
-        plants_count = 0
-        uses_count = 0
-        for idx, ep in enumerate(plants):
+        for ep in plants:
             plant = await _resolve_plant(db, ep)
-
             for u in ep.medicinal_uses:
                 db.add(PlantMedicinalUse(
                     plant_id=plant.id, part=u.part or None,
@@ -591,16 +573,133 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
                 original_text=ep.original_text or None,
             ))
             plants_count += 1
-            if (idx + 1) % 5 == 0 or idx == len(plants) - 1:
-                _hb(f"Plant {idx+1}/{len(plants)}: {ep.name}")
+        db.add(ProcessingLog(
+            book_id=bid, step=_PLANT_CHUNK_STEP, status="completed",
+            details={"chunk": chunk_index, "plants": plants_count, "uses": uses_count},
+        ))
+        await db.commit()
+    return plants_count, uses_count
 
+
+async def _mark_plant_chunk_failed(bid: uuid.UUID, chunk_index: int, error: str):
+    """Record that a chunk could not be extracted so a retry skips it instead of
+    re-sending it to the LLM forever. The chunk gets another chance on a fresh
+    (attempt 1) re-run, which clears these markers."""
+    async with async_session() as db:
+        db.add(ProcessingLog(
+            book_id=bid, step=_PLANT_CHUNK_STEP, status="failed",
+            details={"chunk": chunk_index, "error": (error or "")[:500]},
+        ))
+        await db.commit()
+
+
+@activity.defn
+async def extract_plant_entries_activity(book_id: str) -> dict:
+    """Herbalism counterpart of extract_recipes: parse plant monographs into
+    Plant + medicinal-use/compound/harvest/habitat/toxicity rows.
+
+    Resumable by design. The book is split into LLM-sized chunks and each chunk's
+    plants are committed to the DB *immediately*, together with a per-chunk
+    completion marker, in one transaction. So if the activity is interrupted —
+    worker restart, cancellation, heartbeat timeout, or a transient LLM error —
+    the retry resumes from the next unprocessed chunk instead of re-reading the
+    whole book and re-spending tokens on chunks already done.
+
+    Fresh vs. resume is keyed on ``activity.info().attempt``:
+      * attempt 1  -> fresh run: drop this book's prior facts + stale chunk
+                      markers, then process every chunk.
+      * attempt >1 -> retry: keep committed chunks, skip them, do the rest.
+    A single chunk that fails to parse is logged + skipped (not fatal) so one bad
+    chunk never dooms the whole book.
+    """
+    bid = uuid.UUID(book_id)
+    attempt = activity.info().attempt
+
+    async with async_session() as db:
+        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
+        if not book.full_text:
+            raise ValueError("No text available")
+        book_title = book.title
+        full_text = book.full_text
+
+    chunks = _split_into_chunks(full_text)
+    n = len(chunks)
+    _hb(f"Plant extraction: {n} chunk(s) from {len(full_text)} chars (attempt {attempt})")
+
+    async with async_session() as db:
+        if attempt == 1:
+            # Fresh run: drop this book's prior contributions AND stale chunk
+            # markers so everything is re-derived cleanly. Shared Plant rows and
+            # other books' contributions are untouched.
+            for tbl in (PlantMedicinalUse, PlantCompound, PlantHarvest, PlantHabitat, PlantToxicity):
+                await db.execute(delete(tbl).where(tbl.source_book_id == bid))
+            await db.execute(delete(PlantBookMention).where(PlantBookMention.book_id == bid))
+            await db.execute(delete(ProcessingLog).where(
+                ProcessingLog.book_id == bid, ProcessingLog.step == _PLANT_CHUNK_STEP))
+            await db.commit()
+            done_chunks: set[int] = set()
+        else:
+            logs = (await db.execute(select(ProcessingLog).where(
+                ProcessingLog.book_id == bid,
+                ProcessingLog.step == _PLANT_CHUNK_STEP,
+            ))).scalars().all()
+            done_chunks = {
+                lg.details["chunk"] for lg in logs
+                if lg.details and lg.details.get("chunk") is not None
+            }
+
+        # Normalization map: action term / modern synonym -> MedicinalAction.id
+        actions = (await db.execute(select(MedicinalAction))).scalars().all()
+        action_map: dict[str, uuid.UUID] = {}
+        for a in actions:
+            action_map[_norm(a.name)] = a.id
+            if a.name_modern:
+                action_map[_norm(a.name_modern)] = a.id
+
+    if done_chunks:
+        _hb(f"Resuming plant extraction: {len(done_chunks)}/{n} chunk(s) already committed")
+
+    failed = 0
+    for i, chunk in enumerate(chunks):
+        if i in done_chunks:
+            continue
+        _hb(f"Plant chunk {i+1}/{n}: {len(chunk)} chars")
+        try:
+            plants = await _with_heartbeat(
+                _extract_single(chunk, book_title), _hb, f"Plant chunk {i+1}/{n}"
+            )
+        except asyncio.CancelledError:
+            # Temporal is tearing the activity down (timeout / worker shutdown).
+            # Committed chunks are safe; let it propagate so the retry resumes.
+            raise
+        except Exception as e:
+            activity.logger.warning(f"Plant chunk {i+1}/{n} extraction failed, skipping: {e}")
+            await _mark_plant_chunk_failed(bid, i, str(e))
+            failed += 1
+            continue
+        pc, uc = await _save_plant_chunk(bid, i, plants, action_map)
+        _hb(f"Plant chunk {i+1}/{n}: saved {pc} plants ({uc} uses)")
+
+    # Finalize: count this book's committed facts for an accurate total across
+    # both freshly-processed and resumed chunks.
+    async with async_session() as db:
+        plants_count = (await db.execute(
+            select(func.count()).select_from(PlantBookMention)
+            .where(PlantBookMention.book_id == bid))).scalar() or 0
+        uses_count = (await db.execute(
+            select(func.count()).select_from(PlantMedicinalUse)
+            .where(PlantMedicinalUse.source_book_id == bid))).scalar() or 0
+        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         book.wizard_step = 6
         book.status = "plants_extracted"
         db.add(ProcessingLog(book_id=bid, step="extract_plant_entries", status="completed",
-                             details={"plants_count": plants_count, "uses_count": uses_count}))
+                             details={"plants_count": plants_count, "uses_count": uses_count,
+                                      "failed_chunks": failed}))
         await db.commit()
 
-    return {"plants_count": plants_count, "uses_count": uses_count}
+    if plants_count == 0:
+        raise ValueError("No plants extracted")
+    return {"plants_count": plants_count, "uses_count": uses_count, "failed_chunks": failed}
 
 
 # ──────────────────────────────────────────────────────────────────────
