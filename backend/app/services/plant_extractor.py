@@ -7,10 +7,18 @@ toxicity. Each fact preserves verbatim source text so multiple sources can
 enrich the same plant in layers.
 """
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 
 from app.services.llm import chat_completion_json
+
+# How often to emit a liveness ping while a single LLM call is in flight. A
+# qwen3-235b call streaming a large JSON body can run many minutes; the response
+# is read in small chunks that each stay under the httpx read timeout, so httpx
+# never trips — but the *total* call can exceed Temporal's heartbeat_timeout.
+# Pinging mid-call (not just between chunks) keeps the heartbeat alive.
+_LLM_HEARTBEAT_INTERVAL = 30  # seconds
 
 # A monograph entry runs ~2–4K chars; several fit in a window. Output is dense
 # (structured sub-objects per plant), so keep input modest to stay inside the
@@ -216,11 +224,29 @@ async def extract_plants_from_text(
     all_plants: list[ExtractedPlant] = []
     for i, chunk in enumerate(chunks):
         cb(f"Plant chunk {i+1}/{len(chunks)}: {len(chunk)} chars")
-        plants = await _extract_single(chunk, book_title)
+        plants = await _with_heartbeat(
+            _extract_single(chunk, book_title), cb, f"Plant chunk {i+1}/{len(chunks)}"
+        )
         cb(f"Plant chunk {i+1}: got {len(plants)} plants")
         all_plants.extend(plants)
     cb(f"Total extracted: {len(all_plants)} plants")
     return all_plants
+
+
+async def _with_heartbeat(coro, cb, label):
+    """Await ``coro`` while pinging ``cb`` every ``_LLM_HEARTBEAT_INTERVAL`` s.
+
+    Long LLM calls would otherwise pass no heartbeat for minutes and trip
+    Temporal's heartbeat_timeout mid-stream; this keeps the activity alive.
+    """
+    task = asyncio.ensure_future(coro)
+    waited = 0
+    while True:
+        done, _ = await asyncio.wait({task}, timeout=_LLM_HEARTBEAT_INTERVAL)
+        if done:
+            return await task
+        waited += _LLM_HEARTBEAT_INTERVAL
+        cb(f"{label} (LLM working {waited}s)")
 
 
 async def _extract_single(text: str, book_title: str) -> list[ExtractedPlant]:
