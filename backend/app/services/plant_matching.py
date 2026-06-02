@@ -121,6 +121,32 @@ def _stem(token: str) -> str:
     return token
 
 
+# Relational ("denominal") adjective endings: X-ов-/X-ев- = "made of / from X".
+# A recipe names a plant material this way ("лавандовые цветы", "розовое масло",
+# "анисовых семян") instead of the bare noun, so reducing the adjective to its
+# base noun root (лавандовые->лаванд, розовое->роз) lets it match the plant's
+# noun key. Longest-first so the linking morph -ов/-ев is stripped with the
+# inflection in one pass.
+_DENOMINAL_ENDINGS = tuple(sorted((
+    "овые", "евые", "овый", "евый", "овая", "евая", "овое", "евое",
+    "овых", "евых", "овым", "евым", "овом", "евом", "ового", "евого",
+    "овому", "евому", "овую", "евую", "овой", "евой", "ова", "ева",
+), key=len, reverse=True))
+
+
+def _denominal_root(tok: str) -> str | None:
+    """Base noun root of an X-ов-/X-ев- relational adjective, else None.
+
+    Only the -ов-/-ев- class (unambiguously "of/from <noun>"); the root is
+    emitted as an EXTRA candidate token, so it links only when it exactly equals
+    an existing plant's noun key — a spurious root with no plant simply no-ops.
+    """
+    for end in _DENOMINAL_ENDINGS:
+        if tok.endswith(end) and len(tok) - len(end) >= 3:
+            return tok[: -len(end)]
+    return None
+
+
 def _stem_tokens(s: str | None) -> frozenset[str]:
     """Normalized, part-word-stripped, stemmed identifying tokens of a name."""
     out: set[str] = set()
@@ -130,6 +156,9 @@ def _stem_tokens(s: str | None) -> frozenset[str]:
         if not tok or len(tok) < 3 or tok.isdigit() or tok in _PART_WORDS or tok in _STOPWORDS:
             continue
         out.add(_stem(tok))
+        root = _denominal_root(tok)
+        if root and len(root) >= 3:
+            out.add(root)
     return frozenset(out)
 
 
