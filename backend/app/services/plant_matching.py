@@ -17,8 +17,10 @@ one):
      ("трава", "корень", "цвет", …) and crude Russian case-ending stemming so
      "корень валерианы" resolves to the plant "валериана".
 
-Single short tokens (< 4 chars after stemming, e.g. "мак", "лук") only ever
-match exactly — never through the subset tier — to avoid spurious links.
+Very short tokens (< 3 chars after stemming) only ever match exactly — never
+through the subset tier — to avoid spurious links. Genuine 3-char genera
+(аир, дуб, рута, мак, лук) do seed subset keys so a bare inflected mention
+("аира", "дуба") still resolves.
 """
 
 import re
@@ -73,7 +75,10 @@ _VOWEL_ENDINGS = "аяоеёыиуюьйъ"
 _PUNCT_RE = re.compile(r"[^\w\s-]", re.UNICODE)
 _SPACE_RE = re.compile(r"\s+")
 _MIN_STEM = 3            # never stem a token below this length
-_MIN_KEY_TOKEN = 4       # a plant noun-key must be at least this long (stemmed)
+_MIN_KEY_TOKEN = 3       # a plant noun-key must be at least this long (stemmed):
+                         # 3 admits real short genera (аир, дуб, липа, рута, мак,
+                         # лук, мята) so a bare inflected mention ("аира") links;
+                         # 2-char tokens stay out as noise.
 
 # Adjectival suffixes (full + oblique + possessive). A plant must never be
 # identified by an adjective alone — folk names like "винный корень" or "малый
