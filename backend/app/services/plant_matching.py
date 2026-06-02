@@ -171,6 +171,69 @@ def load_plant_aliases(path: Path = _ALIASES_PATH) -> dict[str, list[str]]:
     return out
 
 
+def _adj_stem(tok: str) -> str:
+    """Strip the longest matching adjectival ending so inflected forms of the
+    same epithet collapse: пятилопастной / пятилопастный -> пятилопаст."""
+    for suf in sorted(_ADJ_SUFFIXES, key=len, reverse=True):
+        if tok.endswith(suf) and len(tok) - len(suf) >= 3:
+            return tok[: -len(suf)]
+    return tok
+
+
+def _identity(name: str | None) -> tuple[frozenset[str], frozenset[str]]:
+    """Split a plant name into (genus/distinctive nouns, species-epithet stems).
+
+    Nouns are stemmed and kept only above ``_MIN_KEY_TOKEN`` so a bare common
+    noun (лук, мак) never seeds an identity. Adjectives are reduced to their
+    epithet stem so inflection variants of the same species match. Together the
+    two sets identify a plant precisely enough to dedup the herbarium without
+    collapsing two genuinely different species of the same genus.
+    """
+    nouns: set[str] = set()
+    adjs: set[str] = set()
+    for tok in normalize(name).split():
+        if not tok or tok in _PART_WORDS or tok in _STOPWORDS or tok.isdigit():
+            continue
+        if _is_adjective(tok):
+            a = _adj_stem(tok)
+            if len(a) >= 3:
+                adjs.add(a)
+        else:
+            st = _stem(tok)
+            if len(st) >= _MIN_KEY_TOKEN:
+                nouns.add(st)
+    return frozenset(nouns), frozenset(adjs)
+
+
+def same_plant_identity(a: str | None, b: str | None) -> bool:
+    """True if two plant names denote the SAME species — conservatively.
+
+    Requires a shared genus (one name's noun set is a subset of the other, so a
+    bare genus matches "genus + epithet") AND compatible epithets (one adjective
+    set a subset of the other, so an inflected variant matches but a *different*
+    species epithet does not). A name with no distinctive noun (e.g. bare "Лук")
+    never matches, so it stays a separate stub rather than risk a false merge.
+    """
+    na, aa = _identity(a)
+    nb, ab = _identity(b)
+    if not na or not nb:
+        return False
+    if not (na <= nb or nb <= na):
+        return False
+    return aa <= ab or ab <= aa
+
+
+def is_more_specific(a: str | None, b: str | None) -> bool:
+    """True if name ``a`` is a strictly richer form of the same plant as ``b``
+    (same genus, ``b``'s epithets a subset of ``a``'s, and ``a`` carries more
+    identifying tokens) — used to promote a bare stub name to the fuller one."""
+    na, aa = _identity(a)
+    nb, ab = _identity(b)
+    if not na or not nb:
+        return False
+    return nb <= na and ab <= aa and (len(na) + len(aa)) > (len(nb) + len(ab))
+
+
 class PlantMatcher:
     """Resolves a set of candidate ingredient names to a plant id.
 

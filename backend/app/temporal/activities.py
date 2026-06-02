@@ -44,7 +44,12 @@ from app.services.plant_extractor import (
 from app.services.text_transform import transform_text_chunked
 from app.services.embedder import create_embedding
 from app.services import qdrant as qdrant_svc
-from app.services.plant_matching import PlantMatcher, relink_recipe_ingredients
+from app.services.plant_matching import (
+    PlantMatcher,
+    relink_recipe_ingredients,
+    same_plant_identity,
+    is_more_specific,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -731,6 +736,27 @@ async def _resolve_plant(db, ep) -> Plant:
         plant = (await db.execute(
             select(Plant).where(func.lower(Plant.name) == _norm(ep.name))
         )).scalars().first()
+
+    # Fuzzy identity dedup (exact lookups missed): a bare-genus stub, an inflected
+    # epithet, or a genus+epithet form of an existing plant are the same plant.
+    # Only merge when UNambiguous — if several existing plants share the genus
+    # (e.g. two Шалфей species), a wrong auto-merge is worse than a visible stub,
+    # so we fall through and create a new row instead of guessing.
+    if plant is None and ep.name:
+        candidates = [
+            p for p in (await db.execute(select(Plant))).scalars().all()
+            if same_plant_identity(ep.name, p.name)
+        ]
+        if len(candidates) == 1:
+            plant = candidates[0]
+            # Promote a barer stub name to the fuller incoming one, keeping the
+            # old spelling as a historical name (mirrors a manual merge).
+            if is_more_specific(ep.name, plant.name):
+                hist = list(plant.names_historical or [])
+                if plant.name and plant.name not in hist:
+                    hist.append(plant.name)
+                plant.names_historical = hist
+                plant.name = ep.name
 
     if plant is None:
         plant = Plant(name=ep.name, name_latin=ep.name_latin or None,
