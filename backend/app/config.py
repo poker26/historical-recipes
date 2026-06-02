@@ -15,11 +15,14 @@ class Settings(BaseSettings):
     # Qdrant (self-hosted)
     qdrant_url: str = "http://qdrant:6333"
     qdrant_api_key: str = ""
-    # NOTE: the indexing pipeline writes recipes to "recipes_v2" (the bare
-    # "recipes" name collides with a foreign collection on the shared Qdrant).
-    # Search must query the SAME collection, so this default must match.
+    # NOTE: search must query the SAME collection the indexer writes to.
+    # Recipes are written to "recipes_v2" (the bare "recipes" name collides with
+    # a foreign collection on the shared Qdrant). Plants are written to
+    # "plants_v2" (see QDRANT_PLANTS_COLLECTION in temporal/activities.py); the
+    # herbalism search default MUST match that or plant search 404s on a
+    # non-existent "herbalism" collection and silently returns nothing.
     qdrant_collection_recipes: str = "recipes_v2"
-    qdrant_collection_herbalism: str = "herbalism"
+    qdrant_collection_herbalism: str = "plants_v2"
 
     # BGE-M3 (self-hosted embeddings)
     bge_m3_url: str = "http://bge-m3:8100"
