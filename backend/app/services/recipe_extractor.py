@@ -3,6 +3,7 @@
 Takes recipe block text and extracts structured recipes with ingredients.
 """
 
+import re
 from dataclasses import dataclass, field
 
 from app.services.llm import chat_completion_json
@@ -51,8 +52,10 @@ class ExtractedRecipe:
     ingredients: list[ExtractedIngredient] = field(default_factory=list)
 
 
-SYSTEM_PROMPT = """You are extracting individual recipes from a section of a historical Russian recipe book \
-about herbal tinctures, distillates, and medicinal preparations.
+SYSTEM_PROMPT = """You are extracting individual recipes from a section of a Russian book about herbal \
+tinctures, distillates, and medicinal preparations. The book may be a historical (pre-1918) manual OR a \
+modern reference work — extract only what the section actually contains, in whatever wording and orthography \
+it is written.
 
 A "recipe" is any self-contained instruction for making a preparation. It can take EITHER form:
 - STRUCTURED: a name followed by a list or table of ingredients with quantities, and/or numbered steps.
@@ -71,6 +74,15 @@ Be PRECISE about what is NOT a recipe. Do NOT extract:
 - Purely general/introductory descriptions that give no way to make anything
 - Footnotes or editorial comments
 
+CRITICAL — extract only what is literally present; never invent:
+- Extract ONLY recipes that physically appear in the provided text. NEVER invent, complete, infer, or \
+compose a recipe from your own knowledge of herbal medicine or distillation.
+- If a passage merely DESCRIBES a plant or ingredient (its properties, history, habitat, indications) \
+without giving a concrete preparation method, extract NOTHING from it.
+- Reproduce original_text EXACTLY as written in the source — same wording AND same orthography. NEVER rewrite \
+modern Russian into pre-1918 (archaic) spelling, and never modernize archaic text. If the source is in modern \
+Russian, original_text MUST be in modern Russian.
+
 For each recipe, extract:
 - name: the recipe's title. If the source gives an explicit title, use it verbatim. \
 If the recipe has NO title (common for medicinal herbal collections that are just a list of herbs \
@@ -81,7 +93,8 @@ NEVER use the raw ingredient list (with grams) as the name — that is not a nam
 - category: one of водка, ликёр, настойка, бальзам, масло, вода, эссенция, эликсир, тинктура, ратафия, розолия, \
 отвар, настой, чай, сбор, мазь, сироп, порошок, припарка, капли, примочка, другое. \
 For herbal teas/decoctions/collections prefer отвар/настой/чай/сбор over the alcoholic categories.
-- original_text: the COMPLETE original recipe text, verbatim (name + ingredients + the full preparation process)
+- original_text: the COMPLETE recipe text copied VERBATIM from the source above (name + ingredients + the full \
+preparation process). It must be a literal quote — every sentence must be findable in the provided text.
 - ingredients: array of ingredients you can identify — parse them out of prose too when possible. \
 If a recipe genuinely has no separable ingredients, return an empty array but STILL output the recipe. \
 Each ingredient with:
@@ -190,7 +203,34 @@ async def _extract_single(
     )
 
     recipes = _extract_recipes(result)
-    return [_parse_recipe(r) for r in recipes if _is_valid_recipe(r)]
+    return [
+        _parse_recipe(r) for r in recipes
+        if _is_valid_recipe(r) and _is_grounded(r.get("original_text", ""), text)
+    ]
+
+
+def _norm_for_match(t: str) -> str:
+    return " " + re.sub(r"[^\w]+", " ", (t or "").lower(), flags=re.UNICODE).strip() + " "
+
+
+def _is_grounded(original_text: str, source_text: str, shingle: int = 6) -> bool:
+    """True if the recipe text is traceable to the source chunk it came from.
+
+    Backstop against the LLM fabricating recipes from its own knowledge: a
+    genuine extraction copies original_text out of the section, so at least one
+    short word-shingle must appear verbatim in the source. Fabricated recipes
+    (e.g. invented archaic tinctures with no counterpart in a modern book) share
+    no contiguous run with the source and get dropped.
+    """
+    words = _norm_for_match(original_text).split()
+    if not words:
+        return False
+    src = _norm_for_match(source_text)
+    k = min(shingle, len(words))
+    return any(
+        " " + " ".join(words[i:i + k]) + " " in src
+        for i in range(0, len(words) - k + 1)
+    )
 
 
 def _is_valid_recipe(data: dict) -> bool:
