@@ -11,6 +11,7 @@ export default function BooksPage() {
   const [filterDomain, setFilterDomain] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [showUpload, setShowUpload] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   const fetchBooks = () => {
     setLoading(true);
@@ -22,10 +23,24 @@ export default function BooksPage() {
 
   useEffect(fetchBooks, [filterDomain, filterStatus]);
 
+  const handleDelete = async (book: Book) => {
+    if (!confirm(`Delete "${book.title}"? This removes the book, its files and all indexed vectors. This cannot be undone.`)) {
+      return;
+    }
+    try {
+      await api.deleteBook(book.id);
+      fetchBooks();
+    } catch (err) {
+      alert(`Delete failed: ${err}`);
+    }
+  };
+
   const handleUpload = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (uploading) return;
     const form = e.currentTarget;
     const formData = new FormData(form);
+    setUploading(true);
     try {
       await api.uploadBook(formData);
       form.reset();
@@ -33,6 +48,8 @@ export default function BooksPage() {
       fetchBooks();
     } catch (err) {
       alert(`Upload failed: ${err}`);
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -81,9 +98,12 @@ export default function BooksPage() {
                 </select>
               </div>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button type="submit" className="btn btn-primary">Upload</button>
-              <button type="button" className="btn btn-outline" onClick={() => setShowUpload(false)}>Cancel</button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button type="submit" className="btn btn-primary" disabled={uploading}>
+                {uploading ? "Uploading…" : "Upload"}
+              </button>
+              <button type="button" className="btn btn-outline" onClick={() => setShowUpload(false)} disabled={uploading}>Cancel</button>
+              {uploading && <span className="spinner" />}
             </div>
           </form>
         </div>
@@ -121,6 +141,7 @@ export default function BooksPage() {
                   <th>PDF Type</th>
                   <th>Language</th>
                   <th>Status</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -133,6 +154,15 @@ export default function BooksPage() {
                     <td><span className="badge badge-gray">{book.pdf_type}</span></td>
                     <td>{book.language === "pre_reform_ru" ? "Pre-reform" : "Modern"}</td>
                     <td><StatusBadge status={book.status} /></td>
+                    <td style={{ textAlign: "right" }}>
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={() => handleDelete(book)}
+                        title="Delete book"
+                      >
+                        Delete
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

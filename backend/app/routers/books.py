@@ -17,8 +17,6 @@ from app.services import ingest as ingest_svc
 
 router = APIRouter()
 
-QDRANT_COLLECTION = "recipes_v2"
-
 
 @router.get("/", response_model=list[BookOut])
 async def list_books(
@@ -182,11 +180,18 @@ async def delete_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         minio_svc.delete_file(f)
 
     # Delete this book's vectors from Qdrant (else they linger in search after
-    # the Postgres rows are gone). Best-effort: don't block deletion on it.
-    try:
-        await qdrant_svc.delete_by_filter(QDRANT_COLLECTION, "book_id", str(book_id))
-    except Exception:
-        pass
+    # the Postgres rows are gone). Recipes, plants and section passages all key
+    # by book_id. Best-effort: don't block deletion on it.
+    from app.config import settings
+    for collection in (
+        settings.qdrant_collection_recipes,
+        settings.qdrant_collection_herbalism,
+        settings.qdrant_collection_sections,
+    ):
+        try:
+            await qdrant_svc.delete_by_filter(collection, "book_id", str(book_id))
+        except Exception:
+            pass
 
     await db.delete(book)
     await db.commit()
