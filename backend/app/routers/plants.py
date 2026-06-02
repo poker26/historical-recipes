@@ -10,6 +10,7 @@ from app.models.book import Book
 from app.models.recipe import Recipe, RecipeIngredient
 from app.models.plant import (
     Plant,
+    MedicinalAction,
     PlantMedicinalUse,
     PlantCompound,
     PlantHarvest,
@@ -49,8 +50,23 @@ def _plant_summary(p: Plant, uses_count: int = 0) -> dict:
 
 
 @router.get("/")
-async def list_plants(q: str | None = None, db: AsyncSession = Depends(get_db)):
-    """List plants with optional fuzzy search over name / latin / historical names."""
+async def list_plants(
+    q: str | None = None,
+    compound: str | None = None,
+    action: str | None = None,
+    indication: str | None = None,
+    family: str | None = None,
+    is_toxic: bool | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """List plants, optionally filtered by free text and/or structured facets.
+
+    All filters combine with AND. ``compound``/``action``/``indication`` match
+    against the plant's child fact rows via EXISTS (no row duplication). The
+    ``action`` filter matches BOTH the normalized vocabulary (``action_id`` →
+    MedicinalAction) and the verbatim ``action_raw``, since only ~44% of uses
+    are normalized but ~97% carry a raw action term.
+    """
     # Count medicinal uses per plant so the herbarium grid can show how rich
     # each card is without a second round-trip.
     uses_subq = (
@@ -73,8 +89,72 @@ async def list_plants(q: str | None = None, db: AsyncSession = Depends(get_db)):
                 func.array_to_string(Plant.names_historical, " ").ilike(like),
             )
         )
+    if compound:
+        like = f"%{compound.strip()}%"
+        stmt = stmt.where(
+            Plant.compounds.any(
+                or_(
+                    PlantCompound.compound.ilike(like),
+                    PlantCompound.compound_group.ilike(like),
+                )
+            )
+        )
+    if action:
+        like = f"%{action.strip()}%"
+        action_ids = select(MedicinalAction.id).where(
+            or_(MedicinalAction.name.ilike(like), MedicinalAction.name_modern.ilike(like))
+        )
+        stmt = stmt.where(
+            Plant.medicinal_uses.any(
+                or_(
+                    PlantMedicinalUse.action_raw.ilike(like),
+                    PlantMedicinalUse.action_id.in_(action_ids),
+                )
+            )
+        )
+    if indication:
+        like = f"%{indication.strip()}%"
+        stmt = stmt.where(
+            Plant.medicinal_uses.any(PlantMedicinalUse.indications.ilike(like))
+        )
+    if family:
+        like = f"%{family.strip()}%"
+        stmt = stmt.where(or_(Plant.family.ilike(like), Plant.family_latin.ilike(like)))
+    if is_toxic is not None:
+        stmt = stmt.where(Plant.is_toxic.is_(is_toxic))
+
     rows = (await db.execute(stmt)).all()
     return [_plant_summary(p, n) for p, n in rows]
+
+
+@router.get("/facets")
+async def plant_facets(db: AsyncSession = Depends(get_db)):
+    """Distinct filter options for the herbarium UI, each with a plant count.
+
+    ``compound_groups`` are the normalized constituent groups; ``actions`` are
+    the normalized medicinal-action vocabulary terms actually in use. Counts are
+    distinct plants, so they read as "N plants have this".
+    """
+    group_count = func.count(func.distinct(PlantCompound.plant_id))
+    groups = (await db.execute(
+        select(PlantCompound.compound_group, group_count)
+        .where(PlantCompound.compound_group.isnot(None))
+        .group_by(PlantCompound.compound_group)
+        .order_by(group_count.desc())
+    )).all()
+
+    action_count = func.count(func.distinct(PlantMedicinalUse.plant_id))
+    actions = (await db.execute(
+        select(MedicinalAction.name, action_count)
+        .join(PlantMedicinalUse, PlantMedicinalUse.action_id == MedicinalAction.id)
+        .group_by(MedicinalAction.name)
+        .order_by(action_count.desc())
+    )).all()
+
+    return {
+        "compound_groups": [{"value": g, "count": n} for g, n in groups],
+        "actions": [{"value": a, "count": n} for a, n in actions],
+    }
 
 
 def _book_title_map(books: list[Book]) -> dict[str, str]:

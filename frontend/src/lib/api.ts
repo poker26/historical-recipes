@@ -121,6 +121,20 @@ export interface Plant {
   uses_count: number;
 }
 
+export interface PlantFilters {
+  q?: string;
+  compound?: string;
+  action?: string;
+  indication?: string;
+  family?: string;
+  is_toxic?: boolean;
+}
+
+export interface PlantFacets {
+  compound_groups: { value: string; count: number }[];
+  actions: { value: string; count: number }[];
+}
+
 export interface PlantMedicinalUse {
   id: string;
   part: string | null;
@@ -338,7 +352,18 @@ export const api = {
   getRecipe: (id: string) => apiFetch<RecipeDetail>(`/api/recipes/${id}`),
 
   // Plants
-  listPlants: (q?: string) => apiFetch<Plant[]>(`/api/plants/${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  listPlants: (params?: PlantFilters) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set("q", params.q);
+    if (params?.compound) qs.set("compound", params.compound);
+    if (params?.action) qs.set("action", params.action);
+    if (params?.indication) qs.set("indication", params.indication);
+    if (params?.family) qs.set("family", params.family);
+    if (params?.is_toxic != null) qs.set("is_toxic", String(params.is_toxic));
+    const s = qs.toString();
+    return apiFetch<Plant[]>(`/api/plants/${s ? `?${s}` : ""}`);
+  },
+  getPlantFacets: () => apiFetch<PlantFacets>("/api/plants/facets"),
   getPlant: (id: string) => apiFetch<PlantDetail>(`/api/plants/${id}`),
 
   // Dictionaries
