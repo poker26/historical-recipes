@@ -134,6 +134,14 @@ _DENOMINAL_ENDINGS = tuple(sorted((
 ), key=len, reverse=True))
 
 
+# Denominal roots whose relational adjective refers to a DIFFERENT plant than
+# the noun they resemble — so the X-овый form must NOT seed that noun's key.
+# "фиалковый корень" is orris root (Iris/Касатик), named for its violet SCENT,
+# and has nothing to do with Фиалка (Viola); the bare noun "фиалка" still links
+# Фиалка normally via the ordinary noun path.
+_DENOMINAL_BLOCK = {"фиалк"}
+
+
 def _denominal_root(tok: str) -> str | None:
     """Base noun root of an X-ов-/X-ев- relational adjective, else None.
 
@@ -143,7 +151,8 @@ def _denominal_root(tok: str) -> str | None:
     """
     for end in _DENOMINAL_ENDINGS:
         if tok.endswith(end) and len(tok) - len(end) >= 3:
-            return tok[: -len(end)]
+            root = tok[: -len(end)]
+            return None if root in _DENOMINAL_BLOCK else root
     return None
 
 
