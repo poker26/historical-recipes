@@ -54,7 +54,14 @@ _RETRY = RetryPolicy(
 #
 # The two domains share the first four steps (ingest + text prep) and diverge at
 # structuring: recipes go analyze -> extract_recipes -> match_ingredients, while
-# herbalism parses plant monographs in a single extract_plant_entries step.
+# herbalism additionally parses plant monographs.  Herbalism books also contain
+# genuine recipes (decoctions, teas, herbal collections), so the herbalism flow
+# now ALSO runs analyze -> extract_recipes -> match_ingredients to capture those
+# medicinal preparations.  Ordering: analyze precedes extract_recipes (it produces
+# the recipe-block sections), and extract_plant_entries precedes match_ingredients
+# so the plant monographs already exist when recipe ingredients are linked to
+# plants — maximising in-book cross-linking.  Recipes from a herbalism book stay
+# distinguishable by their book's domain.
 PIPELINE_STEPS_RECIPES = [
     ("classify", classify_activity, _SHORT, None),
     ("extract", extract_activity, _LONG, _HEARTBEAT),
@@ -70,7 +77,10 @@ PIPELINE_STEPS_HERBALISM = [
     ("extract", extract_activity, _LONG, _HEARTBEAT),
     ("cleanup", cleanup_activity, _LONG, _HEARTBEAT),
     ("translate", translate_activity, _LONG, _HEARTBEAT),
+    ("analyze", analyze_activity, _LONG, _HEARTBEAT),
     ("extract_plant_entries", extract_plant_entries_activity, _LONG, _HEARTBEAT),
+    ("extract_recipes", extract_recipes_activity, _LONG, _HEARTBEAT),
+    ("match_ingredients", match_ingredients_activity, _SHORT, None),
     ("index", index_activity, _LONG, _HEARTBEAT),
 ]
 

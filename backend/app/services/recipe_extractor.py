@@ -16,9 +16,17 @@ MAX_CHARS_PER_CALL = 12_000
 
 # Whitelist of recipe categories. Anything the LLM returns outside this set
 # (e.g. "дистиллят", "кальвадос") collapses to "другое" so the facet stays clean.
+# Two groups: alcoholic/culinary preparations and medicinal preparations — the
+# latter is needed because herbalism books contain genuine recipes (decoctions,
+# teas, herbal collections) that are NOT водки/ликёры.
 VALID_CATEGORIES = {
+    # alcoholic / culinary
     "водка", "ликёр", "настойка", "бальзам", "масло", "вода",
-    "эссенция", "эликсир", "тинктура", "ратафия", "розолия", "другое",
+    "эссенция", "эликсир", "тинктура", "ратафия", "розолия",
+    # medicinal preparations (herbalism)
+    "отвар", "настой", "чай", "сбор", "мазь", "сироп",
+    "порошок", "припарка", "капли", "примочка",
+    "другое",
 }
 
 # A real recipe has at least this much body text. Below it we're almost always
@@ -64,8 +72,15 @@ Be PRECISE about what is NOT a recipe. Do NOT extract:
 - Footnotes or editorial comments
 
 For each recipe, extract:
-- name: the recipe name/title
-- category: one of водка, ликёр, настойка, бальзам, масло, вода, эссенция, эликсир, тинктура, ратафия, розолия, другое
+- name: the recipe's title. If the source gives an explicit title, use it verbatim. \
+If the recipe has NO title (common for medicinal herbal collections that are just a list of herbs \
+with doses and a way to take them), SYNTHESIZE a short descriptive Russian name (3-7 words) from its \
+PURPOSE/indication and/or its main ingredients — e.g. "Успокоительный сбор с валерианой", \
+"Отвар при кашле с липой и малиной", "Желудочный чай". \
+NEVER use the raw ingredient list (with grams) as the name — that is not a name.
+- category: one of водка, ликёр, настойка, бальзам, масло, вода, эссенция, эликсир, тинктура, ратафия, розолия, \
+отвар, настой, чай, сбор, мазь, сироп, порошок, припарка, капли, примочка, другое. \
+For herbal teas/decoctions/collections prefer отвар/настой/чай/сбор over the alcoholic categories.
 - original_text: the COMPLETE original recipe text, verbatim (name + ingredients + the full preparation process)
 - ingredients: array of ingredients you can identify — parse them out of prose too when possible. \
 If a recipe genuinely has no separable ingredients, return an empty array but STILL output the recipe. \

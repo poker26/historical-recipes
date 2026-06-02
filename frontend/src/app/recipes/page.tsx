@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, Recipe } from "@/lib/api";
 
-const CATEGORIES = ["", "водка", "ликёр", "настойка", "бальзам", "масло", "вода", "эссенция", "тинктура", "ратафия", "розолия"];
+const CATEGORIES = ["", "водка", "ликёр", "настойка", "бальзам", "масло", "вода", "эссенция", "тинктура", "ратафия", "розолия", "отвар", "настой", "чай", "сбор", "мазь", "сироп", "порошок", "припарка", "капли", "примочка", "другое"];
 
 export default function RecipesPage() {
   const [recipes, setRecipes] = useState<Recipe[]>([]);

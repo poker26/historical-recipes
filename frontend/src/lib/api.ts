@@ -297,7 +297,7 @@ export const PIPELINE_STEP_NAMES = [
 ];
 export const PIPELINE_STEP_NAMES_HERBALISM = [
   "classify", "extract", "cleanup", "translate",
-  "extract_plant_entries", "index",
+  "analyze", "extract_plant_entries", "extract_recipes", "match_ingredients", "index",
 ];
 export const stepNamesForDomain = (domain?: string): string[] =>
   domain === "herbalism" ? PIPELINE_STEP_NAMES_HERBALISM : PIPELINE_STEP_NAMES;
