@@ -600,9 +600,15 @@ async def extract_recipes_activity(book_id: str) -> dict:
                 ProcessingLog.book_id == bid,
                 ProcessingLog.step == _RECIPE_SECTION_STEP,
             ))).scalars().all()
+            # Only treat COMPLETED sections as done. A "failed" marker must NOT
+            # count as done — otherwise a section that died on a transient blip is
+            # skipped forever on retry and its recipes are lost. (Re-running a
+            # failed section is safe: fresh attempt-1 runs wipe prior recipes, and
+            # a resumed section had nothing committed to duplicate.)
             done_sections = {
                 lg.details["section"] for lg in logs
-                if lg.details and lg.details.get("section") is not None
+                if lg.status == "completed" and lg.details
+                and lg.details.get("section") is not None
             }
 
     if done_sections:
@@ -649,6 +655,19 @@ async def extract_recipes_activity(book_id: str) -> dict:
     async with async_session() as db:
         recipes_count = (await db.execute(
             select(func.count()).select_from(Recipe).where(Recipe.book_id == bid))).scalar() or 0
+
+    # Zero recipes is LEGITIMATE for a pure-monograph herbalism book — but zero
+    # recipes WHILE sections failed means a transient problem (e.g. a network/LLM
+    # blip) wiped every section. Raise a RETRYABLE error (RuntimeError, not the
+    # non-retryable ValueError) so Temporal retries; the resume logic skips the
+    # sections that did complete and re-runs only the failed ones.
+    if recipes_count == 0 and failed > 0:
+        raise RuntimeError(
+            f"All {failed} recipe section(s) failed and no recipes were extracted; "
+            "retrying so a transient failure does not finalize the book empty"
+        )
+
+    async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         book.wizard_step = 6
         book.status = "recipes_extracted"
@@ -870,9 +889,15 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
                 ProcessingLog.book_id == bid,
                 ProcessingLog.step == _PLANT_CHUNK_STEP,
             ))).scalars().all()
+            # Only treat COMPLETED chunks as done. A "failed" marker must NOT count
+            # as done — otherwise a chunk that died on a transient blip is skipped
+            # forever on retry and its plants are lost. (Re-running a failed chunk
+            # is safe: fresh attempt-1 runs wipe this book's prior facts, and a
+            # resumed chunk had nothing committed to duplicate.)
             done_chunks = {
                 lg.details["chunk"] for lg in logs
-                if lg.details and lg.details.get("chunk") is not None
+                if lg.status == "completed" and lg.details
+                and lg.details.get("chunk") is not None
             }
 
         # Normalization map: action term / modern synonym -> MedicinalAction.id
@@ -927,6 +952,19 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
         uses_count = (await db.execute(
             select(func.count()).select_from(PlantMedicinalUse)
             .where(PlantMedicinalUse.source_book_id == bid))).scalar() or 0
+
+    # Zero plants WHILE chunks failed means a transient problem (e.g. a network/LLM
+    # blip) wiped every chunk. Raise a RETRYABLE error (RuntimeError, not the
+    # non-retryable ValueError) so Temporal retries; resume skips the chunks that
+    # did complete and re-runs only the failed ones. Don't write the "completed"
+    # marker yet — let the retry finalize once chunks actually succeed.
+    if plants_count == 0 and failed > 0:
+        raise RuntimeError(
+            f"All {failed} plant chunk(s) failed and no plants were extracted; "
+            "retrying so a transient failure does not finalize the book empty"
+        )
+
+    async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
         book.wizard_step = 6
         book.status = "plants_extracted"
@@ -935,6 +973,8 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
                                       "failed_chunks": failed}))
         await db.commit()
 
+    # Genuine zero (no failures) — the book has no plant monographs at all. That's
+    # a real input problem worth surfacing as non-retryable.
     if plants_count == 0:
         raise ValueError("No plants extracted")
     return {"plants_count": plants_count, "uses_count": uses_count, "failed_chunks": failed}
@@ -950,7 +990,12 @@ async def match_ingredients_activity(book_id: str) -> dict:
     async with async_session() as db:
         recipes = (await db.execute(select(Recipe).where(Recipe.book_id == bid))).scalars().all()
         if not recipes:
-            raise ValueError("No recipes found")
+            # No recipes is LEGITIMATE: a herbalism book may be pure plant
+            # monographs with no medicinal recipes. Nothing to match — no-op
+            # instead of failing the whole pipeline (a ValueError here is
+            # non-retryable and would permanently kill an otherwise-good book).
+            _hb("No recipes to match ingredients for; skipping")
+            return {"matched": 0, "new_created": 0, "linked_to_plant": 0, "total": 0}
 
         _hb(f"Matching ingredients for {len(recipes)} recipes")
 
@@ -1034,6 +1079,69 @@ async def match_ingredients_activity(book_id: str) -> dict:
 # Step 7: Index to Qdrant
 # ──────────────────────────────────────────────────────────────────────
 
+async def _index_recipes(db, book) -> int:
+    """Index this book's recipes into the recipes Qdrant collection.
+
+    Shared by both domains: the recipes pipeline indexes culinary/alcohol recipes,
+    and the herbalism pipeline calls this too so the medicinal recipes (decoctions,
+    teas, herbal collections) extracted from herbalism books are searchable in the
+    same recipes collection — distinguishable downstream by their book's domain.
+
+    Returns the number of points upserted. Does NOT commit book status or write a
+    ProcessingLog — the caller owns finalization. Zero recipes is a no-op (returns
+    0) rather than an error, so a herbalism book with only plant monographs is fine.
+    """
+    bid = book.id
+    _hb("Ensuring recipes Qdrant collection exists")
+    await qdrant_svc.ensure_collection(QDRANT_COLLECTION)
+    await qdrant_svc.delete_by_filter(QDRANT_COLLECTION, "book_id", str(bid))
+
+    recipes = (await db.execute(select(Recipe).where(Recipe.book_id == bid))).scalars().all()
+    if not recipes:
+        return 0
+
+    _hb(f"Indexing {len(recipes)} recipes")
+    points = []
+    for i, recipe in enumerate(recipes):
+        ingredients = [ri.name for ri in (await db.execute(
+            select(RecipeIngredient).where(RecipeIngredient.recipe_id == recipe.id)
+        )).scalars().all()]
+
+        embed_text = f"Рецепт: {recipe.name}\n\nСодержание: {recipe.original_text or ''}"
+        _hb(f"Embedding recipe {i+1}/{len(recipes)}: {recipe.name}")
+        embedding = await create_embedding(embed_text)
+
+        point = {
+            "id": str(recipe.id),
+            "dense": embedding["dense"],
+            "payload": {
+                "recipe_name": recipe.name,
+                "category": recipe.category or "",
+                "source_book": book.title,
+                "book_id": str(bid),
+                "author": book.author or "",
+                "year": book.year,
+                "ingredients": ingredients,
+                "content": recipe.original_text or "",
+                "language": book.language or "modern_ru",
+            },
+        }
+        if "sparse" in embedding and embedding["sparse"]:
+            point["sparse"] = embedding["sparse"]
+        points.append(point)
+
+        recipe.qdrant_point_id = str(recipe.id)
+        recipe.qdrant_collection = QDRANT_COLLECTION
+        recipe.indexed_at = datetime.now(timezone.utc)
+
+    _hb("Upserting recipe points to Qdrant")
+    for i in range(0, len(points), 50):
+        await qdrant_svc.upsert_points(QDRANT_COLLECTION, points[i:i + 50])
+        _hb(f"Upserted recipe batch {i//50 + 1}")
+
+    return len(points)
+
+
 async def _index_plants(db, book) -> dict:
     """Index this book's plants into the herbalism Qdrant collection.
 
@@ -1098,10 +1206,19 @@ async def _index_plants(db, book) -> dict:
         await qdrant_svc.upsert_points(QDRANT_PLANTS_COLLECTION, points[i:i + 50])
         _hb(f"Upserted batch {i//50 + 1}")
 
+    # Herbalism books also yield medicinal recipes (decoctions/teas/collections).
+    # Index them into the recipes collection so they're searchable alongside
+    # culinary/alcohol recipes. No-op (0) if this book has only plant monographs.
+    recipe_points = await _index_recipes(db, book)
+    if recipe_points:
+        _hb(f"Indexed {recipe_points} medicinal recipe(s) from this herbalism book")
+
     book.wizard_step = 8
     book.status = "indexed"
     db.add(ProcessingLog(book_id=bid, step="index", status="completed",
-                         details={"points_indexed": len(points), "collection": QDRANT_PLANTS_COLLECTION}))
+                         details={"points_indexed": len(points),
+                                  "collection": QDRANT_PLANTS_COLLECTION,
+                                  "recipe_points": recipe_points}))
     await db.commit()
 
     # This book just added/enriched plants — relink existing recipe ingredients
@@ -1122,60 +1239,17 @@ async def index_activity(book_id: str) -> dict:
         if (book.domain or "").lower() == "herbalism":
             return await _index_plants(db, book)
 
-        _hb("Ensuring Qdrant collection exists")
-        await qdrant_svc.ensure_collection(QDRANT_COLLECTION)
-        await qdrant_svc.delete_by_filter(QDRANT_COLLECTION, "book_id", str(bid))
-
-        recipes = (await db.execute(select(Recipe).where(Recipe.book_id == bid))).scalars().all()
-        if not recipes:
+        recipe_points = await _index_recipes(db, book)
+        if recipe_points == 0:
             raise ValueError("No recipes to index")
-
-        _hb(f"Indexing {len(recipes)} recipes")
-        points = []
-        for i, recipe in enumerate(recipes):
-            ingredients = [ri.name for ri in (await db.execute(
-                select(RecipeIngredient).where(RecipeIngredient.recipe_id == recipe.id)
-            )).scalars().all()]
-
-            embed_text = f"Рецепт: {recipe.name}\n\nСодержание: {recipe.original_text or ''}"
-            _hb(f"Embedding {i+1}/{len(recipes)}: {recipe.name}")
-            embedding = await create_embedding(embed_text)
-
-            point = {
-                "id": str(recipe.id),
-                "dense": embedding["dense"],
-                "payload": {
-                    "recipe_name": recipe.name,
-                    "category": recipe.category or "",
-                    "source_book": book.title,
-                    "book_id": str(bid),
-                    "author": book.author or "",
-                    "year": book.year,
-                    "ingredients": ingredients,
-                    "content": recipe.original_text or "",
-                    "language": book.language or "modern_ru",
-                },
-            }
-            if "sparse" in embedding and embedding["sparse"]:
-                point["sparse"] = embedding["sparse"]
-            points.append(point)
-
-            recipe.qdrant_point_id = str(recipe.id)
-            recipe.qdrant_collection = QDRANT_COLLECTION
-            recipe.indexed_at = datetime.now(timezone.utc)
-
-        _hb("Upserting points to Qdrant")
-        for i in range(0, len(points), 50):
-            await qdrant_svc.upsert_points(QDRANT_COLLECTION, points[i:i + 50])
-            _hb(f"Upserted batch {i//50 + 1}")
 
         book.wizard_step = 8
         book.status = "indexed"
         db.add(ProcessingLog(book_id=bid, step="index", status="completed",
-                             details={"points_indexed": len(points), "collection": QDRANT_COLLECTION}))
+                             details={"points_indexed": recipe_points, "collection": QDRANT_COLLECTION}))
         await db.commit()
 
-    return {"points_indexed": len(points), "collection": QDRANT_COLLECTION}
+    return {"points_indexed": recipe_points, "collection": QDRANT_COLLECTION}
 
 
 # ──────────────────────────────────────────────────────────────────────

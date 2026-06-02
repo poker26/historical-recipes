@@ -75,14 +75,22 @@ async def chat_completion(
 
 async def _do_request(body: dict, model: str) -> str:
     """Single OpenRouter call. Raises _RetryableLLMError on transient failures."""
-    async with httpx.AsyncClient(timeout=600) as client:
-        response = await client.post(
-            f"{settings.openrouter_base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.openrouter_api_key}",
-            },
-            json=body,
-        )
+    # Transport-level failures (DNS resolution blips like "Temporary failure in
+    # name resolution", connection resets, read timeouts) are inherently
+    # transient. Without this, httpx.TransportError propagates past the retry
+    # loop as fatal and a single network hiccup kills the whole activity.
+    try:
+        async with httpx.AsyncClient(timeout=600) as client:
+            response = await client.post(
+                f"{settings.openrouter_base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                },
+                json=body,
+            )
+    except httpx.TransportError as e:
+        logger.warning(f"LLM transport error ({type(e).__name__}: {e}); treating as transient")
+        raise _RetryableLLMError(f"transport error: {type(e).__name__}: {e}")
 
     if response.status_code >= 400:
         # Surface OpenRouter's error body — it explains *why* (credits, data
