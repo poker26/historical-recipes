@@ -132,6 +132,12 @@ async def delete_book_vectors(book_id: uuid.UUID, db: AsyncSession = Depends(get
         if collection in existing:
             await qdrant_svc.delete_by_filter(collection, "source_book", str(book_id))
 
+    # Section passages are keyed by the "book_id" payload field (see
+    # _index_sections), so clean them up with the matching filter.
+    if settings.qdrant_collection_sections in existing:
+        await qdrant_svc.delete_by_filter(
+            settings.qdrant_collection_sections, "book_id", str(book_id))
+
     # Clear Qdrant references in recipes
     await db.execute(
         update(Recipe)

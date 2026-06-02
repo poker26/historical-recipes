@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # non-existent "herbalism" collection and silently returns nothing.
     qdrant_collection_recipes: str = "recipes_v2"
     qdrant_collection_herbalism: str = "plants_v2"
+    # Free-text book-section passages (intro/appendix/other + recipe-block prose);
+    # written by _index_sections in temporal/activities.py.
+    qdrant_collection_sections: str = "sections_v1"
 
     # BGE-M3 (self-hosted embeddings)
     bge_m3_url: str = "http://bge-m3:8100"

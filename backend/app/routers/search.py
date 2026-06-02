@@ -43,6 +43,7 @@ async def search(request: SearchRequest):
         requested = [
             settings.qdrant_collection_recipes,
             settings.qdrant_collection_herbalism,
+            settings.qdrant_collection_sections,
         ]
 
     # Only query collections that actually exist — on the shared Qdrant some

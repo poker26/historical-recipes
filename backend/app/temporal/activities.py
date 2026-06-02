@@ -50,6 +50,13 @@ logger = logging.getLogger(__name__)
 
 QDRANT_COLLECTION = "recipes_v2"
 QDRANT_PLANTS_COLLECTION = "plants_v2"
+QDRANT_SECTIONS_COLLECTION = "sections_v1"
+
+# Section types worth embedding as free-text passages. We deliberately KEEP
+# recipe_block (its prose / inter-recipe connective text is useful even though
+# the recipes themselves are also indexed separately — duplication is fine).
+# toc / bibliography / chapter_header are pure navigation/noise — skip them.
+_INDEXABLE_SECTION_TYPES = {"recipe_block", "introduction", "appendix", "other"}
 
 # Prompts — copied verbatim from wizard.py so behaviour is identical.
 CLEANUP_SYSTEM_PROMPT = (
@@ -1079,6 +1086,84 @@ async def match_ingredients_activity(book_id: str) -> dict:
 # Step 7: Index to Qdrant
 # ──────────────────────────────────────────────────────────────────────
 
+async def _index_sections(db, book) -> int:
+    """Embed the prose text of meaningful book sections into the sections
+    collection, so downstream agents can retrieve passages that are NOT clean
+    recipes/plants (introductions, historical notes, general descriptions, and
+    the connective prose inside recipe blocks).
+
+    Runs for BOTH domains. ``BookSection`` stores only line ranges, so the text
+    is reconstructed from ``book.full_text`` (same as analyze/extract). Long
+    sections are split with the shared chunker (each chunk ≤ MAX_CHARS_PER_CALL,
+    comfortably under the embedder's 16K-char truncation, so no content is lost).
+
+    Idempotent: point IDs are a deterministic uuid5 of (section_id, chunk_index),
+    and this book's points are deleted first — so a re-index replaces cleanly.
+    Returns the number of points upserted; 0 (no-op) if the book has no indexable
+    sections, which is not an error.
+    """
+    bid = book.id
+    if not book.full_text:
+        return 0
+
+    sections = (await db.execute(
+        select(BookSection).where(BookSection.book_id == bid).order_by(BookSection.start_line)
+    )).scalars().all()
+    sections = [s for s in sections if s.section_type in _INDEXABLE_SECTION_TYPES]
+    if not sections:
+        return 0
+
+    _hb("Ensuring sections Qdrant collection exists")
+    await qdrant_svc.ensure_collection(QDRANT_SECTIONS_COLLECTION)
+    await qdrant_svc.delete_by_filter(QDRANT_SECTIONS_COLLECTION, "book_id", str(bid))
+
+    lines = book.full_text.split("\n")
+    domain = book.domain or "recipes"
+    points = []
+    for s in sections:
+        section_text = "\n".join(
+            lines[max(0, (s.start_line or 1) - 1):min(s.end_line or 0, len(lines))]
+        ).strip()
+        if not section_text:
+            continue
+        chunks = _split_into_chunks(section_text)
+        for ci, chunk in enumerate(chunks):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            embed_text = f"{s.title}\n\n{chunk}" if s.title else chunk
+            _hb(f"Embedding section '{s.section_type}' chunk {ci+1}/{len(chunks)}")
+            embedding = await create_embedding(embed_text)
+            point = {
+                "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{s.id}:{ci}")),
+                "dense": embedding["dense"],
+                "payload": {
+                    "book_id": str(bid),
+                    "book_title": book.title,
+                    "author": book.author or "",
+                    "year": book.year,
+                    "section_type": s.section_type,
+                    "title": s.title or "",
+                    "content": chunk,
+                    "chunk_index": ci,
+                    "domain": domain,
+                    "language": book.language or "modern_ru",
+                },
+            }
+            if "sparse" in embedding and embedding["sparse"]:
+                point["sparse"] = embedding["sparse"]
+            points.append(point)
+
+    if not points:
+        return 0
+
+    _hb(f"Upserting {len(points)} section points to Qdrant")
+    for i in range(0, len(points), 50):
+        await qdrant_svc.upsert_points(QDRANT_SECTIONS_COLLECTION, points[i:i + 50])
+        _hb(f"Upserted section batch {i//50 + 1}")
+    return len(points)
+
+
 async def _index_recipes(db, book) -> int:
     """Index this book's recipes into the recipes Qdrant collection.
 
@@ -1213,12 +1298,19 @@ async def _index_plants(db, book) -> dict:
     if recipe_points:
         _hb(f"Indexed {recipe_points} medicinal recipe(s) from this herbalism book")
 
+    # Also embed the book's free-text sections (intro/appendix/other/recipe-block
+    # prose) so agents can retrieve passages that aren't structured plants/recipes.
+    section_points = await _index_sections(db, book)
+    if section_points:
+        _hb(f"Indexed {section_points} section passage(s)")
+
     book.wizard_step = 8
     book.status = "indexed"
     db.add(ProcessingLog(book_id=bid, step="index", status="completed",
                          details={"points_indexed": len(points),
                                   "collection": QDRANT_PLANTS_COLLECTION,
-                                  "recipe_points": recipe_points}))
+                                  "recipe_points": recipe_points,
+                                  "section_points": section_points}))
     await db.commit()
 
     # This book just added/enriched plants — relink existing recipe ingredients
@@ -1243,13 +1335,22 @@ async def index_activity(book_id: str) -> dict:
         if recipe_points == 0:
             raise ValueError("No recipes to index")
 
+        # Also embed the book's free-text sections so agents can retrieve prose
+        # passages (intro/appendix/other + recipe-block connective text).
+        section_points = await _index_sections(db, book)
+        if section_points:
+            _hb(f"Indexed {section_points} section passage(s)")
+
         book.wizard_step = 8
         book.status = "indexed"
         db.add(ProcessingLog(book_id=bid, step="index", status="completed",
-                             details={"points_indexed": recipe_points, "collection": QDRANT_COLLECTION}))
+                             details={"points_indexed": recipe_points,
+                                      "collection": QDRANT_COLLECTION,
+                                      "section_points": section_points}))
         await db.commit()
 
-    return {"points_indexed": recipe_points, "collection": QDRANT_COLLECTION}
+    return {"points_indexed": recipe_points, "collection": QDRANT_COLLECTION,
+            "section_points": section_points}
 
 
 # ──────────────────────────────────────────────────────────────────────
