@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -91,9 +92,14 @@ async def upload_book(
         raise HTTPException(status_code=400, detail="Empty file")
 
     # Normalise DjVu to PDF up front; downstream treats it as a PDF.
+    # ddjvu is a multi-minute, CPU-bound subprocess for large scanned books
+    # (a 700-page atlas takes ~4-5 min). Run it (and the other blocking steps
+    # below) in a worker thread so the single uvicorn event loop stays
+    # responsive — otherwise healthchecks and concurrent requests stall and
+    # the upload cascades into a 504.
     if source_format == "djvu":
         try:
-            content = ingest_svc.djvu_to_pdf(content)
+            content = await run_in_threadpool(ingest_svc.djvu_to_pdf, content)
         except Exception as e:  # noqa: BLE001 — surface conversion failure to the client
             raise HTTPException(status_code=400, detail=f"DjVu conversion failed: {e}")
 
@@ -107,7 +113,7 @@ async def upload_book(
     else:  # pdf, or djvu now converted to pdf
         stored_ext = "pdf"
         content_type = "application/pdf"
-        pdf_type = _detect_pdf_type(content)
+        pdf_type = await run_in_threadpool(_detect_pdf_type, content)
 
     # Create book record first to get ID
     book = Book(
@@ -125,7 +131,7 @@ async def upload_book(
 
     # Upload to MinIO: books/{id}/original.{ext}
     file_path = f"books/{book.id}/original.{stored_ext}"
-    minio_svc.upload_file(content, file_path, content_type=content_type)
+    await run_in_threadpool(minio_svc.upload_file, content, file_path, content_type=content_type)
     book.file_path = file_path
 
     # Log

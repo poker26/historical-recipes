@@ -41,9 +41,12 @@ def djvu_to_pdf(djvu_bytes: bytes) -> bytes:
         dst_fd, dst_path = tempfile.mkstemp(suffix=".pdf")
         os.close(dst_fd)
 
+        # Keep this under nginx's 600s proxy_read_timeout on the upload route so
+        # an oversized book surfaces a clean conversion error to the client
+        # rather than a bare 504 from the gateway.
         proc = subprocess.run(
             ["ddjvu", "-format=pdf", src_path, dst_path],
-            capture_output=True, timeout=900,
+            capture_output=True, timeout=540,
         )
         if proc.returncode != 0:
             err = proc.stderr.decode(errors="replace")[:500]
