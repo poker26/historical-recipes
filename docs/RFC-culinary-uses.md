@@ -1,6 +1,13 @@
 # RFC: Culinary uses as a first-class plant fact
 
-Status: **Draft** · Author: pipeline notes · Created: 2026-06-03
+Status: **Implemented** (2026-06-03) · Author: pipeline notes · Created: 2026-06-03
+
+> Shipped as migration `006_culinary` + `PlantCulinaryUse` model, an
+> `ExtractedCulinaryUse` slot in `plant_extractor.py` (under the same grounding
+> guard, edibility canonicalized to the 4-value set), persistence in
+> `extract_plant_entries_activity`, an `edibility`/`edible_parts` payload + a
+> `Съедобность` line in the plants_v2 embedding, and `/api/plants` exposure
+> (full monograph field, `edibility`/`edible` list filters, `edibility` facet).
 
 ## Problem
 

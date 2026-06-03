@@ -42,6 +42,19 @@ _PART_CANON = {
     "сок": "сок", "клубни": "клубень", "луковица": "луковица",
 }
 
+# Controlled edibility vocabulary for culinary facts (faceting "show edible
+# plants" / distinguishing edible-vs-toxic on mushroom guides). LLM spellings
+# (gender/case variants) collapse to the canonical 4-value set; an unrecognized
+# value passes through lowercased rather than being forced.
+_EDIBILITY_CANON = {
+    "съедобно": "съедобно", "съедобный": "съедобно", "съедобная": "съедобно",
+    "съедобное": "съедобно", "съедобны": "съедобно", "съедобен": "съедобно",
+    "условно-съедобно": "условно-съедобно", "условно съедобно": "условно-съедобно",
+    "условно-съедобный": "условно-съедобно", "условно съедобный": "условно-съедобно",
+    "несъедобно": "несъедобно", "несъедобный": "несъедобно", "несъедобное": "несъедобно",
+    "ядовито": "ядовито", "ядовитый": "ядовито", "ядовитое": "ядовито", "ядовита": "ядовито",
+}
+
 
 @dataclass
 class ExtractedMedicinalUse:
@@ -88,6 +101,17 @@ class ExtractedToxicity:
 
 
 @dataclass
+class ExtractedCulinaryUse:
+    part: str = ""
+    edibility: str = ""         # съедобно / условно-съедобно / несъедобно / ядовито (normalized)
+    preparation: str = ""       # сырым / отварить / сушить / квасить / жарить / мука ...
+    use: str = ""               # dish/role: «в салаты», «суп», «заменитель муки»
+    season: str = ""
+    caution: str = ""
+    original_text: str = ""
+
+
+@dataclass
 class ExtractedPlant:
     name: str
     name_latin: str = ""
@@ -103,6 +127,7 @@ class ExtractedPlant:
     harvests: list[ExtractedHarvest] = field(default_factory=list)
     habitats: list[ExtractedHabitat] = field(default_factory=list)
     toxicities: list[ExtractedToxicity] = field(default_factory=list)
+    culinary_uses: list[ExtractedCulinaryUse] = field(default_factory=list)
 
 
 SYSTEM_PROMPT = """You are extracting structured monographs about medicinal plants from a Russian herbal \
@@ -139,6 +164,14 @@ Extract EVERY distinct plant entry you find. For each plant return an object wit
     - region (geography), biotope (where it grows), status ("Красная книга", "редкое", ...), original_text
 - toxicities: array, only if poisonous. Each:
     - toxic_parts (array), symptoms, antidote, severity, original_text
+- culinary_uses: array of FOOD/edibility facts, ONLY for books that describe eating the plant (foraging / wild-food / cookbook). ONE entry per distinct edible part or preparation. Each:
+    - part: which part is eaten (лист / побег / корень / цвет / плод / шляпка ...), or "" if unspecified
+    - edibility: one of exactly "съедобно", "условно-съедобно", "несъедобно", "ядовито" — ONLY if the text states/implies it; else ""
+    - preparation: how it is prepared as food if stated (сырым / отварить / сушить / квасить / мариновать / жарить / мука), else ""
+    - use: the dish or role as food ("в салаты", "суп", "заменитель муки", "приправа"), else ""
+    - season: when the part is good to gather/eat, else ""
+    - caution: palatability/safety caveat ("горчит до отваривания", "только молодые побеги", ядовитые двойники), else ""
+    - original_text: the exact source sentence(s) this culinary fact came from
 
 Rules:
 - Preserve original_text fields VERBATIM. Do NOT invent facts not in the text.
@@ -146,9 +179,10 @@ Rules:
 - Do NOT extract table-of-contents lines, chapter intros, or general pharmacology essays that name no specific plant.
 
 CRITICAL — extract only what is literally present; never use your own knowledge:
-- You KNOW many of these plants from training (their medicinal actions, chemistry, toxicity). IGNORE that knowledge. Extract a medicinal_use, compound, harvest, habitat or toxicity ONLY if it is explicitly stated in the text above.
-- Every medicinal_use, harvest, habitat and toxicity MUST carry an original_text that is a LITERAL quote from the text above. If you cannot quote the source for a fact, do NOT emit that fact.
-- If the book is a botanical key / culinary / foraging book that describes a plant WITHOUT medicinal information, return empty medicinal_uses, compounds and toxicities — do NOT supply them from memory. A plant with only name + description is a valid, complete entry.
+- You KNOW many of these plants from training (their medicinal actions, chemistry, toxicity, AND whether they are edible). IGNORE that knowledge. Extract a medicinal_use, compound, harvest, habitat, toxicity or culinary_use ONLY if it is explicitly stated in the text above.
+- Every medicinal_use, harvest, habitat, toxicity and culinary_use MUST carry an original_text that is a LITERAL quote from the text above. If you cannot quote the source for a fact, do NOT emit that fact.
+- In particular, do NOT label a plant edible/toxic as food from your own knowledge: emit a culinary_use only when the text itself describes eating/preparing it as food.
+- If the book is a botanical key / culinary / foraging book that describes a plant WITHOUT medicinal information, return empty medicinal_uses, compounds and toxicities — do NOT supply them from memory. A plant with only name + description (and culinary_uses, if it is a food book) is a valid, complete entry.
 
 Return a JSON object with a single key "plants" whose value is an ARRAY of plant objects: \
 {"plants": [ {"name": ...}, {"name": ...} ]}."""
@@ -174,6 +208,11 @@ def _coerce_list(val) -> list[dict]:
 def _canon_part(raw: str) -> str:
     p = (raw or "").strip().lower()
     return _PART_CANON.get(p, p)
+
+
+def _canon_edibility(raw: str) -> str:
+    e = (raw or "").strip().lower()
+    return _EDIBILITY_CANON.get(e, e)
 
 
 def _str(v) -> str:
@@ -337,13 +376,15 @@ def _ground_plant(p: ExtractedPlant, source_norm: str) -> ExtractedPlant | None:
     p.habitats = [h for h in p.habitats if _is_grounded(h.original_text, source_norm)]
     p.toxicities = [t for t in p.toxicities if _is_grounded(t.original_text, source_norm)]
     p.compounds = [c for c in p.compounds if _is_grounded(c.compound, source_norm)]
+    p.culinary_uses = [c for c in p.culinary_uses if _is_grounded(c.original_text, source_norm)]
     p.is_toxic = bool(p.is_toxic) or len(p.toxicities) > 0
 
     anchored = (
         _name_in_source(p.name, source_norm)
         or _is_grounded(p.original_text, source_norm)
         or _is_grounded(p.description, source_norm)
-        or bool(p.medicinal_uses or p.compounds or p.harvests or p.habitats or p.toxicities)
+        or bool(p.medicinal_uses or p.compounds or p.harvests or p.habitats
+                or p.toxicities or p.culinary_uses)
     )
     return p if anchored else None
 
@@ -398,6 +439,18 @@ def _parse_plant(d: dict) -> ExtractedPlant:
         )
         for t in (d.get("toxicities") or []) if isinstance(t, dict)
     ]
+    culinary_uses = [
+        ExtractedCulinaryUse(
+            part=_canon_part(c.get("part", "")),
+            edibility=_canon_edibility(c.get("edibility", "")),
+            preparation=_str(c.get("preparation")),
+            use=_str(c.get("use")),
+            season=_str(c.get("season")),
+            caution=_str(c.get("caution")),
+            original_text=_str(c.get("original_text")),
+        )
+        for c in (d.get("culinary_uses") or []) if isinstance(c, dict)
+    ]
     return ExtractedPlant(
         name=_str(d.get("name")),
         name_latin=_str(d.get("name_latin")),
@@ -413,4 +466,5 @@ def _parse_plant(d: dict) -> ExtractedPlant:
         harvests=harvests,
         habitats=habitats,
         toxicities=toxicities,
+        culinary_uses=culinary_uses,
     )

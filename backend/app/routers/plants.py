@@ -16,6 +16,7 @@ from app.models.plant import (
     PlantHarvest,
     PlantHabitat,
     PlantToxicity,
+    PlantCulinaryUse,
     PlantBookMention,
 )
 from app.services.plant_matching import relink_recipe_ingredients
@@ -57,6 +58,8 @@ async def list_plants(
     indication: str | None = None,
     family: str | None = None,
     is_toxic: bool | None = None,
+    edibility: str | None = None,
+    edible: bool | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """List plants, optionally filtered by free text and/or structured facets.
@@ -122,6 +125,15 @@ async def list_plants(
         stmt = stmt.where(or_(Plant.family.ilike(like), Plant.family_latin.ilike(like)))
     if is_toxic is not None:
         stmt = stmt.where(Plant.is_toxic.is_(is_toxic))
+    if edibility:
+        like = f"%{edibility.strip()}%"
+        stmt = stmt.where(Plant.culinary_uses.any(PlantCulinaryUse.edibility.ilike(like)))
+    if edible is not None:
+        # "edible" = has any culinary fact flagged съедобно / условно-съедобно.
+        edible_pred = Plant.culinary_uses.any(
+            PlantCulinaryUse.edibility.in_(["съедобно", "условно-съедобно"])
+        )
+        stmt = stmt.where(edible_pred if edible else ~edible_pred)
 
     rows = (await db.execute(stmt)).all()
     return [_plant_summary(p, n) for p, n in rows]
@@ -151,9 +163,18 @@ async def plant_facets(db: AsyncSession = Depends(get_db)):
         .order_by(action_count.desc())
     )).all()
 
+    edib_count = func.count(func.distinct(PlantCulinaryUse.plant_id))
+    edibilities = (await db.execute(
+        select(PlantCulinaryUse.edibility, edib_count)
+        .where(PlantCulinaryUse.edibility.isnot(None))
+        .group_by(PlantCulinaryUse.edibility)
+        .order_by(edib_count.desc())
+    )).all()
+
     return {
         "compound_groups": [{"value": g, "count": n} for g, n in groups],
         "actions": [{"value": a, "count": n} for a, n in actions],
+        "edibility": [{"value": e, "count": n} for e, n in edibilities],
     }
 
 
@@ -173,6 +194,7 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
             selectinload(Plant.harvests),
             selectinload(Plant.habitats),
             selectinload(Plant.toxicities),
+            selectinload(Plant.culinary_uses),
             selectinload(Plant.mentions),
         )
     )
@@ -198,6 +220,9 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     for t in plant.toxicities:
         if t.source_book_id:
             book_ids.add(t.source_book_id)
+    for cu in plant.culinary_uses:
+        if cu.source_book_id:
+            book_ids.add(cu.source_book_id)
     for m in plant.mentions:
         book_ids.add(m.book_id)
 
@@ -299,6 +324,21 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
                 "source": src(t.source_book_id),
             }
             for t in plant.toxicities
+        ],
+        "culinary_uses": [
+            {
+                "id": str(cu.id),
+                "part": cu.part,
+                "edibility": cu.edibility,
+                "preparation": cu.preparation,
+                "use": cu.use,
+                "season": cu.season,
+                "caution": cu.caution,
+                "original_text": cu.original_text,
+                "confidence": cu.confidence,
+                "source": src(cu.source_book_id),
+            }
+            for cu in plant.culinary_uses
         ],
         "mentions": [
             {

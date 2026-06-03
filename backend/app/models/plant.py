@@ -38,6 +38,7 @@ class Plant(Base):
     harvests: Mapped[list["PlantHarvest"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     habitats: Mapped[list["PlantHabitat"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     toxicities: Mapped[list["PlantToxicity"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
+    culinary_uses: Mapped[list["PlantCulinaryUse"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
 
 
 class MedicinalAction(Base):
@@ -171,6 +172,33 @@ class PlantToxicity(Base):
     source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
 
     plant: Mapped["Plant"] = relationship(back_populates="toxicities")
+
+
+class PlantCulinaryUse(Base):
+    """One culinary/edibility fact: a plant part, its edibility class, how it is
+    prepared as food, and palatability/safety caveats — as stated by one source.
+
+    The food-knowledge analog of ``PlantMedicinalUse`` for foraging / wild-food
+    cookbooks (e.g. Замятина, «Кухня Робинзона»). Carries verbatim
+    ``original_text`` so the same grounding guard that protects medicinal facts
+    applies: an entry the model could not trace to the source is dropped.
+    """
+
+    __tablename__ = "plant_culinary_uses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
+    part: Mapped[str | None] = mapped_column(String(50))         # лист / корень / побег / цвет / плод / шляпка (грибы)
+    edibility: Mapped[str | None] = mapped_column(String(20))    # съедобно / условно-съедобно / несъедобно / ядовито
+    preparation: Mapped[str | None] = mapped_column(String(60))  # сырым / отварить / сушить / квасить / жарить / мука
+    use: Mapped[str | None] = mapped_column(Text)               # dish/role: «в салаты», «суп», «заменитель муки»
+    season: Mapped[str | None] = mapped_column(Text)            # when the part is good to gather/eat
+    caution: Mapped[str | None] = mapped_column(Text)           # «горчит до отваривания», «только молодые», двойники
+    original_text: Mapped[str | None] = mapped_column(Text)      # verbatim source sentence(s) — REQUIRED for grounding
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
+    confidence: Mapped[float | None] = mapped_column(Float)
+
+    plant: Mapped["Plant"] = relationship(back_populates="culinary_uses")
 
 
 class PlantProperty(Base):

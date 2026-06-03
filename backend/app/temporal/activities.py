@@ -27,6 +27,7 @@ from app.models.ingredient import Ingredient, IngredientSynonym
 from app.models.plant import (
     Plant, MedicinalAction, PlantMedicinalUse, PlantCompound,
     PlantHarvest, PlantHabitat, PlantToxicity, PlantBookMention, Compound,
+    PlantCulinaryUse,
 )
 from app.services import minio as minio_svc
 from app.services.ingest import BORN_TEXT_FORMATS, extract_text_from_document
@@ -855,6 +856,15 @@ async def _save_plant_chunk(bid: uuid.UUID, chunk_index: int, plants: list, acti
                     severity=_clip(t.severity, 30), original_text=t.original_text or None,
                     source_book_id=bid,
                 ))
+            for cu in ep.culinary_uses:
+                db.add(PlantCulinaryUse(
+                    plant_id=plant.id, part=_clip(cu.part, 50),
+                    edibility=_clip(cu.edibility, 20),
+                    preparation=_clip(cu.preparation, 60),
+                    use=cu.use or None, season=cu.season or None,
+                    caution=cu.caution or None, original_text=cu.original_text or None,
+                    source_book_id=bid,
+                ))
             db.add(PlantBookMention(
                 plant_id=plant.id, book_id=bid, original_name=ep.name,
                 original_text=ep.original_text or None,
@@ -918,7 +928,8 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
             # Fresh run: drop this book's prior contributions AND stale chunk
             # markers so everything is re-derived cleanly. Shared Plant rows and
             # other books' contributions are untouched.
-            for tbl in (PlantMedicinalUse, PlantCompound, PlantHarvest, PlantHabitat, PlantToxicity):
+            for tbl in (PlantMedicinalUse, PlantCompound, PlantHarvest, PlantHabitat,
+                        PlantToxicity, PlantCulinaryUse):
                 await db.execute(delete(tbl).where(tbl.source_book_id == bid))
             await db.execute(delete(PlantBookMention).where(PlantBookMention.book_id == bid))
             await db.execute(delete(ProcessingLog).where(
@@ -1500,11 +1511,31 @@ async def _index_plants(db, book) -> dict:
         actions = sorted({u.action_raw for u in uses if u.action_raw})
         indications = sorted({u.indications for u in uses if u.indications})
 
+        culinary = (await db.execute(
+            select(PlantCulinaryUse).where(PlantCulinaryUse.plant_id == pid)
+        )).scalars().all()
+        edibility = sorted({c.edibility for c in culinary if c.edibility})
+        edible_parts = sorted({c.part for c in culinary if c.part})
+        food_uses = sorted({c.use for c in culinary if c.use})
+        # One compact culinary line for the embedding so foraging questions
+        # ("что съедобно", "что едят сырым") retrieve the plant.
+        culinary_line = ""
+        if culinary:
+            bits = []
+            if edibility:
+                bits.append(", ".join(edibility))
+            if edible_parts:
+                bits.append("части: " + ", ".join(edible_parts))
+            if food_uses:
+                bits.append("в пищу: " + "; ".join(food_uses))
+            culinary_line = "\nСъедобность: " + ". ".join(bits)
+
         embed_text = (
             f"Растение: {plant.name}"
             + (f" ({plant.name_latin})" if plant.name_latin else "")
             + (f"\nДействие: {', '.join(actions)}" if actions else "")
             + (f"\nПрименяется при: {'; '.join(indications)}" if indications else "")
+            + culinary_line
             + (f"\nОписание: {plant.description}" if plant.description else "")
         )
         _hb(f"Embedding {i+1}/{len(plant_ids)}: {plant.name}")
@@ -1520,6 +1551,8 @@ async def _index_plants(db, book) -> dict:
                 "indications": indications,
                 "parts_used": plant.parts_used or [],
                 "is_toxic": plant.is_toxic,
+                "edibility": edibility,
+                "edible_parts": edible_parts,
                 "source_book": book.title,
                 "book_id": str(bid),
             },
