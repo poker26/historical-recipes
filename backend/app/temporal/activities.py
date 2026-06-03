@@ -1619,6 +1619,21 @@ async def index_activity(book_id: str) -> dict:
         if (book.domain or "").lower() in ("herbalism", "fungi"):
             return await _index_plants(db, book)
 
+        if (book.domain or "").lower() == "reference":
+            # A reference (phytochemistry) book yields no recipes/plants of its
+            # own — its product is the compound vocabulary + the corpus-wide
+            # normalize, both already persisted in Postgres by the earlier steps.
+            # The only thing left to index is the book's prose, so agents can
+            # retrieve passages ("что Георгиевский пишет про алкалоиды").
+            section_points = await _index_sections(db, book)
+            book.wizard_step = 8
+            book.status = "indexed"
+            db.add(ProcessingLog(book_id=bid, step="index", status="completed",
+                                 details={"section_points": section_points,
+                                          "collection": "sections_v1", "domain": "reference"}))
+            await db.commit()
+            return {"section_points": section_points, "collection": "sections_v1"}
+
         recipe_points = await _index_recipes(db, book)
         if recipe_points == 0:
             raise ValueError("No recipes to index")
