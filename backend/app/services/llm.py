@@ -28,6 +28,7 @@ MODELS = {
     "structure_analysis": settings.llm_model_long_context,  # qwen3-235b-2507 (262K context)
     "recipe_extraction": settings.llm_model_long_context,   # qwen3-235b-2507 (precise extraction)
     "plant_extraction": settings.llm_model_long_context,    # qwen3-235b-2507 (herbalism monographs)
+    "compound_extraction": settings.llm_model_long_context,  # qwen3-235b-2507 — the older default degenerates ("encoding: utf-8" / "}]}]" loops) on dense phytochemistry; the 2507 model extracts cleanly
     "text_cleanup": settings.llm_model_default,          # qwen3-235b (good Russian)
     "translation": settings.llm_model_default,           # qwen3-235b (pre-reform Russian)
     "ingredient_matching": settings.llm_model_lightweight,  # qwen3-32b (many small calls)
