@@ -21,12 +21,16 @@ MAX_CHARS_PER_CALL = 12_000
 # latter is needed because herbalism books contain genuine recipes (decoctions,
 # teas, herbal collections) that are NOT водки/ликёры.
 VALID_CATEGORIES = {
-    # alcoholic / culinary
+    # alcoholic preparations
     "водка", "ликёр", "настойка", "бальзам", "масло", "вода",
     "эссенция", "эликсир", "тинктура", "ратафия", "розолия",
     # medicinal preparations (herbalism)
     "отвар", "настой", "чай", "сбор", "мазь", "сироп",
     "порошок", "припарка", "капли", "примочка",
+    # culinary dishes (food cookbooks / foraging books)
+    "суп", "салат", "закуска", "горячее", "гарнир", "соус",
+    "напиток", "варенье", "заготовка", "выпечка", "десерт",
+    "каша", "приправа",
     "другое",
 }
 
@@ -52,10 +56,11 @@ class ExtractedRecipe:
     ingredients: list[ExtractedIngredient] = field(default_factory=list)
 
 
-SYSTEM_PROMPT = """You are extracting individual recipes from a section of a Russian book about herbal \
-tinctures, distillates, and medicinal preparations. The book may be a historical (pre-1918) manual OR a \
-modern reference work — extract only what the section actually contains, in whatever wording and orthography \
-it is written.
+SYSTEM_PROMPT = """You are extracting individual recipes from a section of a Russian book. The book may be \
+about herbal tinctures, distillates and medicinal preparations; OR a culinary / foraging cookbook (dishes \
+prepared from wild or cultivated plants — soups, salads, drinks, preserves, baking); OR a historical \
+(pre-1918) manual. Extract only what the section actually contains, in whatever wording and orthography \
+it is written — do NOT assume the recipes are medicinal.
 
 A "recipe" is any self-contained instruction for making a preparation. It can take EITHER form:
 - STRUCTURED: a name followed by a list or table of ingredients with quantities, and/or numbered steps.
@@ -91,8 +96,12 @@ PURPOSE/indication and/or its main ingredients — e.g. "Успокоитель�
 "Отвар при кашле с липой и малиной", "Желудочный чай". \
 NEVER use the raw ingredient list (with grams) as the name — that is not a name.
 - category: one of водка, ликёр, настойка, бальзам, масло, вода, эссенция, эликсир, тинктура, ратафия, розолия, \
-отвар, настой, чай, сбор, мазь, сироп, порошок, припарка, капли, примочка, другое. \
-For herbal teas/decoctions/collections prefer отвар/настой/чай/сбор over the alcoholic categories.
+отвар, настой, чай, сбор, мазь, сироп, порошок, припарка, капли, примочка, \
+суп, салат, закуска, горячее, гарнир, соус, напиток, варенье, заготовка, выпечка, десерт, каша, приправа, другое. \
+Choose by what the recipe actually IS: for herbal teas/decoctions/collections prefer отвар/настой/чай/сбор; \
+for alcoholic preparations use водка/ликёр/настойка/…; for FOOD dishes use the culinary categories \
+(суп/салат/закуска/горячее/гарнир/соус/напиток/варенье/заготовка/выпечка/десерт/каша/приправа). \
+Use "другое" only when none fit.
 - original_text: the COMPLETE recipe text copied VERBATIM from the source above (name + ingredients + the full \
 preparation process). It must be a literal quote — every sentence must be findable in the provided text.
 - ingredients: array of ingredients you can identify — parse them out of prose too when possible. \
