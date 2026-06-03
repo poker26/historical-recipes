@@ -112,6 +112,7 @@ opens with a heading like "Ежевика сизая – Rubus caesius L." and m
 
 Extract EVERY distinct plant entry you find. For each plant return an object with:
 - name: canonical Russian name in nominative case (e.g. "Ежевика сизая")
+- original_text: a VERBATIM quote from the text above proving this entry exists — the entry heading plus its first sentence(s), copied exactly (same wording AND orthography). This is the anchor that ties the whole monograph to the source.
 - name_latin: Latin binomial with author if present (e.g. "Rubus caesius L."), else ""
 - family: Russian family name (e.g. "розовые"), else ""
 - family_latin: Latin family if present (e.g. "Rosaceae"), else ""
@@ -143,6 +144,11 @@ Rules:
 - Preserve original_text fields VERBATIM. Do NOT invent facts not in the text.
 - If a section is absent, return an empty array / empty string — never fabricate.
 - Do NOT extract table-of-contents lines, chapter intros, or general pharmacology essays that name no specific plant.
+
+CRITICAL — extract only what is literally present; never use your own knowledge:
+- You KNOW many of these plants from training (their medicinal actions, chemistry, toxicity). IGNORE that knowledge. Extract a medicinal_use, compound, harvest, habitat or toxicity ONLY if it is explicitly stated in the text above.
+- Every medicinal_use, harvest, habitat and toxicity MUST carry an original_text that is a LITERAL quote from the text above. If you cannot quote the source for a fact, do NOT emit that fact.
+- If the book is a botanical key / culinary / foraging book that describes a plant WITHOUT medicinal information, return empty medicinal_uses, compounds and toxicities — do NOT supply them from memory. A plant with only name + description is a valid, complete entry.
 
 Return a JSON object with a single key "plants" whose value is an ARRAY of plant objects: \
 {"plants": [ {"name": ...}, {"name": ...} ]}."""
@@ -260,13 +266,86 @@ async def _extract_single(text: str, book_title: str) -> list[ExtractedPlant]:
     result = await chat_completion_json(
         messages, task="plant_extraction", temperature=0.1, max_tokens=32768,
     )
-    return [_parse_plant(p) for p in _coerce_list(result) if _is_valid_plant(p)]
+    source_norm = _norm_for_match(text)
+    grounded: list[ExtractedPlant] = []
+    for p in _coerce_list(result):
+        if not _is_valid_plant(p):
+            continue
+        plant = _ground_plant(_parse_plant(p), source_norm)
+        if plant is not None:
+            grounded.append(plant)
+    return grounded
 
 
 def _is_valid_plant(data) -> bool:
     if not isinstance(data, dict):
         return False
     return len(_str(data.get("name"))) >= 2
+
+
+def _norm_for_match(t: str) -> str:
+    return " " + re.sub(r"[^\w]+", " ", (t or "").lower(), flags=re.UNICODE).strip() + " "
+
+
+def _is_grounded(text: str, source_norm: str, shingle: int = 6) -> bool:
+    """True if ``text`` is verbatim-traceable to the (pre-normalized) source.
+
+    A genuine fact copies its ``original_text`` out of the entry, so at least one
+    short word-shingle must reappear in the source. Facts fabricated from the
+    model's own knowledge share no contiguous run with the text and are dropped.
+    Short phrases (a one-word compound name) match on a 1-gram, which is enough:
+    the substance name still has to physically occur in the source.
+    """
+    words = _norm_for_match(text).split()
+    if not words:
+        return False
+    k = min(shingle, len(words))
+    return any(
+        " " + " ".join(words[i:i + k]) + " " in source_norm
+        for i in range(0, len(words) - k + 1)
+    )
+
+
+def _name_in_source(name: str, source_norm: str) -> bool:
+    """True if the plant's genus word appears in the source (declension-tolerant).
+
+    Used only as a whole-plant anchor, so a prefix match on the head word is
+    enough to confirm the entry physically exists in the text.
+    """
+    words = _norm_for_match(name).split()
+    if not words:
+        return False
+    head = words[0]
+    if len(head) < 4:
+        return f" {head} " in source_norm
+    stem = head[: max(4, len(head) - 2)]  # trim up to 2 chars for case endings
+    return f" {stem}" in source_norm
+
+
+def _ground_plant(p: ExtractedPlant, source_norm: str) -> ExtractedPlant | None:
+    """Strip fabricated facts; drop the plant entirely if nothing is traceable.
+
+    Per-fact: a medicinal_use / harvest / habitat / toxicity survives only if its
+    ``original_text`` is grounded (no quote -> dropped). Compounds carry no
+    original_text, so they are grounded on the substance name appearing in source.
+    Whole-plant: kept if the name is in the source, or its botanical description /
+    entry quote is grounded, or at least one fact survived — otherwise the entry
+    is treated as a hallucination and discarded.
+    """
+    p.medicinal_uses = [u for u in p.medicinal_uses if _is_grounded(u.original_text, source_norm)]
+    p.harvests = [h for h in p.harvests if _is_grounded(h.original_text, source_norm)]
+    p.habitats = [h for h in p.habitats if _is_grounded(h.original_text, source_norm)]
+    p.toxicities = [t for t in p.toxicities if _is_grounded(t.original_text, source_norm)]
+    p.compounds = [c for c in p.compounds if _is_grounded(c.compound, source_norm)]
+    p.is_toxic = bool(p.is_toxic) or len(p.toxicities) > 0
+
+    anchored = (
+        _name_in_source(p.name, source_norm)
+        or _is_grounded(p.original_text, source_norm)
+        or _is_grounded(p.description, source_norm)
+        or bool(p.medicinal_uses or p.compounds or p.harvests or p.habitats or p.toxicities)
+    )
+    return p if anchored else None
 
 
 def _parse_plant(d: dict) -> ExtractedPlant:
