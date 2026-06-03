@@ -58,6 +58,31 @@ class MedicinalAction(Base):
     system: Mapped[str | None] = mapped_column(String(50))       # body system tag: ЖКТ, ССС, ЦНС, дыхание, ...
 
 
+class Compound(Base):
+    """Controlled, hierarchical vocabulary of plant chemical constituents.
+
+    The chemistry analog of ``MedicinalAction``: a top-level class (e.g.
+    "флавоноиды", ``parent_id`` NULL) with concrete substances (e.g. "рутин")
+    pointing at their class. Built/grown by a phytochemistry reference book via
+    the reference-normalizer pipeline, then used to normalize the free-text
+    ``PlantCompound.compound`` strings so the catalogue can answer
+    "show all plants containing cardiac glycosides" instead of fighting N
+    spellings of one substance.
+    """
+
+    __tablename__ = "compounds"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("compounds.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(Text, unique=True)            # canonical term, e.g. "сердечные гликозиды"
+    name_latin: Mapped[str | None] = mapped_column(Text)            # IUPAC/Latin/transliteration if given
+    synonyms: Mapped[list[str] | None] = mapped_column(ARRAY(String))  # alternate spellings/names
+    compound_class: Mapped[str | None] = mapped_column(String(60))  # алкалоиды/гликозиды/флавоноиды/сапонины/...
+    definition: Mapped[str | None] = mapped_column(Text)            # short description from the source
+    original_text: Mapped[str | None] = mapped_column(Text)         # verbatim source sentence(s)
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
+
+
 class PlantMedicinalUse(Base):
     """One medicinal-use fact: a plant part, prepared a certain way, has an
     action for certain indications — as stated by one source."""
@@ -90,11 +115,13 @@ class PlantCompound(Base):
     plant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
     compound: Mapped[str] = mapped_column(Text)                  # дубильные вещества, гликозиды, эфирное масло ...
     compound_group: Mapped[str | None] = mapped_column(String(60))  # алкалоиды / флавоноиды / сапонины / витамины ...
+    compound_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("compounds.id", ondelete="SET NULL"))  # normalized vocab id (compound stays raw)
     part: Mapped[str | None] = mapped_column(String(50))         # в плодах / в листьях / в корнях
     notes: Mapped[str | None] = mapped_column(Text)
     source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
 
     plant: Mapped["Plant"] = relationship(back_populates="compounds")
+    compound_ref: Mapped["Compound | None"] = relationship()
 
 
 class PlantHarvest(Base):

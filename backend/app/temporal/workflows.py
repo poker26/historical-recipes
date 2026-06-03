@@ -20,6 +20,8 @@ with workflow.unsafe.imports_passed_through():
         analyze_activity,
         extract_recipes_activity,
         extract_plant_entries_activity,
+        extract_vocabulary_activity,
+        normalize_corpus_activity,
         match_ingredients_activity,
         index_activity,
         ping_activity,
@@ -83,10 +85,30 @@ PIPELINE_STEPS_HERBALISM = [
     ("match_ingredients", match_ingredients_activity, _SHORT, None),
     ("index", index_activity, _LONG, _HEARTBEAT),
 ]
+# Reference-normalizer domain: a property-first reference (e.g. a phytochemistry
+# monograph) whose product is a controlled vocabulary + a corpus-wide normalize,
+# NOT per-book entities. Shares the text-prep front, then diverges:
+# extract_vocabulary builds/grows the compound vocab (+ normalized PlantCompound
+# occurrences), normalize_corpus maps every plant's free-text compounds to it.
+# No analyze/extract_recipes — there are no recipes to pull from a chemistry book.
+PIPELINE_STEPS_REFERENCE = [
+    ("classify", classify_activity, _SHORT, None),
+    ("extract", extract_activity, _LONG, _HEARTBEAT),
+    ("cleanup", cleanup_activity, _LONG, _HEARTBEAT),
+    ("translate", translate_activity, _LONG, _HEARTBEAT),
+    ("extract_vocabulary", extract_vocabulary_activity, _LONG, _HEARTBEAT),
+    ("normalize_corpus", normalize_corpus_activity, _SHORT, None),
+    ("index", index_activity, _LONG, _HEARTBEAT),
+]
 
 
 def steps_for_domain(domain: str):
-    return PIPELINE_STEPS_HERBALISM if (domain or "").lower() == "herbalism" else PIPELINE_STEPS_RECIPES
+    d = (domain or "").lower()
+    if d == "herbalism":
+        return PIPELINE_STEPS_HERBALISM
+    if d == "reference":
+        return PIPELINE_STEPS_REFERENCE
+    return PIPELINE_STEPS_RECIPES
 
 
 def step_names_for_domain(domain: str) -> list[str]:

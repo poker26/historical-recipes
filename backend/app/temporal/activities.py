@@ -15,6 +15,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from sqlalchemy import select, delete, func
 from temporalio import activity
@@ -25,7 +26,7 @@ from app.models.recipe import Recipe, RecipeIngredient
 from app.models.ingredient import Ingredient, IngredientSynonym
 from app.models.plant import (
     Plant, MedicinalAction, PlantMedicinalUse, PlantCompound,
-    PlantHarvest, PlantHabitat, PlantToxicity, PlantBookMention,
+    PlantHarvest, PlantHabitat, PlantToxicity, PlantBookMention, Compound,
 )
 from app.services import minio as minio_svc
 from app.services.ingest import BORN_TEXT_FORMATS, extract_text_from_document
@@ -50,6 +51,13 @@ from app.services.plant_matching import (
     same_plant_identity,
     is_more_specific,
 )
+from app.services.compound_extractor import (
+    extract_compounds_from_text,
+    _split_into_chunks as _split_compound_chunks,
+    _extract_single as _extract_compound_single,
+    _with_heartbeat as _compound_with_heartbeat,
+)
+from app.services.compound_matching import normalize_plant_compounds
 
 logger = logging.getLogger(__name__)
 
@@ -1011,6 +1019,217 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
     if plants_count == 0:
         raise ValueError("No plants extracted")
     return {"plants_count": plants_count, "uses_count": uses_count, "failed_chunks": failed}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Reference branch: Build compound vocabulary + normalize the corpus
+# ──────────────────────────────────────────────────────────────────────
+
+_COMPOUND_CHUNK_STEP = "extract_vocabulary:chunk"
+
+
+async def _upsert_compound(db, *, name, name_latin="", compound_class="", definition="",
+                           synonyms=None, original_text="", source_book_id=None, parent_id=None):
+    """Insert a vocabulary term or enrich an existing one (dedup by lower(name)).
+
+    The vocabulary is cumulative across books — a term is never duplicated and
+    existing values are never clobbered; only empty fields are filled and
+    synonyms are unioned. Returns the (new or existing) ``Compound``.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    existing = (await db.execute(
+        select(Compound).where(func.lower(Compound.name) == name.lower())
+    )).scalars().first()
+    if existing is None:
+        c = Compound(
+            name=name, name_latin=(name_latin or None),
+            compound_class=_clip(compound_class, 60), definition=(definition or None),
+            synonyms=(synonyms or None), original_text=(original_text or None),
+            source_book_id=source_book_id, parent_id=parent_id,
+        )
+        db.add(c)
+        await db.flush()
+        return c
+    if not existing.name_latin and name_latin:
+        existing.name_latin = name_latin
+    if not existing.compound_class and compound_class:
+        existing.compound_class = _clip(compound_class, 60)
+    if not existing.definition and definition:
+        existing.definition = definition
+    if not existing.original_text and original_text:
+        existing.original_text = original_text
+    if existing.parent_id is None and parent_id is not None and parent_id != existing.id:
+        existing.parent_id = parent_id
+    if synonyms:
+        merged = list(existing.synonyms or [])
+        for s in synonyms:
+            if s and s not in merged:
+                merged.append(s)
+        existing.synonyms = merged
+    return existing
+
+
+async def _save_compound_chunk(bid: uuid.UUID, chunk_index: int, compounds: list) -> tuple[int, int]:
+    """Persist one chunk's compounds + occurrences + completion marker, atomically.
+
+    Vocabulary terms are upserted (global, deduped). Each stated plant occurrence
+    becomes a normalized ``PlantCompound`` row (raw ``compound`` = the term, plus
+    ``compound_id`` already set), with the plant resolved/created via the shared
+    ``_resolve_plant`` so a chemistry book cross-links to existing plants.
+    """
+    vocab_count = 0
+    occ_count = 0
+    async with async_session() as db:
+        for c in compounds:
+            parent_id = None
+            if c.parent and c.parent.strip().lower() != (c.name or "").strip().lower():
+                parent = await _upsert_compound(
+                    db, name=c.parent, compound_class=c.compound_class or c.parent,
+                    source_book_id=bid)
+                parent_id = parent.id if parent else None
+            vocab = await _upsert_compound(
+                db, name=c.name, name_latin=c.name_latin, compound_class=c.compound_class,
+                definition=c.definition, synonyms=c.synonyms, original_text=c.original_text,
+                source_book_id=bid, parent_id=parent_id)
+            if vocab is None:
+                continue
+            vocab_count += 1
+            for occ in c.occurrences:
+                shim = SimpleNamespace(
+                    name=occ.plant, name_latin=occ.plant_latin or "", family="",
+                    family_latin="", description="", is_toxic=False,
+                    parts_used=[], names_historical=[])
+                plant = await _resolve_plant(db, shim)
+                db.add(PlantCompound(
+                    plant_id=plant.id, compound=c.name,
+                    compound_group=_clip(c.compound_class, 60),
+                    compound_id=vocab.id, part=_clip(occ.part, 50), source_book_id=bid))
+                occ_count += 1
+        db.add(ProcessingLog(
+            book_id=bid, step=_COMPOUND_CHUNK_STEP, status="completed",
+            details={"chunk": chunk_index, "compounds": vocab_count, "occurrences": occ_count}))
+        await db.commit()
+    return vocab_count, occ_count
+
+
+async def _mark_compound_chunk_failed(bid: uuid.UUID, chunk_index: int, error: str):
+    async with async_session() as db:
+        db.add(ProcessingLog(
+            book_id=bid, step=_COMPOUND_CHUNK_STEP, status="failed",
+            details={"chunk": chunk_index, "error": (error or "")[:500]}))
+        await db.commit()
+
+
+@activity.defn
+async def extract_vocabulary_activity(book_id: str) -> dict:
+    """Reference-domain counterpart of extract_plant_entries: build the compound
+    vocabulary from a phytochemistry reference and create normalized
+    ``PlantCompound`` occurrences. Resumable per-chunk, same as plant extraction.
+    """
+    bid = uuid.UUID(book_id)
+    attempt = activity.info().attempt
+
+    async with async_session() as db:
+        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
+        if not book.full_text:
+            raise ValueError("No text available")
+        book_title = book.title
+        full_text = book.full_text
+
+    chunks = _split_compound_chunks(full_text)
+    n = len(chunks)
+    _hb(f"Compound extraction: {n} chunk(s) from {len(full_text)} chars (attempt {attempt})")
+
+    async with async_session() as db:
+        if attempt == 1:
+            # Fresh run: drop only THIS book's occurrence rows + stale markers. The
+            # vocabulary is cumulative/global and is re-upserted (enriched), never
+            # deleted, so other books' compound links survive.
+            await db.execute(delete(PlantCompound).where(PlantCompound.source_book_id == bid))
+            await db.execute(delete(ProcessingLog).where(
+                ProcessingLog.book_id == bid, ProcessingLog.step == _COMPOUND_CHUNK_STEP))
+            await db.commit()
+            done_chunks: set[int] = set()
+        else:
+            logs = (await db.execute(select(ProcessingLog).where(
+                ProcessingLog.book_id == bid,
+                ProcessingLog.step == _COMPOUND_CHUNK_STEP,
+            ))).scalars().all()
+            done_chunks = {
+                lg.details["chunk"] for lg in logs
+                if lg.status == "completed" and lg.details
+                and lg.details.get("chunk") is not None
+            }
+
+    if done_chunks:
+        _hb(f"Resuming compound extraction: {len(done_chunks)}/{n} chunk(s) already committed")
+
+    failed = 0
+    for i, chunk in enumerate(chunks):
+        if i in done_chunks:
+            continue
+        _hb(f"Compound chunk {i+1}/{n}: {len(chunk)} chars")
+        try:
+            comps = await _compound_with_heartbeat(
+                _extract_compound_single(chunk, book_title), _hb, f"Compound chunk {i+1}/{n}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            activity.logger.warning(f"Compound chunk {i+1}/{n} extraction failed, skipping: {e}")
+            await _mark_compound_chunk_failed(bid, i, str(e))
+            failed += 1
+            continue
+        try:
+            cc, oc = await _save_compound_chunk(bid, i, comps)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            activity.logger.exception(f"Compound chunk {i+1}/{n} save failed, skipping")
+            await _mark_compound_chunk_failed(bid, i, str(e))
+            failed += 1
+            continue
+        _hb(f"Compound chunk {i+1}/{n}: saved {cc} compounds ({oc} occurrences)")
+
+    async with async_session() as db:
+        vocab_count = (await db.execute(
+            select(func.count()).select_from(Compound)
+            .where(Compound.source_book_id == bid))).scalar() or 0
+        occ_count = (await db.execute(
+            select(func.count()).select_from(PlantCompound)
+            .where(PlantCompound.source_book_id == bid))).scalar() or 0
+
+    if vocab_count == 0 and failed > 0:
+        raise RuntimeError(
+            f"All {failed} compound chunk(s) failed and no compounds were extracted; "
+            "retrying so a transient failure does not finalize the book empty")
+
+    async with async_session() as db:
+        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
+        book.status = "compounds_extracted"
+        db.add(ProcessingLog(book_id=bid, step="extract_vocabulary", status="completed",
+                             details={"compounds_count": vocab_count,
+                                      "occurrences_count": occ_count, "failed_chunks": failed}))
+        await db.commit()
+
+    if vocab_count == 0:
+        raise ValueError("No compounds extracted")
+    return {"compounds_count": vocab_count, "occurrences_count": occ_count, "failed_chunks": failed}
+
+
+@activity.defn
+async def normalize_corpus_activity(book_id: str) -> dict:
+    """Corpus-wide, idempotent normalize of every ``PlantCompound.compound`` to a
+    ``compound_id`` against the current vocabulary (compound analog of relink)."""
+    bid = uuid.UUID(book_id)
+    _hb("Normalizing plant compounds against the compound vocabulary")
+    async with async_session() as db:
+        result = await normalize_plant_compounds(db, commit=False)
+        db.add(ProcessingLog(book_id=bid, step="normalize_corpus", status="completed", details=result))
+        await db.commit()
+    _hb(f"Normalized compounds: {result}")
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────
