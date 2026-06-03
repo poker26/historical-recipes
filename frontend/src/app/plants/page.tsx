@@ -73,6 +73,16 @@ export default function PlantsPage() {
           <div className="card-grid">
             {plants.map((p) => (
               <Link href={`/plants/${p.id}`} key={p.id} className="card" style={{ textDecoration: "none", color: "inherit" }}>
+                {p.photo_url && (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    src={p.photo_url.replace("/medium.", "/square.")}
+                    alt={p.name}
+                    title={p.photo_attribution || undefined}
+                    loading="lazy"
+                    style={{ width: "100%", height: 130, objectFit: "cover", borderRadius: 6, marginBottom: 10, background: "var(--border)" }}
+                  />
+                )}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                   <h3 style={{ margin: 0 }}>{p.name}</h3>
                   {p.is_toxic && <span className="badge badge-red" title="Toxic plant">⚠ toxic</span>}

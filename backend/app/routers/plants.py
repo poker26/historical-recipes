@@ -21,6 +21,7 @@ from app.models.plant import (
 )
 from app.services.plant_matching import relink_recipe_ingredients, merge_plants_by_latin_key
 from app.services.qdrant import delete_points
+from app.services.inaturalist import enrich_plants_inat
 
 router = APIRouter()
 
@@ -58,6 +59,25 @@ async def dedupe_latin(dry_run: bool = True, db: AsyncSession = Depends(get_db))
     return {"status": "completed", **result}
 
 
+@router.post("/enrich-inat")
+async def enrich_inat(
+    dry_run: bool = True,
+    limit: int = 150,
+    force: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """Enrich the herbarium from iNaturalist: resolve each plant's latin name to
+    an iNat taxon and store a license-clean canonical photo (CC0/CC-BY/CC-BY-SA
+    only, attribution kept).
+
+    Idempotent & resumable — only touches not-yet-synced plants unless
+    ``force=true``. ``limit`` bounds one call (paced ~1 req/s for iNat's rate
+    limit) so it stays under the proxy timeout; re-run until ``remaining`` is 0.
+    Defaults to ``dry_run`` (returns the plan, writes nothing)."""
+    result = await enrich_plants_inat(db, dry_run=dry_run, limit=limit, force=force)
+    return {"status": "completed", **result}
+
+
 def _plant_summary(p: Plant, uses_count: int = 0) -> dict:
     return {
         "id": str(p.id),
@@ -69,6 +89,8 @@ def _plant_summary(p: Plant, uses_count: int = 0) -> dict:
         "parts_used": p.parts_used,
         "is_toxic": p.is_toxic,
         "kingdom": p.kingdom,
+        "photo_url": p.photo_url,
+        "photo_attribution": p.photo_attribution,
         "uses_count": uses_count,
     }
 
@@ -301,6 +323,11 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         "parts_used": plant.parts_used,
         "is_toxic": plant.is_toxic,
         "kingdom": plant.kingdom,
+        "photo_url": plant.photo_url,
+        "photo_attribution": plant.photo_attribution,
+        "photo_license": plant.photo_license,
+        "photo_source": plant.photo_source,
+        "inat_taxon_id": plant.inat_taxon_id,
         "medicinal_uses": [
             {
                 "id": str(u.id),

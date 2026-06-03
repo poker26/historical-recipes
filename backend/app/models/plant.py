@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import String, Integer, Float, Text, Boolean, ForeignKey, ARRAY
+from sqlalchemy import String, Integer, Float, Text, Boolean, ForeignKey, ARRAY, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,6 +32,17 @@ class Plant(Base):
     kingdom: Mapped[str] = mapped_column(String(20), default="растение", server_default="растение")  # растение | гриб — biological kingdom; a mushroom guide tags its rows гриб so a future agent can ask for plants, fungi, or both unambiguously
     qdrant_point_id: Mapped[str | None] = mapped_column(String(100))
     qdrant_collection: Mapped[str | None] = mapped_column(String(50))
+
+    # iNaturalist enrichment (external layer; populated by enrich_plants_inat).
+    # inat_taxon_id is the bridge key (resolve name_latin → taxon once), reused
+    # later for "find nearby observations". Photo stored only when its license
+    # permits our use; attribution is always shown alongside.
+    inat_taxon_id: Mapped[int | None] = mapped_column(Integer)
+    photo_url: Mapped[str | None] = mapped_column(Text)
+    photo_attribution: Mapped[str | None] = mapped_column(Text)
+    photo_license: Mapped[str | None] = mapped_column(String(40))
+    photo_source: Mapped[str | None] = mapped_column(String(30))
+    inat_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     properties: Mapped[list["PlantProperty"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     mentions: Mapped[list["PlantBookMention"]] = relationship(back_populates="plant", cascade="all, delete-orphan")

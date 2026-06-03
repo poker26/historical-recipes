@@ -61,29 +61,47 @@ export default function PlantDetailPage() {
       </div>
 
       {/* Identity */}
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, fontSize: 14 }}>
-          <div><span style={{ color: "var(--text-muted)" }}>Latin:</span> <em>{plant.name_latin || "—"}</em></div>
-          <div>
-            <span style={{ color: "var(--text-muted)" }}>Family:</span>{" "}
-            {plant.family || plant.family_latin
-              ? `${plant.family || ""}${plant.family && plant.family_latin ? " · " : ""}${plant.family_latin || ""}`
-              : "—"}
-          </div>
-          <div>
-            <span style={{ color: "var(--text-muted)" }}>Parts used:</span>{" "}
-            {plant.parts_used?.length ? plant.parts_used.map((p) => (
-              <span key={p} className="badge badge-green" style={{ marginLeft: 4 }}>{p}</span>
-            )) : "—"}
-          </div>
-          <div>
-            <span style={{ color: "var(--text-muted)" }}>Historical names:</span>{" "}
-            {plant.names_historical?.join(", ") || "—"}
-          </div>
-        </div>
-        {plant.description && (
-          <div style={{ marginTop: 14, fontSize: 14, lineHeight: 1.55 }}>{plant.description}</div>
+      <div className="card" style={{ marginBottom: 20, display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
+        {plant.photo_url && (
+          <figure style={{ margin: 0, width: 240, flexShrink: 0 }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={plant.photo_url}
+              alt={plant.name}
+              style={{ width: "100%", borderRadius: 8, display: "block" }}
+            />
+            {plant.photo_attribution && (
+              <figcaption style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                {plant.photo_attribution}
+                {plant.photo_source === "inaturalist" && " · iNaturalist"}
+              </figcaption>
+            )}
+          </figure>
         )}
+        <div style={{ flex: 1, minWidth: 280 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, fontSize: 14 }}>
+            <div><span style={{ color: "var(--text-muted)" }}>Latin:</span> <em>{plant.name_latin || "—"}</em></div>
+            <div>
+              <span style={{ color: "var(--text-muted)" }}>Family:</span>{" "}
+              {plant.family || plant.family_latin
+                ? `${plant.family || ""}${plant.family && plant.family_latin ? " · " : ""}${plant.family_latin || ""}`
+                : "—"}
+            </div>
+            <div>
+              <span style={{ color: "var(--text-muted)" }}>Parts used:</span>{" "}
+              {plant.parts_used?.length ? plant.parts_used.map((p) => (
+                <span key={p} className="badge badge-green" style={{ marginLeft: 4 }}>{p}</span>
+              )) : "—"}
+            </div>
+            <div>
+              <span style={{ color: "var(--text-muted)" }}>Historical names:</span>{" "}
+              {plant.names_historical?.join(", ") || "—"}
+            </div>
+          </div>
+          {plant.description && (
+            <div style={{ marginTop: 14, fontSize: 14, lineHeight: 1.55 }}>{plant.description}</div>
+          )}
+        </div>
       </div>
 
       {/* Cross-domain link: recipes that use this plant */}

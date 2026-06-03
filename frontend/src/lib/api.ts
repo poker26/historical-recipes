@@ -118,6 +118,8 @@ export interface Plant {
   family_latin: string | null;
   parts_used: string[] | null;
   is_toxic: boolean;
+  photo_url: string | null;
+  photo_attribution: string | null;
   uses_count: number;
 }
 
@@ -203,6 +205,9 @@ export interface PlantRecipeRef {
 
 export interface PlantDetail extends Plant {
   description: string | null;
+  photo_license: string | null;
+  photo_source: string | null;
+  inat_taxon_id: number | null;
   medicinal_uses: PlantMedicinalUse[];
   compounds: PlantCompound[];
   harvests: PlantHarvest[];
