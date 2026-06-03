@@ -104,7 +104,10 @@ PIPELINE_STEPS_REFERENCE = [
 
 def steps_for_domain(domain: str):
     d = (domain or "").lower()
-    if d == "herbalism":
+    # fungi (mushroom guides) reuse the entire herbalism pipeline — same monograph
+    # parsing, recipe extraction and cross-linking — and are distinguished only by
+    # the kingdom tag the extractor stamps on each row (see extract_plant_entries).
+    if d in ("herbalism", "fungi"):
         return PIPELINE_STEPS_HERBALISM
     if d == "reference":
         return PIPELINE_STEPS_REFERENCE

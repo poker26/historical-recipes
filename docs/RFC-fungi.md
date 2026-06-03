@@ -1,6 +1,20 @@
 # RFC: Ingesting fungi (mushroom guides) into the knowledge base
 
-Status: **Draft** · Author: pipeline notes · Created: 2026-06-03
+Status: **Implemented (Option A)** (2026-06-03) · Author: pipeline notes · Created: 2026-06-03
+
+> Shipped Option A: a `kingdom` discriminator (`растение | гриб`) on `Plant`
+> (migration `007_kingdom`, server-default backfills existing rows to растение),
+> the «гриб» token family demoted to a part/stop word in `plant_matching.py`
+> (verified: «белый гриб»/«польский гриб»/bare «грибы» seed no tier-2 key, while
+> distinctive species like «подберёзовик» still do), a fungal `_PART_CANON`
+> extension (шляпка/ножка/мякоть/гименофор/плодовое тело), a `fungi` domain that
+> reuses the whole herbalism pipeline (`steps_for_domain`) with the extractor
+> stamping `kingdom='гриб'` on new rows, `_index_plants` emitting a `kingdom`
+> payload + a «Гриб:»/«Растение:» embed label, and `/api/plants` exposure
+> (`kingdom` filter + facet + monograph/summary field). Edibility is covered by
+> the already-shipped RFC-culinary-uses. The DJVU→PDF blocker (#0) was already
+> solved generically at upload. **No fungi book is queued yet** — this is the
+> groundwork; load a mushroom guide with `domain=fungi` to exercise it.
 
 ## Problem
 

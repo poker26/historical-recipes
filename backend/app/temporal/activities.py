@@ -729,12 +729,16 @@ def _clip(value: str | None, maxlen: int) -> str | None:
     return value[:maxlen]
 
 
-async def _resolve_plant(db, ep) -> Plant:
+async def _resolve_plant(db, ep, kingdom: str = "растение") -> Plant:
     """Find an existing plant (by Latin name, else Russian name) or create one.
 
     Plants are shared across source books — a herbal enriches an existing plant
     rather than duplicating it. Identity fields are filled in only when missing
     so the first/most-complete source wins; ``parts_used`` is merged.
+
+    ``kingdom`` (растение | гриб) tags a NEWLY created row — set when a fungi
+    guide is being ingested. An already-existing row keeps its kingdom (the first
+    source that created it wins, like the other identity fields).
     """
     plant = None
     if ep.name_latin:
@@ -769,6 +773,7 @@ async def _resolve_plant(db, ep) -> Plant:
 
     if plant is None:
         plant = Plant(name=ep.name, name_latin=ep.name_latin or None,
+                      kingdom=kingdom,
                       qdrant_collection=QDRANT_PLANTS_COLLECTION)
         db.add(plant)
         await db.flush()
@@ -805,7 +810,7 @@ async def _resolve_plant(db, ep) -> Plant:
 _PLANT_CHUNK_STEP = "extract_plant_entries:chunk"
 
 
-async def _save_plant_chunk(bid: uuid.UUID, chunk_index: int, plants: list, action_map: dict) -> tuple[int, int]:
+async def _save_plant_chunk(bid: uuid.UUID, chunk_index: int, plants: list, action_map: dict, kingdom: str = "растение") -> tuple[int, int]:
     """Persist one chunk's extracted plants + its completion marker, atomically.
 
     The marker (ProcessingLog ``extract_plant_entries:chunk``) is committed in the
@@ -817,7 +822,7 @@ async def _save_plant_chunk(bid: uuid.UUID, chunk_index: int, plants: list, acti
     uses_count = 0
     async with async_session() as db:
         for ep in plants:
-            plant = await _resolve_plant(db, ep)
+            plant = await _resolve_plant(db, ep, kingdom)
             for u in ep.medicinal_uses:
                 db.add(PlantMedicinalUse(
                     plant_id=plant.id, part=_clip(u.part, 50),
@@ -918,6 +923,9 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
             raise ValueError("No text available")
         book_title = book.title
         full_text = book.full_text
+        # A fungi guide (domain=fungi) tags its rows as грибы so they don't
+        # pollute the "plants" namespace; everything else is растение.
+        kingdom = "гриб" if (book.domain or "").lower() == "fungi" else "растение"
 
     chunks = _split_into_chunks(full_text)
     n = len(chunks)
@@ -982,7 +990,7 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
             failed += 1
             continue
         try:
-            pc, uc = await _save_plant_chunk(bid, i, plants, action_map)
+            pc, uc = await _save_plant_chunk(bid, i, plants, action_map, kingdom)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1530,8 +1538,9 @@ async def _index_plants(db, book) -> dict:
                 bits.append("в пищу: " + "; ".join(food_uses))
             culinary_line = "\nСъедобность: " + ". ".join(bits)
 
+        kind_label = "Гриб" if (plant.kingdom or "").lower() == "гриб" else "Растение"
         embed_text = (
-            f"Растение: {plant.name}"
+            f"{kind_label}: {plant.name}"
             + (f" ({plant.name_latin})" if plant.name_latin else "")
             + (f"\nДействие: {', '.join(actions)}" if actions else "")
             + (f"\nПрименяется при: {'; '.join(indications)}" if indications else "")
@@ -1551,6 +1560,7 @@ async def _index_plants(db, book) -> dict:
                 "indications": indications,
                 "parts_used": plant.parts_used or [],
                 "is_toxic": plant.is_toxic,
+                "kingdom": plant.kingdom or "растение",
                 "edibility": edibility,
                 "edible_parts": edible_parts,
                 "source_book": book.title,
@@ -1606,7 +1616,7 @@ async def index_activity(book_id: str) -> dict:
     async with async_session() as db:
         book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
 
-        if (book.domain or "").lower() == "herbalism":
+        if (book.domain or "").lower() in ("herbalism", "fungi"):
             return await _index_plants(db, book)
 
         recipe_points = await _index_recipes(db, book)

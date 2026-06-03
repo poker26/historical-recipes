@@ -46,6 +46,7 @@ def _plant_summary(p: Plant, uses_count: int = 0) -> dict:
         "family_latin": p.family_latin,
         "parts_used": p.parts_used,
         "is_toxic": p.is_toxic,
+        "kingdom": p.kingdom,
         "uses_count": uses_count,
     }
 
@@ -60,6 +61,7 @@ async def list_plants(
     is_toxic: bool | None = None,
     edibility: str | None = None,
     edible: bool | None = None,
+    kingdom: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """List plants, optionally filtered by free text and/or structured facets.
@@ -125,6 +127,10 @@ async def list_plants(
         stmt = stmt.where(or_(Plant.family.ilike(like), Plant.family_latin.ilike(like)))
     if is_toxic is not None:
         stmt = stmt.where(Plant.is_toxic.is_(is_toxic))
+    if kingdom:
+        # Exact match on the kingdom tag (растение | гриб). Omit to get both; the
+        # catalogue passes kingdom=растение to keep the plant view fungi-free.
+        stmt = stmt.where(Plant.kingdom == kingdom.strip())
     if edibility:
         like = f"%{edibility.strip()}%"
         stmt = stmt.where(Plant.culinary_uses.any(PlantCulinaryUse.edibility.ilike(like)))
@@ -171,10 +177,18 @@ async def plant_facets(db: AsyncSession = Depends(get_db)):
         .order_by(edib_count.desc())
     )).all()
 
+    kingdom_count = func.count(Plant.id)
+    kingdoms = (await db.execute(
+        select(Plant.kingdom, kingdom_count)
+        .group_by(Plant.kingdom)
+        .order_by(kingdom_count.desc())
+    )).all()
+
     return {
         "compound_groups": [{"value": g, "count": n} for g, n in groups],
         "actions": [{"value": a, "count": n} for a, n in actions],
         "edibility": [{"value": e, "count": n} for e, n in edibilities],
+        "kingdom": [{"value": k, "count": n} for k, n in kingdoms],
     }
 
 
@@ -264,6 +278,7 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         "description": plant.description,
         "parts_used": plant.parts_used,
         "is_toxic": plant.is_toxic,
+        "kingdom": plant.kingdom,
         "medicinal_uses": [
             {
                 "id": str(u.id),

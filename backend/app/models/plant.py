@@ -28,6 +28,7 @@ class Plant(Base):
     description: Mapped[str | None] = mapped_column(Text)         # botanical morphology + phenology (free text)
     parts_used: Mapped[list[str] | None] = mapped_column(ARRAY(String))  # лист, корень, цвет, кора, семя, плод, трава
     is_toxic: Mapped[bool] = mapped_column(Boolean, default=False)
+    kingdom: Mapped[str] = mapped_column(String(20), default="растение", server_default="растение")  # растение | гриб — biological kingdom; a mushroom guide tags its rows гриб so a future agent can ask for plants, fungi, or both unambiguously
     qdrant_point_id: Mapped[str | None] = mapped_column(String(100))
     qdrant_collection: Mapped[str | None] = mapped_column(String(50))
 
