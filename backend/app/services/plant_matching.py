@@ -27,12 +27,23 @@ import re
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.recipe import RecipeIngredient
 from app.models.ingredient import Ingredient, IngredientSynonym
-from app.models.plant import Plant
+from app.models.plant import (
+    Plant,
+    PlantProperty,
+    PlantBookMention,
+    PlantMedicinalUse,
+    PlantCompound,
+    PlantHarvest,
+    PlantHabitat,
+    PlantToxicity,
+    PlantCulinaryUse,
+    PlantCompatibility,
+)
 
 # Words naming a *part* of a plant, not its identity — stripped before matching.
 # Listed in surface forms so they are dropped before stemming.
@@ -114,6 +125,35 @@ def normalize(s: str | None) -> str:
     s = s.lower().strip().replace("ё", "е")
     s = _PUNCT_RE.sub(" ", s)
     return _SPACE_RE.sub(" ", s).strip()
+
+
+# Latin binomial key — genus + species epithet, author-citation- and
+# case-insensitive. A scientific name is "Genus species Author[, infraspecific]";
+# the AUTHOR citation ("L." = Linnaeus, "DC.", "(L.) Ach.", "Mill." …) and the
+# hybrid marker "×" are NOT part of the species identity, so two rows whose latin
+# names agree on genus+species but differ only in author/case ("gratiola
+# officinalis" vs "Gratiola officinalis L.") denote the SAME species and should
+# be one plant. Returns None when there is no genus+species pair to key on.
+_LATIN_KEY_RE = re.compile(r"[^a-z\s]")
+
+
+def _latin_key(name_latin: str | None) -> str | None:
+    """Genus+species dedup key from a latin name (lowercased, author-stripped).
+
+    Lowercase → drop the hybrid "×" and every non-[a-z] character (digits,
+    dots, parens, the author's accented letters) → take the first two surviving
+    word tokens (genus + species epithet). A standalone "x" (ascii hybrid mark)
+    is dropped. Fewer than two tokens (a bare genus, or junk) yields None so it
+    never collapses unrelated rows.
+    """
+    if not name_latin:
+        return None
+    s = name_latin.lower().replace("×", " ")
+    s = _LATIN_KEY_RE.sub(" ", s)
+    toks = [t for t in s.split() if t != "x"]
+    if len(toks) < 2:
+        return None
+    return f"{toks[0]} {toks[1]}"
 
 
 def _stem(token: str) -> str:
@@ -443,3 +483,169 @@ async def relink_recipe_ingredients(
     if commit:
         await db.commit()
     return {"linked_ingredients": linked_ing, "linked_recipe_ingredients": linked_ri}
+
+
+# Child tables whose ``plant_id`` FK is repointed from a losing row to the
+# survivor when two duplicate plants merge. PlantCompatibility (plant_a/plant_b)
+# and the cross-domain RecipeIngredient/Ingredient links are handled separately.
+_PLANT_CHILD_MODELS = (
+    PlantProperty, PlantBookMention, PlantMedicinalUse, PlantCompound,
+    PlantHarvest, PlantHabitat, PlantToxicity, PlantCulinaryUse,
+)
+
+
+def _latin_token_count(name_latin: str | None) -> int:
+    """How many latin word tokens a name carries (author citation included).
+
+    Used as a survivor tie-break: a name WITH the author ("Gratiola officinalis
+    L." → 3) is the more canonical/complete binomial than the bare "Gratiola
+    officinalis" (→ 2), so it wins as the merged row's ``name_latin``.
+    """
+    if not name_latin:
+        return 0
+    s = name_latin.lower().replace("×", " ")
+    s = _LATIN_KEY_RE.sub(" ", s)
+    return len([t for t in s.split() if t != "x"])
+
+
+async def _plant_fact_counts(db: AsyncSession, plant_ids: list[uuid.UUID]) -> dict:
+    """Total child-fact rows per plant, summed across every fact table.
+
+    Drives survivor selection: the row carrying the most accumulated knowledge
+    is kept, and the thinner duplicates are folded into it.
+    """
+    counts: dict[uuid.UUID, int] = {pid: 0 for pid in plant_ids}
+    if not plant_ids:
+        return counts
+    for model in _PLANT_CHILD_MODELS:
+        rows = (await db.execute(
+            select(model.plant_id, func.count())
+            .where(model.plant_id.in_(plant_ids))
+            .group_by(model.plant_id)
+        )).all()
+        for pid, n in rows:
+            counts[pid] = counts.get(pid, 0) + n
+    return counts
+
+
+async def merge_plants_by_latin_key(
+    db: AsyncSession,
+    dry_run: bool = True,
+    commit: bool = True,
+) -> dict:
+    """Deduplicate the herbarium by latin binomial (genus + species epithet).
+
+    Two ``Plant`` rows whose ``name_latin`` agree on genus+species after
+    stripping the author citation and case ("gratiola officinalis" vs "Gratiola
+    officinalis L.") are the SAME species recorded twice — e.g. a recipe book
+    created a stub before a determiner added the full monograph. This groups all
+    rows by :func:`_latin_key`, keeps the richest row in each group, repoints
+    every child fact and cross-domain link onto it, unions the identity scalars,
+    and deletes the losers.
+
+    With ``dry_run`` (default) nothing is written — it returns the plan so the
+    scale of the merge can be reviewed first. The list of deleted plant ids is
+    returned so the caller can purge their now-orphaned ``plants_v2`` points.
+    """
+    plants = (await db.execute(select(Plant))).scalars().all()
+    groups: dict[str, list[Plant]] = {}
+    for p in plants:
+        key = _latin_key(p.name_latin)
+        if key:
+            groups.setdefault(key, []).append(p)
+    dup_groups = {k: ps for k, ps in groups.items() if len(ps) > 1}
+
+    all_ids = [p.id for ps in dup_groups.values() for p in ps]
+    counts = await _plant_fact_counts(db, all_ids)
+
+    plan: list[dict] = []
+    deleted_ids: list[str] = []
+
+    def _rank(p: Plant) -> tuple:
+        # richest by facts → most complete latin name → longer latin string →
+        # stable by name for determinism.
+        return (
+            counts.get(p.id, 0),
+            _latin_token_count(p.name_latin),
+            len(p.name_latin or ""),
+            p.name or "",
+        )
+
+    for key, ps in sorted(dup_groups.items()):
+        survivor = max(ps, key=_rank)
+        losers = [p for p in ps if p.id != survivor.id]
+
+        # Best (most complete) latin name across the group becomes canonical.
+        best_latin = max(ps, key=lambda p: (_latin_token_count(p.name_latin), len(p.name_latin or "")))
+        canonical_latin = best_latin.name_latin or survivor.name_latin
+
+        plan.append({
+            "latin_key": key,
+            "survivor": {"id": str(survivor.id), "name": survivor.name, "name_latin": survivor.name_latin},
+            "merged": [{"id": str(l.id), "name": l.name, "name_latin": l.name_latin} for l in losers],
+        })
+
+        if dry_run:
+            continue
+
+        loser_ids = [l.id for l in losers]
+        # Repoint every plant-scoped fact table.
+        for model in _PLANT_CHILD_MODELS:
+            await db.execute(
+                update(model).where(model.plant_id.in_(loser_ids)).values(plant_id=survivor.id)
+            )
+        # Compatibility edges reference plants on both ends.
+        await db.execute(
+            update(PlantCompatibility).where(PlantCompatibility.plant_a_id.in_(loser_ids)).values(plant_a_id=survivor.id)
+        )
+        await db.execute(
+            update(PlantCompatibility).where(PlantCompatibility.plant_b_id.in_(loser_ids)).values(plant_b_id=survivor.id)
+        )
+        # Cross-domain links (recipes ↔ plants).
+        await db.execute(
+            update(RecipeIngredient).where(RecipeIngredient.plant_id.in_(loser_ids)).values(plant_id=survivor.id)
+        )
+        await db.execute(
+            update(Ingredient).where(Ingredient.plant_id.in_(loser_ids)).values(plant_id=survivor.id)
+        )
+
+        # Merge identity onto the survivor: prefer the most complete latin name,
+        # fill empty scalars from losers, union the multi-valued fields, and keep
+        # each losing row's distinct Russian name as a historical synonym.
+        survivor.name_latin = canonical_latin
+        hist: list[str] = list(survivor.names_historical or [])
+        parts: list[str] = list(survivor.parts_used or [])
+        for l in losers:
+            for h in (l.names_historical or []):
+                if h and h not in hist:
+                    hist.append(h)
+            if l.name and l.name != survivor.name and l.name not in hist:
+                hist.append(l.name)
+            for pt in (l.parts_used or []):
+                if pt and pt not in parts:
+                    parts.append(pt)
+            survivor.family = survivor.family or l.family
+            survivor.family_latin = survivor.family_latin or l.family_latin
+            survivor.description = survivor.description or l.description
+            if l.is_toxic:
+                survivor.is_toxic = True
+            if (survivor.kingdom or "растение") == "растение" and (l.kingdom or "") == "гриб":
+                survivor.kingdom = "гриб"
+        survivor.names_historical = hist or None
+        survivor.parts_used = parts or None
+
+        for l in losers:
+            if l.qdrant_point_id or l.qdrant_collection:
+                deleted_ids.append(str(l.id))
+            await db.delete(l)
+
+    if not dry_run and commit:
+        await db.commit()
+
+    return {
+        "dry_run": dry_run,
+        "groups": len(dup_groups),
+        "plants_merged": sum(len(g["merged"]) for g in plan),
+        "deleted_qdrant_ids": deleted_ids,
+        "plan": plan,
+    }

@@ -51,6 +51,7 @@ from app.services.plant_matching import (
     relink_recipe_ingredients,
     same_plant_identity,
     is_more_specific,
+    _latin_key,
 )
 from app.services.compound_extractor import (
     extract_compounds_from_text,
@@ -745,6 +746,24 @@ async def _resolve_plant(db, ep, kingdom: str = "растение") -> Plant:
         plant = (await db.execute(
             select(Plant).where(func.lower(Plant.name_latin) == _norm(ep.name_latin))
         )).scalars().first()
+
+    # Latin binomial dedup (exact-string lookup missed): the scientific name is
+    # the authoritative identity, so a row whose name_latin agrees on genus +
+    # species epithet — ignoring author citation ("L.") and case ("gratiola
+    # officinalis" vs "Gratiola officinalis L.") — is the SAME species. This is
+    # the forward-fix that stops the herbarium re-accreting latin duplicates.
+    if plant is None and ep.name_latin:
+        key = _latin_key(ep.name_latin)
+        if key:
+            candidates = [
+                p for p in (await db.execute(select(Plant))).scalars().all()
+                if _latin_key(p.name_latin) == key
+            ]
+            if candidates:
+                # Prefer the candidate with the most complete latin name (author
+                # citation present) so enrichment lands on the canonical row.
+                plant = max(candidates, key=lambda p: len(p.name_latin or ""))
+
     if plant is None and ep.name:
         plant = (await db.execute(
             select(Plant).where(func.lower(Plant.name) == _norm(ep.name))

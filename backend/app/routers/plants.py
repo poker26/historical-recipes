@@ -19,9 +19,12 @@ from app.models.plant import (
     PlantCulinaryUse,
     PlantBookMention,
 )
-from app.services.plant_matching import relink_recipe_ingredients
+from app.services.plant_matching import relink_recipe_ingredients, merge_plants_by_latin_key
+from app.services.qdrant import delete_points
 
 router = APIRouter()
+
+QDRANT_PLANTS_COLLECTION = "plants_v2"
 
 
 @router.post("/relink-recipes")
@@ -33,6 +36,25 @@ async def relink_recipes(db: AsyncSession = Depends(get_db)):
     alt-name-aware matcher over every ingredient now that plants exist.
     """
     result = await relink_recipe_ingredients(db)
+    return {"status": "completed", **result}
+
+
+@router.post("/dedupe-latin")
+async def dedupe_latin(dry_run: bool = True, db: AsyncSession = Depends(get_db)):
+    """Merge herbarium duplicates that share a latin binomial (genus + species).
+
+    A plant can end up as several rows — a recipe book makes a stub, a determiner
+    later adds the full monograph under "Genus species L." — whose latin names
+    agree once the author citation and case are ignored. This folds each such
+    group into its richest row, repointing all facts and recipe links.
+
+    Defaults to ``dry_run`` (returns the plan, writes nothing) so the scale can
+    be reviewed; pass ``?dry_run=false`` to execute. After a real merge the
+    losing rows' ``plants_v2`` points are purged so search has no stale ghosts.
+    """
+    result = await merge_plants_by_latin_key(db, dry_run=dry_run)
+    if not dry_run and result["deleted_qdrant_ids"]:
+        await delete_points(QDRANT_PLANTS_COLLECTION, result["deleted_qdrant_ids"])
     return {"status": "completed", **result}
 
 
