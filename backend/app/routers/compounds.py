@@ -1,11 +1,11 @@
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.plant import Compound, PlantCompound
+from app.models.plant import Compound, PlantCompound, Plant
 from app.services.compound_matching import normalize_plant_compounds
 
 router = APIRouter()
@@ -43,3 +43,60 @@ async def list_compounds(db: AsyncSession = Depends(get_db)):
         }
         for c in rows
     ]
+
+
+@router.get("/{compound_id}")
+async def get_compound(compound_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """A single vocabulary term plus the plants whose composition normalizes to it
+    (reverse PlantCompound.compound_id link) and its place in the hierarchy."""
+    c = (await db.execute(select(Compound).where(Compound.id == compound_id))).scalar_one_or_none()
+    if c is None:
+        raise HTTPException(status_code=404, detail="Compound not found")
+
+    parent = None
+    if c.parent_id:
+        p = (await db.execute(select(Compound).where(Compound.id == c.parent_id))).scalar_one_or_none()
+        if p is not None:
+            parent = {"id": str(p.id), "name": p.name}
+
+    children = (await db.execute(
+        select(Compound).where(Compound.parent_id == c.id).order_by(Compound.name)
+    )).scalars().all()
+
+    # Plants that contain this compound (reverse link). One row per plant-fact;
+    # group by plant so a plant listed for several parts appears once with its parts.
+    fact_rows = (await db.execute(
+        select(PlantCompound, Plant)
+        .join(Plant, PlantCompound.plant_id == Plant.id)
+        .where(PlantCompound.compound_id == c.id)
+        .order_by(Plant.name)
+    )).all()
+    plants: dict[str, dict] = {}
+    for pc, plant in fact_rows:
+        pid = str(plant.id)
+        entry = plants.setdefault(pid, {
+            "id": pid,
+            "name": plant.name,
+            "name_latin": plant.name_latin,
+            "parts": [],
+            "raw_names": [],
+        })
+        if pc.part and pc.part not in entry["parts"]:
+            entry["parts"].append(pc.part)
+        if pc.compound and pc.compound not in entry["raw_names"]:
+            entry["raw_names"].append(pc.compound)
+
+    return {
+        "id": str(c.id),
+        "name": c.name,
+        "name_latin": c.name_latin,
+        "parent": parent,
+        "parent_id": str(c.parent_id) if c.parent_id else None,
+        "compound_class": c.compound_class,
+        "synonyms": c.synonyms or [],
+        "definition": c.definition,
+        "original_text": c.original_text,
+        "children": [{"id": str(ch.id), "name": ch.name} for ch in children],
+        "plants": list(plants.values()),
+        "linked_facts": sum(len(p["raw_names"]) for p in plants.values()),
+    }

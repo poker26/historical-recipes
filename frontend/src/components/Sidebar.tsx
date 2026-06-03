@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { href: "/books", label: "Books", icon: "\u25A1" },
   { href: "/recipes", label: "Recipes", icon: "\u2606" },
   { href: "/plants", label: "Herbarium", icon: "\u2698" },
+  { href: "/compounds", label: "Compounds", icon: "\u269B" },
   { href: "/search", label: "Search", icon: "\u2315" },
 ];
 

@@ -212,6 +212,40 @@ export interface PlantDetail extends Plant {
   recipes: PlantRecipeRef[];
 }
 
+export interface Compound {
+  id: string;
+  name: string;
+  name_latin: string | null;
+  parent_id: string | null;
+  compound_class: string | null;
+  synonyms: string[];
+  definition: string | null;
+  linked_facts: number;
+}
+
+export interface CompoundPlantRef {
+  id: string;
+  name: string;
+  name_latin: string | null;
+  parts: string[];
+  raw_names: string[];
+}
+
+export interface CompoundDetail {
+  id: string;
+  name: string;
+  name_latin: string | null;
+  parent: { id: string; name: string } | null;
+  parent_id: string | null;
+  compound_class: string | null;
+  synonyms: string[];
+  definition: string | null;
+  original_text: string | null;
+  children: { id: string; name: string }[];
+  plants: CompoundPlantRef[];
+  linked_facts: number;
+}
+
 export interface DictionaryTerm {
   id: string;
   category: string;
@@ -365,6 +399,12 @@ export const api = {
   },
   getPlantFacets: () => apiFetch<PlantFacets>("/api/plants/facets"),
   getPlant: (id: string) => apiFetch<PlantDetail>(`/api/plants/${id}`),
+
+  // Compounds (controlled phytochemistry vocabulary)
+  listCompounds: () => apiFetch<Compound[]>("/api/compounds"),
+  getCompound: (id: string) => apiFetch<CompoundDetail>(`/api/compounds/${id}`),
+  normalizeCompounds: () =>
+    apiFetch<{ status: string } & Record<string, unknown>>("/api/compounds/normalize", { method: "POST" }),
 
   // Dictionaries
   listTerms: (category?: string) =>
