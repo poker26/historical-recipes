@@ -349,6 +349,7 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
                 "id": str(c.id),
                 "compound": c.compound,
                 "compound_group": c.compound_group,
+                "compound_id": str(c.compound_id) if c.compound_id else None,
                 "part": c.part,
                 "notes": c.notes,
                 "source": src(c.source_book_id),

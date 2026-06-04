@@ -155,6 +155,7 @@ export interface PlantCompound {
   id: string;
   compound: string;
   compound_group: string | null;
+  compound_id: string | null;
   part: string | null;
   notes: string | null;
   source: string | null;

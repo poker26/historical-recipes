@@ -182,12 +182,30 @@ export default function PlantDetailPage() {
       {plant.compounds.length > 0 && (
         <Section title="Chemical composition" count={plant.compounds.length}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {plant.compounds.map((c) => (
-              <div key={c.id} className="badge badge-green" style={{ padding: "6px 10px" }} title={[c.compound_group, c.part, c.notes].filter(Boolean).join(" · ")}>
-                {c.compound}
-                {c.part && <span style={{ opacity: 0.7 }}> ({c.part})</span>}
-              </div>
-            ))}
+            {plant.compounds.map((c) => {
+              const title = [c.compound_group, c.part, c.notes].filter(Boolean).join(" · ");
+              const inner = (
+                <>
+                  {c.compound}
+                  {c.part && <span style={{ opacity: 0.7 }}> ({c.part})</span>}
+                </>
+              );
+              return c.compound_id ? (
+                <Link
+                  key={c.id}
+                  href={`/compounds/${c.compound_id}`}
+                  className="badge badge-green"
+                  style={{ padding: "6px 10px", textDecoration: "none" }}
+                  title={title || "Open compound"}
+                >
+                  {inner}
+                </Link>
+              ) : (
+                <div key={c.id} className="badge badge-green" style={{ padding: "6px 10px", opacity: 0.7 }} title={title || "Not yet linked to the compound vocabulary"}>
+                  {inner}
+                </div>
+              );
+            })}
           </div>
         </Section>
       )}
