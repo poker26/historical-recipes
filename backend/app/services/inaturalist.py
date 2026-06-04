@@ -171,6 +171,24 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
 _GRID_CELL_RE = re.compile(r"^Квадрат\s", re.IGNORECASE)
 
 
+def _place_relevant(query: str, name: str) -> bool:
+    """True if an autocomplete candidate's name plausibly *is* the queried place,
+    not just a place that happens to sit inside it. iNat echoes the parent region
+    in parentheses (e.g. "Радованье (Владимирская область)"), so a bare-oblast
+    query like "Владимирская область" matches a random village's parenthetical and
+    would otherwise be picked. We require a real overlap between a query word and
+    the candidate's *own* name (the part before any " (" or ","): some 4+-char
+    query token must share a 4-char prefix with some name token — enough to absorb
+    Russian case endings ("Суздаль" ↔ "Суздальский", "Собинский" ↔ "Собинском")
+    while rejecting "Владимирская"/"область" ↔ "Радованье"."""
+    core = re.split(r"\s*[(,]", name, maxsplit=1)[0]
+    name_toks = [t for t in re.findall(r"\w+", core.lower()) if len(t) >= 4]
+    query_toks = [t for t in re.findall(r"\w+", query.lower()) if len(t) >= 4]
+    if not name_toks or not query_toks:
+        return False
+    return any(qt[:4] == nt[:4] for qt in query_toks for nt in name_toks)
+
+
 async def resolve_place(client: httpx.AsyncClient, query: str) -> dict | None:
     """Resolve a free-text place name (a district, town vicinity, region — any
     granularity) to an iNat ``place_id`` via ``GET /v1/places/autocomplete``.
@@ -202,7 +220,9 @@ async def resolve_place(client: httpx.AsyncClient, query: str) -> dict | None:
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(f"iNat places error for {query!r}: {type(e).__name__}: {e}")
         return None
-    results = [p for p in results if not _GRID_CELL_RE.match(str(p.get("name") or ""))]
+    results = [p for p in results
+               if not _GRID_CELL_RE.match(str(p.get("name") or ""))
+               and _place_relevant(query, str(p.get("name") or ""))]
     if not results:
         return None
     best = max(results, key=lambda p: p.get("bbox_area") or 0.0)
