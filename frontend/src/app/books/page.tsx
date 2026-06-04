@@ -80,6 +80,8 @@ export default function BooksPage() {
                 <select name="domain">
                   <option value="recipes">Recipes</option>
                   <option value="herbalism">Herbalism</option>
+                  <option value="fungi">Fungi (mushroom guide)</option>
+                  <option value="reference">Reference (compound/property dictionary)</option>
                 </select>
               </div>
               <div className="form-group">
@@ -114,6 +116,8 @@ export default function BooksPage() {
           <option value="">All domains</option>
           <option value="recipes">Recipes</option>
           <option value="herbalism">Herbalism</option>
+          <option value="fungi">Fungi</option>
+          <option value="reference">Reference</option>
         </select>
         <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} style={{ width: 160 }}>
           <option value="">All statuses</option>
@@ -150,7 +154,7 @@ export default function BooksPage() {
                     <td><Link href={`/books/${book.id}`}>{book.title}</Link></td>
                     <td>{book.author || "—"}</td>
                     <td>{book.year || "—"}</td>
-                    <td><span className={`badge ${book.domain === "recipes" ? "badge-blue" : "badge-green"}`}>{book.domain}</span></td>
+                    <td><span className={`badge ${({ recipes: "badge-blue", herbalism: "badge-green", fungi: "badge-yellow", reference: "badge-gray" } as Record<string, string>)[book.domain] || "badge-gray"}`}>{book.domain}</span></td>
                     <td><span className="badge badge-gray">{book.pdf_type}</span></td>
                     <td>{book.language === "pre_reform_ru" ? "Pre-reform" : "Modern"}</td>
                     <td><StatusBadge status={book.status} /></td>
