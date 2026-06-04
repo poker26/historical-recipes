@@ -31,8 +31,20 @@ def detect_source_format(filename: str) -> str | None:
     return ext if ext in ACCEPTED_FORMATS else None
 
 
-def djvu_to_pdf(djvu_bytes: bytes) -> bytes:
-    """Convert a (possibly multi-page) DjVu document to PDF via ddjvu."""
+def djvu_to_pdf(djvu_bytes: bytes, quality: int = 80, timeout: int = 1800) -> bytes:
+    """Convert a (possibly multi-page) DjVu document to PDF via ddjvu.
+
+    ``quality`` is CRITICAL.  Without it, ``ddjvu -format=pdf`` encodes every
+    page LOSSLESS (Deflate TIFF), which explodes a small scanned book into a
+    multi-gigabyte PDF — a 18 MB / 256-page DjVu became 2.37 GB.  Passing
+    ``-quality=N`` switches the contone layers to JPEG, shrinking that ~18× to
+    ~200 MB (q80) while staying perfectly legible for downstream OCR.  q80 is a
+    good default for dense identification keys; lower it for pure-text scans.
+
+    This is now invoked from the durable ``convert`` pipeline step (off the
+    upload request), so the timeout can be generous — a big atlas at ~1 s/page
+    still finishes in minutes.
+    """
     src_path = dst_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".djvu", delete=False) as src:
@@ -41,12 +53,9 @@ def djvu_to_pdf(djvu_bytes: bytes) -> bytes:
         dst_fd, dst_path = tempfile.mkstemp(suffix=".pdf")
         os.close(dst_fd)
 
-        # Keep this under nginx's 600s proxy_read_timeout on the upload route so
-        # an oversized book surfaces a clean conversion error to the client
-        # rather than a bare 504 from the gateway.
         proc = subprocess.run(
-            ["ddjvu", "-format=pdf", src_path, dst_path],
-            capture_output=True, timeout=540,
+            ["ddjvu", "-format=pdf", f"-quality={quality}", src_path, dst_path],
+            capture_output=True, timeout=timeout,
         )
         if proc.returncode != 0:
             err = proc.stderr.decode(errors="replace")[:500]

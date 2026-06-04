@@ -77,8 +77,13 @@ async def upload_book(
 ):
     """Upload a book (PDF / DjVu / TXT / DOCX) to MinIO and create a record.
 
-    DjVu is converted to PDF on ingest so the rest of the pipeline only ever
-    deals with PDFs.  Born-text formats (txt/docx) keep their text and skip OCR.
+    DjVu is stored AS-IS and converted to PDF later by the durable pipeline's
+    ``convert`` step — NOT during this request.  Converting here meant a small
+    scanned book (multi-minute ddjvu + a multi-hundred-MB PDF round-trip to
+    MinIO) blocked the upload until it timed out, and a conversion failure lost
+    the whole upload.  Decoupled, the book lands as ``uploaded`` immediately and
+    a failed/slow conversion is a retriable pipeline step.  Born-text formats
+    (txt/docx) keep their text and skip OCR.
     """
     source_format = ingest_svc.detect_source_format(file.filename or "")
     if not source_format:
@@ -91,26 +96,19 @@ async def upload_book(
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    # Normalise DjVu to PDF up front; downstream treats it as a PDF.
-    # ddjvu is a multi-minute, CPU-bound subprocess for large scanned books
-    # (a 700-page atlas takes ~4-5 min). Run it (and the other blocking steps
-    # below) in a worker thread so the single uvicorn event loop stays
-    # responsive — otherwise healthchecks and concurrent requests stall and
-    # the upload cascades into a 504.
-    if source_format == "djvu":
-        try:
-            content = await run_in_threadpool(ingest_svc.djvu_to_pdf, content)
-        except Exception as e:  # noqa: BLE001 — surface conversion failure to the client
-            raise HTTPException(status_code=400, detail=f"DjVu conversion failed: {e}")
-
-    # Determine stored object + preliminary pdf_type.
+    # Determine stored object + preliminary pdf_type.  DjVu keeps its native
+    # extension; the convert step rewrites file_path to the produced PDF.
     if source_format in ingest_svc.BORN_TEXT_FORMATS:
         stored_ext = source_format
         content_type = "text/plain" if source_format == "txt" else (
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
         pdf_type = "text"
-    else:  # pdf, or djvu now converted to pdf
+    elif source_format == "djvu":
+        stored_ext = "djvu"
+        content_type = "image/vnd.djvu"
+        pdf_type = "pending"  # set by the convert/classify steps once it's a PDF
+    else:  # pdf
         stored_ext = "pdf"
         content_type = "application/pdf"
         pdf_type = await run_in_threadpool(_detect_pdf_type, content)

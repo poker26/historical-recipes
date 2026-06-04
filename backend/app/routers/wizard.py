@@ -937,14 +937,15 @@ def _workflow_id(book_id: uuid.UUID) -> str:
 @router.post("/{book_id}/run")
 async def run_pipeline(
     book_id: uuid.UUID,
-    start_step: str = "classify",
+    start_step: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Start the end-to-end durable pipeline workflow for a book.
 
     ``start_step`` (query param) optionally resumes the pipeline partway
     through — useful when earlier steps are already committed and re-running
-    them would waste expensive LLM work.
+    them would waste expensive LLM work.  Omitted ⇒ run from the first step
+    (``convert``), so a DjVu upload gets converted as part of a normal run.
     """
     book = await _get_book(book_id, db)  # 404 if missing
     domain = book.domain or "recipes"
@@ -955,6 +956,8 @@ async def run_pipeline(
     from app.temporal.workflows import BookPipelineWorkflow, step_names_for_domain
 
     step_names = step_names_for_domain(domain)
+    if start_step is None:
+        start_step = step_names[0]
     if start_step not in step_names:
         raise HTTPException(
             status_code=400,

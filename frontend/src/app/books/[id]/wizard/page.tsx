@@ -16,16 +16,18 @@ const STEPS = [
   { num: 7, label: "Index", key: "index", action: "Indexing to Qdrant..." },
 ];
 
-// Canonical workflow step name (backend, 8 steps incl. cleanup) -> the 7-box
-// indicator. Cleanup is folded into the "Extract Text" box.
+// Canonical workflow step name (backend) -> the 7-box indicator. Cleanup is
+// folded into the "Extract Text" box; convert (DjVu→PDF, only for DjVu uploads)
+// is folded into the first "Classify" box.
 const CANON_TO_STEPNUM: Record<string, number> = {
-  classify: 1, extract: 2, cleanup: 2, translate: 3,
+  convert: 1, classify: 1, extract: 2, cleanup: 2, translate: 3,
   analyze: 4, extract_recipes: 5, match_ingredients: 6, index: 7,
 };
 
 // Resume-from choices for the durable run (label -> canonical step name).
 const RESUME_CHOICES: { value: string; label: string }[] = [
-  { value: "classify", label: "С начала (Classify)" },
+  { value: "convert", label: "С начала (Convert/Classify)" },
+  { value: "classify", label: "Classify" },
   { value: "extract", label: "Extract Text" },
   { value: "cleanup", label: "Cleanup" },
   { value: "translate", label: "Translate" },
@@ -40,6 +42,7 @@ const WF_ACTIVE = (s?: string) => s === "RUNNING";
 // Human-readable Russian labels for the pipeline step names stored in the DB
 // processing log (and emitted by the Temporal workflow).
 const STEP_LABELS_RU: Record<string, string> = {
+  convert: "Конвертация DjVu→PDF",
   classify: "Классификация",
   extract: "Извлечение текста",
   cleanup: "Очистка OCR",
@@ -119,7 +122,7 @@ export default function WizardPage() {
   // Durable Temporal workflow state (polled separately from the manual steps)
   const [wf, setWf] = useState<WizardWorkflow | null>(null);
   const wfPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [resumeStep, setResumeStep] = useState("classify");
+  const [resumeStep, setResumeStep] = useState("convert");
 
   // Step-specific state
   const [classifyResult, setClassifyResult] = useState<Record<string, unknown> | null>(null);
@@ -247,7 +250,7 @@ export default function WizardPage() {
   const handleRunAll = async () => {
     setError(null);
     try {
-      await api.wizardRun(bookId, resumeStep === "classify" ? undefined : resumeStep);
+      await api.wizardRun(bookId, resumeStep === "convert" ? undefined : resumeStep);
       const w = await refreshWorkflow();
       if (w && WF_ACTIVE(w.status)) startWfPolling();
     } catch (e) {

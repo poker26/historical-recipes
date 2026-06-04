@@ -13,6 +13,7 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from app.temporal.activities import (
+        convert_activity,
         classify_activity,
         extract_activity,
         cleanup_activity,
@@ -65,6 +66,7 @@ _RETRY = RetryPolicy(
 # plants — maximising in-book cross-linking.  Recipes from a herbalism book stay
 # distinguishable by their book's domain.
 PIPELINE_STEPS_RECIPES = [
+    ("convert", convert_activity, _LONG, None),
     ("classify", classify_activity, _SHORT, None),
     ("extract", extract_activity, _LONG, _HEARTBEAT),
     ("cleanup", cleanup_activity, _LONG, _HEARTBEAT),
@@ -75,6 +77,7 @@ PIPELINE_STEPS_RECIPES = [
     ("index", index_activity, _LONG, _HEARTBEAT),
 ]
 PIPELINE_STEPS_HERBALISM = [
+    ("convert", convert_activity, _LONG, None),
     ("classify", classify_activity, _SHORT, None),
     ("extract", extract_activity, _LONG, _HEARTBEAT),
     ("cleanup", cleanup_activity, _LONG, _HEARTBEAT),
@@ -92,6 +95,7 @@ PIPELINE_STEPS_HERBALISM = [
 # occurrences), normalize_corpus maps every plant's free-text compounds to it.
 # No analyze/extract_recipes — there are no recipes to pull from a chemistry book.
 PIPELINE_STEPS_REFERENCE = [
+    ("convert", convert_activity, _LONG, None),
     ("classify", classify_activity, _SHORT, None),
     ("extract", extract_activity, _LONG, _HEARTBEAT),
     ("cleanup", cleanup_activity, _LONG, _HEARTBEAT),
@@ -139,11 +143,11 @@ class BookPipelineWorkflow:
     """
 
     @workflow.run
-    async def run(self, book_id: str, start_step: str = "classify", domain: str = "recipes") -> dict:
+    async def run(self, book_id: str, start_step: str = "convert", domain: str = "recipes") -> dict:
         steps = steps_for_domain(domain)
         step_names = [s[0] for s in steps]
         if start_step not in step_names:
-            start_step = "classify"
+            start_step = step_names[0]  # first step (convert) — full run from scratch
         start_idx = step_names.index(start_step)
 
         results: dict = {"_started_at_step": start_step, "_domain": domain}

@@ -34,6 +34,7 @@ async def main():
         task_queue=settings.temporal_task_queue,
         workflows=[BookPipelineWorkflow, PingWorkflow],
         activities=[
+            activities.convert_activity,
             activities.classify_activity,
             activities.extract_activity,
             activities.cleanup_activity,

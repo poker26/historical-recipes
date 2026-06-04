@@ -119,6 +119,69 @@ def _detect_language(sample_text: str) -> tuple[int, float, str]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Step 0: Convert (DjVu → PDF)
+# ──────────────────────────────────────────────────────────────────────
+
+@activity.defn
+async def convert_activity(book_id: str) -> dict:
+    """Normalize a DjVu upload into a compact PDF, off the upload request path.
+
+    Uploads now store the raw ``.djvu`` (instant), so the heavy ddjvu pass lives
+    here as a durable, retriable step: a slow/failed conversion leaves the book
+    visibly ``uploaded`` instead of erroring the upload.  After it runs the book's
+    ``file_path`` points at the produced ``original.pdf`` and every downstream
+    step treats it as an ordinary PDF (``source_format`` stays ``djvu`` for
+    provenance — it's not a born-text format, so it routes through the OCR path).
+
+    No-op for non-DjVu sources and for a DjVu already converted (idempotent), so
+    it's safe as the universal first step and safe to re-run.
+    """
+    bid = uuid.UUID(book_id)
+    async with async_session() as db:
+        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
+        source_format = (book.source_format or "pdf").lower()
+        file_path = book.file_path
+
+    if source_format != "djvu":
+        _hb(f"convert: skip — source_format={source_format}")
+        return {"skipped": True, "reason": f"source_format={source_format}"}
+    if not file_path:
+        raise ValueError("Book has no source file")
+    if file_path.endswith(".pdf"):
+        _hb("convert: skip — DjVu already converted to PDF")
+        return {"skipped": True, "reason": "already_pdf", "pdf_path": file_path}
+
+    from app.services.ingest import djvu_to_pdf
+
+    _hb("convert: downloading DjVu from storage")
+    djvu_bytes = minio_svc.download_file(file_path)
+    _hb(f"convert: ddjvu DjVu→PDF ({len(djvu_bytes):,} bytes)")
+    # ddjvu is a long, CPU-bound blocking subprocess — run it off the event loop
+    # so it can't starve other concurrent activities on this worker.
+    loop = asyncio.get_event_loop()
+    pdf_bytes = await loop.run_in_executor(None, djvu_to_pdf, djvu_bytes)
+
+    pdf_path = f"books/{bid}/original.pdf"
+    _hb(f"convert: uploading PDF ({len(pdf_bytes):,} bytes)")
+    minio_svc.upload_file(pdf_bytes, pdf_path, content_type="application/pdf")
+
+    async with async_session() as db:
+        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
+        book.file_path = pdf_path
+        if not book.pdf_type or book.pdf_type == "pending":
+            book.pdf_type = "image"  # scanned DjVu → image PDF; classify refines this
+        db.add(ProcessingLog(
+            book_id=bid, step="convert", status="completed",
+            details={"djvu_bytes": len(djvu_bytes), "pdf_bytes": len(pdf_bytes),
+                     "pdf_path": pdf_path},
+        ))
+        await db.commit()
+
+    _hb(f"convert: DjVu {len(djvu_bytes):,} → PDF {len(pdf_bytes):,} bytes")
+    return {"djvu_bytes": len(djvu_bytes), "pdf_bytes": len(pdf_bytes), "pdf_path": pdf_path}
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Step 1: Classify
 # ──────────────────────────────────────────────────────────────────────
 
