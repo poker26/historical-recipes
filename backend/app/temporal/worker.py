@@ -49,6 +49,8 @@ async def main():
             activities.extract_plant_entries_activity,
             activities.extract_vocabulary_activity,
             activities.normalize_corpus_activity,
+            activities.medical_vocab_batch_activity,
+            activities.normalize_medical_activity,
             activities.match_ingredients_activity,
             activities.index_activity,
             activities.enrich_inat_activity,
