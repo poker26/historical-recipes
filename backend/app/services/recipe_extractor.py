@@ -39,6 +39,45 @@ VALID_CATEGORIES = {
 # (e.g. "Оборудование", "Сырьё", "Пропорции").
 MIN_RECIPE_TEXT_LEN = 150
 
+# A real recipe describes a PREPARATION PROCESS — how to make the thing. Species
+# descriptions in a field guide / determiner (a fungus or plant atlas) have only
+# morphology + an edibility note and NO process. The catch: that edibility note is
+# phrased with the SAME roots as cooking words, but in the INSTRUMENTAL case as
+# adjectives — "употребляется варёным, солёным, маринованным" — whereas a real
+# recipe uses those roots as VERBS (infinitive/imperative/past): "отварить,
+# посолить, замариновать". So every pattern below is anchored on a verb ending
+# (-ть / -л / -и imperative …) and must NOT match the -ным/-ым adjective forms.
+# We keep allowing genuine zero-ingredient prose recipes (medicinal collections),
+# but only if they carry such a verb; otherwise a zero-ingredient candidate is
+# almost certainly a misclassified species description.
+_VB = r"(?:ть|ться|л[аио]?|ли|ло|те|й|йте|ите|в|вши|)\b"  # verb endings (trailing ''=bare imperative); \b stops noun forms like "отвари-в-ания"
+_PREP_VERB_RE = re.compile(
+    r"насто(?:ять|ял|яв|й\b|и\b|йте)|настаива" + _VB + r"|"
+    r"отвари" + _VB + r"|свари" + _VB + r"|\bвари" + _VB + r"|"
+    r"кипяти" + _VB + r"|прокипяти" + _VB + r"|"
+    r"смеша" + _VB + r"|переме[шс]а" + _VB + r"|размеша" + _VB + r"|"
+    r"перегна" + _VB + r"|перегони\b|"
+    r"процеди" + _VB + r"|процежива" + _VB + r"|сцеди" + _VB + r"|отцеди" + _VB + r"|"
+    r"зали" + _VB + r"|залива" + _VB + r"|зале[йю]\b|"
+    r"добави" + _VB + r"|добавля" + _VB + r"|"
+    r"измельчи" + _VB + r"|истол(?:очь|ки\b|кут)|растол(?:очь|кут)|перетер(?:еть|ли)|разотр(?:и\b|ите)|"
+    r"нареза" + _VB + r"|нареж" + _VB + r"|"
+    r"высуши" + _VB + r"|насуши" + _VB + r"|подсуши" + _VB + r"|"
+    r"посоли" + _VB + r"|засоли" + _VB + r"|присоли" + _VB + r"|"
+    r"замаринова" + _VB + r"|промаринова" + _VB + r"|\bмаринова" + _VB + r"|"
+    r"туши" + _VB + r"|потуши" + _VB + r"|"
+    r"жари" + _VB + r"|пожари" + _VB + r"|обжари" + _VB + r"|зажари" + _VB + r"|"
+    r"запе(?:чь|ка" + _VB + r")|испе(?:чь|ки\b)|выпе(?:чь|ка" + _VB + r")|"
+    r"замочи" + _VB + r"|вымочи" + _VB + r"|намочи" + _VB + r"|"
+    r"развести|развед[иё]" + r"|разбави" + _VB + r"|"
+    r"остуди" + _VB + r"|охлади" + _VB + r"|"
+    r"профильтрова" + _VB + r"|отфильтрова" + _VB + r"|"
+    r"отжа" + _VB + r"|выжа" + _VB + r"|"
+    r"выдержа" + _VB + r"|заква(?:сить|сил|шива" + _VB + r")|"
+    r"нагре" + _VB + r"|подогре" + _VB + r"|посыпа" + _VB + r"|обваля" + _VB,
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class ExtractedIngredient:
@@ -78,6 +117,12 @@ Be PRECISE about what is NOT a recipe. Do NOT extract:
 - Table of contents entries
 - Purely general/introductory descriptions that give no way to make anything
 - Footnotes or editorial comments
+- A SPECIES DESCRIPTION from a field guide / determiner / atlas: morphology (cap, stem, flesh, \
+colour, smell, size), habitat / where it grows, season, and an EDIBILITY note. An edibility statement \
+or a "употребляется …" phrase (e.g. "съедобен", "ядовит", "употребляется варёным, солёным, маринованным") \
+describes the ORGANISM itself, NOT a way to prepare a dish — it is NOT a recipe. Extract a recipe ONLY when \
+the text gives an actual preparation METHOD: concrete steps (настоять, отварить, смешать, посолить, \
+замариновать, перегнать, процедить …) and/or a real list of ingredients for making a specific dish or preparation.
 
 CRITICAL — extract only what is literally present; never invent:
 - Extract ONLY recipes that physically appear in the provided text. NEVER invent, complete, infer, or \
@@ -255,6 +300,13 @@ def _is_valid_recipe(data: dict) -> bool:
         return False
     text = (data.get("original_text") or "").strip()
     if len(text) < MIN_RECIPE_TEXT_LEN:
+        return False
+    # Content guard against species descriptions (fungus/plant determiners): a
+    # candidate with NO parseable ingredients AND no preparation verb is a
+    # description with an edibility note, not a recipe. Genuine prose recipes keep
+    # passing because they always carry a process verb (настоять/отварить/…).
+    ingredients = data.get("ingredients") or []
+    if not ingredients and not _PREP_VERB_RE.search(text):
         return False
     return True
 
