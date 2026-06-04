@@ -170,6 +170,45 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
 # oblast query — never a meaningful answer to "where can I find this plant".
 _GRID_CELL_RE = re.compile(r"^Квадрат\s", re.IGNORECASE)
 
+# Vernacular "vicinity" wrappers a user wraps a toponym in — "окрестности Суздаля",
+# "около Мурома", "под Владимиром". iNat autocomplete is a literal PREFIX match and
+# returns nothing for these, so we strip the wrappers and retry on the bare toponym.
+# NB: "район"/"область"/"край" are NOT wrappers — they're part of real place names.
+_VICINITY_WRAPPERS = {
+    "окрестности", "окрестностях", "окрестность", "окрестностей",
+    "около", "близ", "вблизи", "рядом", "недалеко", "неподалёку", "неподалеку",
+    "поблизости", "вокруг", "возле", "подле", "под", "у",
+    "в", "во", "на", "от", "с", "со", "к", "ко", "за",
+}
+
+
+def _place_query_variants(query: str) -> list[str]:
+    """Ordered, de-duplicated autocomplete query strings to try for a vernacular
+    place phrase. iNat autocomplete only PREFIX-matches, so it whiffs on both
+    vicinity wrappers ("окрестности Суздаля" → 0 hits) and Russian case endings
+    ("Суздаля" → 0, but "Суздал" → hit). We therefore try, in order: the verbatim
+    query; the query with leading/embedded vicinity words removed; and — when that
+    leaves a single toponym — progressively shorter prefixes of it to shed the
+    inflected ending (down to 4 chars)."""
+    variants = [query]
+    toks = query.split()
+    core = [t for t in toks if t.lower().strip(".,") not in _VICINITY_WRAPPERS]
+    if core and core != toks:
+        variants.append(" ".join(core))
+    if len(core) == 1:
+        t = core[0]
+        for cut in (1, 2, 3):
+            if len(t) - cut >= 4:
+                variants.append(t[: len(t) - cut])
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in variants:
+        v = v.strip()
+        if v and v.lower() not in seen:
+            seen.add(v.lower())
+            out.append(v)
+    return out
+
 
 def _place_relevant(query: str, name: str) -> bool:
     """True if an autocomplete candidate's name plausibly *is* the queried place,
@@ -209,28 +248,35 @@ async def resolve_place(client: httpx.AsyncClient, query: str) -> dict | None:
     silently returning a wrong grid cell. Returns ``None`` on no match or
     transport error so the caller degrades gracefully. ``display_name`` is echoed
     back so the consumer can tell the user which place was used (covers the
-    deliberate imprecision)."""
-    try:
-        resp = await client.get(f"{INAT_BASE}/places/autocomplete",
-                                params={"q": query}, headers=_HEADERS)
-        if resp.status_code != 200:
-            logger.warning(f"iNat places HTTP {resp.status_code} for {query!r}")
+    deliberate imprecision).
+
+    Vernacular phrasing ("окрестности Суздаля") is handled by trying a few
+    derived autocomplete queries (see ``_place_query_variants``); relevance is
+    always scored against the ORIGINAL query so a truncated stem can't drift to
+    an unrelated place."""
+    for variant in _place_query_variants(query):
+        try:
+            resp = await client.get(f"{INAT_BASE}/places/autocomplete",
+                                    params={"q": variant}, headers=_HEADERS)
+            if resp.status_code != 200:
+                logger.warning(f"iNat places HTTP {resp.status_code} for {variant!r}")
+                continue
+            results = resp.json().get("results", [])
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning(f"iNat places error for {variant!r}: {type(e).__name__}: {e}")
             return None
-        results = resp.json().get("results", [])
-    except (httpx.HTTPError, ValueError) as e:
-        logger.warning(f"iNat places error for {query!r}: {type(e).__name__}: {e}")
-        return None
-    results = [p for p in results
-               if not _GRID_CELL_RE.match(str(p.get("name") or ""))
-               and _place_relevant(query, str(p.get("name") or ""))]
-    if not results:
-        return None
-    best = max(results, key=lambda p: p.get("bbox_area") or 0.0)
-    return {
-        "place_id": best.get("id"),
-        "display_name": best.get("display_name"),
-        "bbox_area": best.get("bbox_area"),
-    }
+        results = [p for p in results
+                   if not _GRID_CELL_RE.match(str(p.get("name") or ""))
+                   and _place_relevant(query, str(p.get("name") or ""))]
+        if not results:
+            continue
+        best = max(results, key=lambda p: p.get("bbox_area") or 0.0)
+        return {
+            "place_id": best.get("id"),
+            "display_name": best.get("display_name"),
+            "bbox_area": best.get("bbox_area"),
+        }
+    return None
 
 
 async def _obs_total(client: httpx.AsyncClient, scope: dict) -> int | None:
