@@ -16,7 +16,12 @@ from temporalio.worker import Worker
 from app.config import settings
 from app.temporal.client import get_temporal_client
 from app.temporal import activities
-from app.temporal.workflows import BookPipelineWorkflow, InatEnrichmentWorkflow, PingWorkflow
+from app.temporal.workflows import (
+    BookPipelineWorkflow,
+    InatEnrichmentWorkflow,
+    MedicalNormalizerWorkflow,
+    PingWorkflow,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("temporal.worker")
@@ -32,7 +37,7 @@ async def main():
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
-        workflows=[BookPipelineWorkflow, InatEnrichmentWorkflow, PingWorkflow],
+        workflows=[BookPipelineWorkflow, InatEnrichmentWorkflow, MedicalNormalizerWorkflow, PingWorkflow],
         activities=[
             activities.convert_activity,
             activities.classify_activity,

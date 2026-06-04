@@ -1790,3 +1790,47 @@ async def index_activity(book_id: str) -> dict:
 async def ping_activity(name: str) -> str:
     _hb(f"ping received: {name}")
     return f"pong: {name}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Medical normalizer (corpus-wide maintenance, not a per-book step)
+# ──────────────────────────────────────────────────────────────────────
+
+@activity.defn
+async def medical_vocab_batch_activity(axis: str, batch_size: int = 80) -> dict:
+    """One durable batch of Phase-A medical-vocab canonicalization for ``axis``
+    ("actions" | "indications").
+
+    Recomputes the UNCOVERED raw terms, canonicalizes the first ``batch_size`` of
+    them via the LLM and upserts the concepts. Because processing a term marks it
+    covered, repeated calls drain the backlog — the workflow loops until
+    ``remaining`` stops shrinking. Lets exceptions propagate so a provider 429 that
+    outlasts the LLM client's own retries becomes a retriable Temporal attempt
+    rather than a silently-dropped batch.
+    """
+    from app.services.medical_vocab import gather_uncovered, process_vocab_batch
+
+    async with async_session() as db:
+        uncovered = await gather_uncovered(db, axis)
+        if not uncovered:
+            _hb(f"medical vocab [{axis}]: nothing uncovered")
+            return {"axis": axis, "processed": 0, "created": 0, "remaining": 0}
+        batch = uncovered[:batch_size]
+        _hb(f"medical vocab [{axis}]: {len(uncovered)} uncovered, canonicalizing {len(batch)}")
+        created = await process_vocab_batch(db, axis, batch)
+        remaining = len(await gather_uncovered(db, axis))
+        _hb(f"medical vocab [{axis}]: +{created} concepts, {remaining} still uncovered")
+        return {"axis": axis, "processed": len(batch), "created": created, "remaining": remaining}
+
+
+@activity.defn
+async def normalize_medical_activity() -> dict:
+    """Phase B — idempotent corpus-wide recompute of every PlantMedicinalUse's
+    ``action_id`` + ``indication_ids`` against the current vocabularies."""
+    from app.services.medical_matching import normalize_medical_uses
+
+    _hb("Normalizing medicinal uses against the action + indication vocabularies")
+    async with async_session() as db:
+        result = await normalize_medical_uses(db)
+    _hb(f"Normalized medical uses: {result}")
+    return result

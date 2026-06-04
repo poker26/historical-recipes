@@ -23,6 +23,8 @@ with workflow.unsafe.imports_passed_through():
         extract_plant_entries_activity,
         extract_vocabulary_activity,
         normalize_corpus_activity,
+        medical_vocab_batch_activity,
+        normalize_medical_activity,
         match_ingredients_activity,
         index_activity,
         enrich_inat_activity,
@@ -214,6 +216,58 @@ class InatEnrichmentWorkflow:
                 await workflow.sleep(timedelta(minutes=3))
             else:
                 stall = 0
+        return totals
+
+
+@workflow.defn
+class MedicalNormalizerWorkflow:
+    """Corpus-wide medical normalizer as a durable, resumable sweep.
+
+    The medical sibling of ``InatEnrichmentWorkflow`` — the right home for the long,
+    429-prone Phase-A LLM canonicalization. Phase A grows the action + indication
+    vocabularies from the distinct ``action_raw`` / ``indications`` strings the
+    corpus already holds; Phase B then relinks every ``PlantMedicinalUse`` to them.
+
+    Each vocab batch is a separate retriable activity, so a provider rate-limit is
+    just a retried attempt (not a lost batch), and progress is visible per-activity
+    in the Temporal UI. Per axis it loops until the uncovered backlog hits 0 or
+    stops shrinking (terms the model declines to canonicalize never become covered,
+    so ``remaining``-stall is the real terminator). Phase B runs once at the end.
+    """
+
+    @workflow.run
+    async def run(self, batch_size: int = 80, max_batches: int = 100,
+                  normalize: bool = True) -> dict:
+        totals: dict = {"actions_created": 0, "actions_batches": 0,
+                        "indications_created": 0, "indications_batches": 0}
+        for axis in ("actions", "indications"):
+            prev_remaining = None
+            for _ in range(max_batches):
+                res = await workflow.execute_activity(
+                    medical_vocab_batch_activity,
+                    args=[axis, batch_size],
+                    start_to_close_timeout=_LONG,
+                    heartbeat_timeout=_HEARTBEAT,
+                    retry_policy=_RETRY,
+                )
+                totals[f"{axis}_created"] += res.get("created", 0)
+                totals[f"{axis}_batches"] += 1
+                remaining = res.get("remaining", 0)
+                totals[f"{axis}_remaining"] = remaining
+                if res.get("processed", 0) == 0 or remaining == 0:
+                    break
+                # Stall guard: if the uncovered count didn't shrink, the rest are
+                # terms the model keeps declining to map — stop rather than spin.
+                if prev_remaining is not None and remaining >= prev_remaining:
+                    break
+                prev_remaining = remaining
+
+        if normalize:
+            totals["normalize"] = await workflow.execute_activity(
+                normalize_medical_activity,
+                start_to_close_timeout=_SHORT,
+                retry_policy=_RETRY,
+            )
         return totals
 
 

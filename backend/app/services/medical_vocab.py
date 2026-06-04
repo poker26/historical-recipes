@@ -228,69 +228,8 @@ async def _canonicalize(system_prompt: str, axis_key: str, terms: list[str], tas
 
 
 # --------------------------------------------------------------------------- #
-# Phase A entry point
+# per-concept upsert dispatch
 # --------------------------------------------------------------------------- #
-async def build_medical_vocab(db: AsyncSession, commit: bool = True, progress_callback=None) -> dict:
-    """Corpus-bootstrap the action + indication vocabularies from the distinct
-    raw strings already in ``plant_medicinal_uses``. Idempotent and cumulative:
-    re-running after a new phytotherapy book folds its new raw terms in without
-    clobbering existing concepts."""
-    cb = progress_callback or (lambda msg: None)
-
-    # ---- gather distinct raw material from the corpus ----
-    action_rows = (await db.execute(
-        select(PlantMedicinalUse.action_raw).where(PlantMedicinalUse.action_raw.isnot(None)).distinct()
-    )).scalars().all()
-    actions_raw = sorted({a.strip() for a in action_rows if a and len(_norm(a)) >= 2})
-
-    ind_rows = (await db.execute(
-        select(PlantMedicinalUse.indications).where(PlantMedicinalUse.indications.isnot(None)).distinct()
-    )).scalars().all()
-    ind_atoms: dict[str, str] = {}  # normalized -> first-seen surface form
-    for field in ind_rows:
-        for atom in _split_atoms(field):
-            ind_atoms.setdefault(_norm(atom), atom)
-    indications_raw = sorted(ind_atoms.values())
-
-    # ---- resume: drop raw terms already covered by the current vocabulary ----
-    # Each run only canonicalizes the GAPS, so a re-run cheaply mops up batches a
-    # previous run lost to provider 429s instead of re-sending every term. A term
-    # is "covered" if it exact-matches an existing concept's name/modern/synonym
-    # (and, for indications, archaic) key.
-    existing_actions = (await db.execute(select(MedicinalAction))).scalars().all()
-    existing_inds = (await db.execute(select(Indication))).scalars().all()
-    a_exact, _ = _build_index(existing_actions, extra_key_attrs=("name_modern", "synonyms"))
-    i_exact, _ = _build_index(existing_inds, extra_key_attrs=("name_modern", "synonyms", "archaic"))
-    actions_todo = [t for t in actions_raw if _norm(t) not in a_exact]
-    indications_todo = [t for t in indications_raw if _norm(t) not in i_exact]
-
-    cb(f"Distinct action_raw: {len(actions_raw)} ({len(actions_todo)} uncovered); "
-       f"indication atoms: {len(indications_raw)} ({len(indications_todo)} uncovered)")
-
-    # ---- Phase A.1: actions ----
-    actions_created, action_fails = await _run_axis(
-        db, commit, cb, "Action", actions_todo, _ACTION_SYSTEM, "actions",
-        "medical_action_vocab", _apply_action)
-
-    # ---- Phase A.2: indications ----
-    indications_created, indication_fails = await _run_axis(
-        db, commit, cb, "Indication", indications_todo, _INDICATION_SYSTEM, "indications",
-        "medical_indication_vocab", _apply_indication)
-
-    action_total = (await db.execute(select(MedicinalAction))).scalars().all()
-    indication_total = (await db.execute(select(Indication))).scalars().all()
-    return {
-        "action_terms_in": len(actions_raw),
-        "indication_terms_in": len(indications_raw),
-        "actions_upserted": actions_created,
-        "indications_upserted": indications_created,
-        "action_batches_failed": action_fails,
-        "indication_batches_failed": indication_fails,
-        "action_vocab_total": len(action_total),
-        "indication_vocab_total": len(indication_total),
-    }
-
-
 async def _apply_action(db, c: dict) -> bool:
     parent_id = None
     parent = _str(c.get("parent"))
@@ -318,36 +257,95 @@ async def _apply_indication(db, c: dict) -> bool:
     return i is not None
 
 
-async def _run_axis(db, commit, cb, label, terms, system_prompt, axis_key, task, apply) -> tuple[int, int]:
-    """Canonicalize one axis batch-by-batch. A failed batch (LLM error or
-    unparseable degenerate response) is logged and skipped — prior batches are
-    already committed, and a re-run retries the skipped terms cumulatively — rather
-    than aborting the whole pass."""
+# axis -> (system prompt, response key, llm-task tag, per-concept apply fn)
+_AXIS = {
+    "actions": (_ACTION_SYSTEM, "actions", "medical_action_vocab", _apply_action),
+    "indications": (_INDICATION_SYSTEM, "indications", "medical_indication_vocab", _apply_indication),
+}
+
+
+# --------------------------------------------------------------------------- #
+# per-batch primitives (driven by the Temporal MedicalNormalizerWorkflow, which
+# gives each batch a durable, retriable attempt — the right home for the long,
+# 429-prone LLM work — and by build_medical_vocab for a synchronous local run)
+# --------------------------------------------------------------------------- #
+async def gather_uncovered(db: AsyncSession, axis: str) -> list[str]:
+    """Distinct raw strings of ``axis`` NOT yet covered by the vocabulary.
+
+    "Covered" = exact-matches an existing concept's name / name_modern / synonym
+    (and, for indications, archaic) key. Recomputed each call, so processing a
+    batch shrinks the result — the workflow loops on this until it stops shrinking.
+    """
+    if axis == "actions":
+        rows = (await db.execute(
+            select(PlantMedicinalUse.action_raw)
+            .where(PlantMedicinalUse.action_raw.isnot(None)).distinct()
+        )).scalars().all()
+        raw = sorted({a.strip() for a in rows if a and len(_norm(a)) >= 2})
+        existing = (await db.execute(select(MedicinalAction))).scalars().all()
+        exact, _ = _build_index(existing, extra_key_attrs=("name_modern", "synonyms"))
+    elif axis == "indications":
+        rows = (await db.execute(
+            select(PlantMedicinalUse.indications)
+            .where(PlantMedicinalUse.indications.isnot(None)).distinct()
+        )).scalars().all()
+        atoms: dict[str, str] = {}  # normalized -> first-seen surface form
+        for field in rows:
+            for atom in _split_atoms(field):
+                atoms.setdefault(_norm(atom), atom)
+        raw = sorted(atoms.values())
+        existing = (await db.execute(select(Indication))).scalars().all()
+        exact, _ = _build_index(existing, extra_key_attrs=("name_modern", "synonyms", "archaic"))
+    else:
+        raise ValueError(f"unknown axis {axis!r}; use 'actions' or 'indications'")
+    return [t for t in raw if _norm(t) not in exact]
+
+
+async def process_vocab_batch(db: AsyncSession, axis: str, batch: list[str]) -> int:
+    """Canonicalize one batch of raw terms and upsert the concepts. Commits on
+    success; lets exceptions propagate so the caller (Temporal activity) can
+    retry the whole batch durably. Returns the number of concepts upserted."""
+    if axis not in _AXIS:
+        raise ValueError(f"unknown axis {axis!r}")
+    system_prompt, axis_key, task, apply = _AXIS[axis]
+    concepts = await _canonicalize(system_prompt, axis_key, batch, task)
     created = 0
-    failed = 0
-    batches = _batches(terms, TERMS_PER_BATCH)
-    for bi, batch in enumerate(batches):
-        cb(f"{label} batch {bi+1}/{len(batches)} ({len(batch)} terms)")
-        # Guard the WHOLE batch — LLM call, upserts and commit. A provider 429 that
-        # outlasts retries, a degenerate unparseable response, or a flush error on
-        # one bad concept rolls back just this batch and continues; prior batches
-        # are committed and a re-run retries the gap.
-        try:
-            concepts = await _with_heartbeat(
-                _canonicalize(system_prompt, axis_key, batch, task),
-                cb, f"{label} batch {bi+1}/{len(batches)}")
-            batch_created = 0
-            for c in concepts:
-                if not isinstance(c, dict) or len(_str(c.get("name"))) < 2:
-                    continue
-                if await apply(db, c):
-                    batch_created += 1
-            if commit:
-                await db.commit()
-            created += batch_created
-        except Exception as e:  # noqa: BLE001 — isolate a bad batch, keep going
-            failed += 1
-            cb(f"{label} batch {bi+1}/{len(batches)} FAILED: {type(e).__name__}: {e}")
-            await db.rollback()
+    for c in concepts:
+        if not isinstance(c, dict) or len(_str(c.get("name"))) < 2:
             continue
-    return created, failed
+        if await apply(db, c):
+            created += 1
+    await db.commit()
+    return created
+
+
+# --------------------------------------------------------------------------- #
+# Phase A entry point — synchronous local run (Temporal is the production path)
+# --------------------------------------------------------------------------- #
+async def build_medical_vocab(db: AsyncSession, progress_callback=None) -> dict:
+    """Corpus-bootstrap the action + indication vocabularies from the distinct
+    raw strings already in ``plant_medicinal_uses``. Idempotent, cumulative and
+    resumable (each run canonicalizes only uncovered terms). This is the inline
+    path; the durable production path is ``MedicalNormalizerWorkflow``."""
+    cb = progress_callback or (lambda msg: None)
+    out: dict = {}
+    for axis, label in (("actions", "Action"), ("indications", "Indication")):
+        uncovered = await gather_uncovered(db, axis)
+        cb(f"{label}: {len(uncovered)} uncovered terms")
+        created = failed = 0
+        batches = _batches(uncovered, TERMS_PER_BATCH)
+        for bi, batch in enumerate(batches):
+            cb(f"{label} batch {bi+1}/{len(batches)} ({len(batch)} terms)")
+            try:
+                created += await _with_heartbeat(
+                    process_vocab_batch(db, axis, batch), cb,
+                    f"{label} batch {bi+1}/{len(batches)}")
+            except Exception as e:  # noqa: BLE001 — isolate a bad batch, keep going
+                failed += 1
+                cb(f"{label} batch {bi+1}/{len(batches)} FAILED: {type(e).__name__}: {e}")
+                await db.rollback()
+        out[f"{axis}_upserted"] = created
+        out[f"{axis}_batches_failed"] = failed
+    out["action_vocab_total"] = len((await db.execute(select(MedicinalAction))).scalars().all())
+    out["indication_vocab_total"] = len((await db.execute(select(Indication))).scalars().all())
+    return out

@@ -18,26 +18,51 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.plant import MedicinalAction, Indication, PlantMedicinalUse, Plant
-from app.services.medical_vocab import build_medical_vocab
 from app.services.medical_matching import normalize_medical_uses
 
 router = APIRouter()
 
 
-@router.post("/build-vocab")
-async def build_vocab(db: AsyncSession = Depends(get_db)):
-    """Phase A — corpus-bootstrap the action + indication vocabularies from the
-    distinct raw strings already in plant_medicinal_uses. Cumulative & idempotent;
-    re-run after loading new phytotherapy books to fold in their new terms."""
-    result = await build_medical_vocab(db)
-    return {"status": "completed", **result}
+@router.post("/run")
+async def run_normalizer(normalize: bool = True):
+    """Start the durable corpus-wide medical normalizer (Temporal).
+
+    Phase A (grow the action + indication vocabularies from the corpus's distinct
+    raw strings) is long and 429-prone, so it runs as ``MedicalNormalizerWorkflow``
+    — each LLM batch a separate retriable activity, visible in the Temporal UI and
+    surviving worker restarts — rather than a single blocking request that nginx
+    would 504. Phase B (relink every use) runs at the tail unless ``normalize`` is
+    false. Rejects a second start while one is already running."""
+    from temporalio.service import RPCError
+    from app.config import settings
+    from app.temporal.client import get_temporal_client
+    from app.temporal.workflows import MedicalNormalizerWorkflow
+
+    client = await get_temporal_client()
+    wf_id = "medical-normalizer"
+    try:
+        desc = await client.get_workflow_handle(wf_id).describe()
+        if desc.status and desc.status.name == "RUNNING":
+            raise HTTPException(status_code=409, detail="medical normalizer already running")
+    except RPCError:
+        pass  # no existing workflow — fine
+
+    handle = await client.start_workflow(
+        MedicalNormalizerWorkflow.run,
+        args=[80, 100, normalize],
+        id=wf_id,
+        task_queue=settings.temporal_task_queue,
+    )
+    return {"status": "started", "workflow_id": handle.id, "run_id": handle.result_run_id}
 
 
 @router.post("/normalize")
 async def normalize(db: AsyncSession = Depends(get_db)):
-    """Phase B — map every PlantMedicinalUse's action_raw + free-text indications
-    to the controlled vocabularies (action_id + indication_ids). Idempotent
-    corpus-wide recompute; the medical analog of POST /api/compounds/normalize."""
+    """Phase B only — map every PlantMedicinalUse's action_raw + free-text
+    indications to the controlled vocabularies (action_id + indication_ids).
+    Idempotent corpus-wide recompute, no LLM, so it's quick enough to run inline;
+    the medical analog of POST /api/compounds/normalize. Use POST /run to also
+    (re)build the vocabularies first."""
     result = await normalize_medical_uses(db)
     return {"status": "completed", **result}
 
