@@ -165,6 +165,12 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
     return out
 
 
+# iNat-RU atlas "grid cell" community places, e.g. "Квадрат В-01 (Владимирская
+# область)". Pure tiling artifacts that flood autocomplete and hijack a bare
+# oblast query — never a meaningful answer to "where can I find this plant".
+_GRID_CELL_RE = re.compile(r"^Квадрат\s", re.IGNORECASE)
+
+
 async def resolve_place(client: httpx.AsyncClient, query: str) -> dict | None:
     """Resolve a free-text place name (a district, town vicinity, region — any
     granularity) to an iNat ``place_id`` via ``GET /v1/places/autocomplete``.
@@ -173,9 +179,19 @@ async def resolve_place(client: httpx.AsyncClient, query: str) -> dict | None:
     queries — e.g. "Суздаль" ranks "Суздальский парк" (a point) above "Суздальский
     район". We instead take the candidate with the LARGEST ``bbox_area``, which is
     the district/region-sized place a "where can I find X around here" question
-    actually means. Returns ``None`` on no match or transport error so the caller
-    degrades gracefully. ``display_name`` is echoed back so the consumer can tell
-    the user which place was used (covers the deliberate imprecision)."""
+    actually means.
+
+    Caveat handled here: an iNat-RU atlas project tiles every oblast into uniform
+    "Квадрат X-NN (область)" grid cells. These are community places (no
+    ``admin_level``, no ``place_type`` — indistinguishable structurally from a
+    real район) and they FLOOD autocomplete for a bare oblast name, hijacking the
+    largest-bbox pick with a meaningless cell. We drop them by name so a district
+    query stays correct and an oblast query degrades to "not found" (the real
+    oblast boundary isn't surfaced for the Russian name anyway) rather than
+    silently returning a wrong grid cell. Returns ``None`` on no match or
+    transport error so the caller degrades gracefully. ``display_name`` is echoed
+    back so the consumer can tell the user which place was used (covers the
+    deliberate imprecision)."""
     try:
         resp = await client.get(f"{INAT_BASE}/places/autocomplete",
                                 params={"q": query}, headers=_HEADERS)
@@ -186,6 +202,7 @@ async def resolve_place(client: httpx.AsyncClient, query: str) -> dict | None:
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(f"iNat places error for {query!r}: {type(e).__name__}: {e}")
         return None
+    results = [p for p in results if not _GRID_CELL_RE.match(str(p.get("name") or ""))]
     if not results:
         return None
     best = max(results, key=lambda p: p.get("bbox_area") or 0.0)
