@@ -29,6 +29,8 @@ MODELS = {
     "recipe_extraction": settings.llm_model_long_context,   # qwen3-235b-2507 (precise extraction)
     "plant_extraction": settings.llm_model_long_context,    # qwen3-235b-2507 (herbalism monographs)
     "compound_extraction": settings.llm_model_long_context,  # qwen3-235b-2507 — the older default degenerates ("encoding: utf-8" / "}]}]" loops) on dense phytochemistry; the 2507 model extracts cleanly
+    "medical_action_vocab": settings.llm_model_long_context,    # qwen3-235b-2507 — the older default degenerates here too (emits a bare number like "0.000146484375" instead of {"actions":[...]}); the 2507 model canonicalizes cleanly
+    "medical_indication_vocab": settings.llm_model_long_context,  # qwen3-235b-2507 — same degeneration; needs the 2507 model for the archaic→modern bridge
     "text_cleanup": settings.llm_model_default,          # qwen3-235b (good Russian)
     "translation": settings.llm_model_default,           # qwen3-235b (pre-reform Russian)
     "ingredient_matching": settings.llm_model_lightweight,  # qwen3-32b (many small calls)
