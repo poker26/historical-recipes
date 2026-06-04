@@ -48,3 +48,17 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+
+  # === MCP server (consumer-facing retrieval surface) ===
+  # Reuses the backend image (same code + deps), like the worker, but runs the
+  # MCP Streamable HTTP server instead of uvicorn/worker.  Tools are thin wrappers
+  # over the backend REST API on the internal network — no SQL is duplicated.
+  # No published ports: nginx reaches it at mcp:8200 and exposes the public /mcp.
+  mcp:
+    build: ./backend
+    env_file: .env
+    command: python -m app.mcp.server
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

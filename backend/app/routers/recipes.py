@@ -18,10 +18,17 @@ router = APIRouter()
 async def list_recipes(
     category: str | None = None,
     book_id: uuid.UUID | None = None,
+    domain: str | None = None,
     q: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """List recipes with search and filters."""
+    """List recipes with search and filters.
+
+    ``domain`` filters by the SOURCE book's domain (via the Book join), separating
+    culinary recipes (``recipes``) from medicinal preparations harvested out of
+    herbalism/fungi books (отвары/настои/сборы). Recipes carry no domain of their
+    own — it is the book's — so this is the only way to split the two corpora.
+    """
     stmt = select(Recipe, Book.title, Book.author, Book.year).join(
         Book, Recipe.book_id == Book.id
     )
@@ -30,6 +37,8 @@ async def list_recipes(
         stmt = stmt.where(Recipe.category == category)
     if book_id:
         stmt = stmt.where(Recipe.book_id == book_id)
+    if domain:
+        stmt = stmt.where(Book.domain == domain.strip())
     if q:
         pattern = f"%{q}%"
         stmt = stmt.where(

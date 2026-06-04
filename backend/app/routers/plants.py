@@ -21,7 +21,7 @@ from app.models.plant import (
 )
 from app.services.plant_matching import relink_recipe_ingredients, merge_plants_by_latin_key
 from app.services.qdrant import delete_points
-from app.services.inaturalist import enrich_plants_inat
+from app.services.inaturalist import enrich_plants_inat, nearby_observations
 
 router = APIRouter()
 
@@ -269,6 +269,31 @@ async def plant_facets(db: AsyncSession = Depends(get_db)):
 
 def _book_title_map(books: list[Book]) -> dict[str, str]:
     return {str(b.id): b.title for b in books}
+
+
+@router.get("/{plant_id}/observations")
+async def plant_observations(
+    plant_id: uuid.UUID,
+    lat: float,
+    lng: float,
+    radius_km: float = 50.0,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """Live iNaturalist "find nearby observations" for one plant/fungus.
+
+    Resolves the plant's stored ``inat_taxon_id`` (set during enrichment) and asks
+    iNat for research-grade sightings of that taxon within ``radius_km`` of the
+    coordinate. A value-add over the corpus, NOT corpus data — attribution from
+    iNat is returned and must be displayed. Returns an empty set with a note if
+    the plant was never resolved to a taxon."""
+    plant = (await db.execute(select(Plant).where(Plant.id == plant_id))).scalar_one_or_none()
+    if plant is None:
+        raise HTTPException(status_code=404, detail="Plant not found")
+    if not plant.inat_taxon_id:
+        return {"taxon_id": None, "count": 0, "observations": [],
+                "note": "plant not resolved to an iNat taxon yet"}
+    return await nearby_observations(plant.inat_taxon_id, lat, lng, radius_km=radius_km, limit=limit)
 
 
 @router.get("/{plant_id}")

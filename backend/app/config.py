@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     temporal_namespace: str = "default"
     temporal_task_queue: str = "historical-recipes"
 
+    # Internal base URL of the FastAPI backend on the docker network. The MCP
+    # service (separate container, reuses this image) calls the existing REST API
+    # over this URL so the tool layer duplicates no SQL — all query logic stays
+    # in the routers. Override via env on prod if the service name differs.
+    internal_api_url: str = "http://backend:8000"
+
     # CORS
     cors_origins: list[str] = ["http://localhost:3000", "http://frontend:3000"]
 

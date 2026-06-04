@@ -150,6 +150,70 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
     return out
 
 
+async def nearby_observations(
+    taxon_id: int,
+    lat: float,
+    lng: float,
+    radius_km: float = 50.0,
+    limit: int = 20,
+) -> dict:
+    """Live "find nearby observations" lookup: research-grade iNat sightings of one
+    taxon within ``radius_km`` of a coordinate, newest first.
+
+    This is the geo dimension on top of the stored enrichment — the plant's
+    ``inat_taxon_id`` is resolved upstream (the caller passes it in), so this is a
+    pure passthrough to iNat's ``/observations`` with no DB access. Returns a
+    compact, attribution-bearing shape (iNat ToS requires displaying attribution).
+    Never raises: on any HTTP/throttle error it returns ``observations: []`` plus
+    an ``error`` string, so a consumer tool degrades gracefully.
+    """
+    params = {
+        "taxon_id": taxon_id,
+        "lat": lat,
+        "lng": lng,
+        "radius": radius_km,  # iNat radius is in km
+        "per_page": min(max(limit, 1), 50),
+        "order_by": "observed_on",
+        "order": "desc",
+        "quality_grade": "research",
+        "photos": "true",
+        "geo": "true",
+        "locale": "ru",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            resp = await client.get(f"{INAT_BASE}/observations", params=params, headers=_HEADERS)
+        except httpx.HTTPError as e:
+            logger.warning(f"iNat observations error for taxon {taxon_id}: {type(e).__name__}: {e}")
+            return {"taxon_id": taxon_id, "count": 0, "observations": [], "error": str(e)}
+        if resp.status_code != 200:
+            return {"taxon_id": taxon_id, "count": 0, "observations": [],
+                    "error": f"iNat HTTP {resp.status_code}"}
+        try:
+            results = resp.json().get("results", [])
+        except ValueError as e:
+            return {"taxon_id": taxon_id, "count": 0, "observations": [], "error": f"bad body: {e}"}
+
+    obs: list[dict] = []
+    for r in results:
+        photos = r.get("photos") or []
+        photo = photos[0] if photos else {}
+        user = r.get("user") or {}
+        obs.append({
+            "id": r.get("id"),
+            "observed_on": r.get("observed_on"),
+            "place_guess": r.get("place_guess"),
+            "location": r.get("location"),  # "lat,lng" string
+            "uri": r.get("uri"),
+            "observer": user.get("login"),
+            "quality_grade": r.get("quality_grade"),
+            "photo_url": photo.get("url"),
+            "photo_attribution": photo.get("attribution"),
+            "photo_license": photo.get("license_code"),
+        })
+    return {"taxon_id": taxon_id, "count": len(obs), "observations": obs}
+
+
 async def enrich_plants_inat(
     db: AsyncSession,
     dry_run: bool = True,
