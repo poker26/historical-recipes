@@ -31,8 +31,10 @@ from app.services.medical_matching import _split_atoms, _norm
 
 _LLM_HEARTBEAT_INTERVAL = 30  # seconds
 # Distinct raw terms per LLM call. Each term is short (an action word or a short
-# indication phrase), so a larger batch than the prose extractor fits comfortably.
-TERMS_PER_BATCH = 150
+# indication phrase). Kept modest: very large batches occasionally push the model
+# into a degenerate run (it once emitted an 8192-digit number that broke JSON
+# parsing). A bad batch is isolated (try/except below) and retried on re-run.
+TERMS_PER_BATCH = 80
 
 
 # --------------------------------------------------------------------------- #
@@ -253,55 +255,14 @@ async def build_medical_vocab(db: AsyncSession, commit: bool = True, progress_ca
     cb(f"Distinct action_raw: {len(actions_raw)}; distinct indication atoms: {len(indications_raw)}")
 
     # ---- Phase A.1: actions ----
-    actions_created = 0
-    a_batches = _batches(actions_raw, TERMS_PER_BATCH)
-    for bi, batch in enumerate(a_batches):
-        cb(f"Action batch {bi+1}/{len(a_batches)} ({len(batch)} terms)")
-        concepts = await _with_heartbeat(
-            _canonicalize(_ACTION_SYSTEM, "actions", batch, "medical_action_vocab"),
-            cb, f"Action batch {bi+1}/{len(a_batches)}")
-        for c in concepts:
-            if not isinstance(c, dict) or len(_str(c.get("name"))) < 2:
-                continue
-            parent_id = None
-            parent = _str(c.get("parent"))
-            if parent and parent.lower() != _str(c.get("name")).lower():
-                p = await _upsert_action(db, name=parent, system=_str(c.get("system")))
-                parent_id = p.id if p else None
-            a = await _upsert_action(
-                db, name=_str(c.get("name")), name_modern=_str(c.get("name_modern")),
-                system=_str(c.get("system")), synonyms=_str_list(c.get("synonyms")),
-                parent_id=parent_id)
-            if a is not None:
-                actions_created += 1
-        if commit:
-            await db.commit()
+    actions_created, action_fails = await _run_axis(
+        db, commit, cb, "Action", actions_raw, _ACTION_SYSTEM, "actions",
+        "medical_action_vocab", _apply_action)
 
     # ---- Phase A.2: indications ----
-    indications_created = 0
-    i_batches = _batches(indications_raw, TERMS_PER_BATCH)
-    for bi, batch in enumerate(i_batches):
-        cb(f"Indication batch {bi+1}/{len(i_batches)} ({len(batch)} terms)")
-        concepts = await _with_heartbeat(
-            _canonicalize(_INDICATION_SYSTEM, "indications", batch, "medical_indication_vocab"),
-            cb, f"Indication batch {bi+1}/{len(i_batches)}")
-        for c in concepts:
-            if not isinstance(c, dict) or len(_str(c.get("name"))) < 2:
-                continue
-            parent_id = None
-            parent = _str(c.get("parent"))
-            if parent and parent.lower() != _str(c.get("name")).lower():
-                p = await _upsert_indication(db, name=parent, system=_str(c.get("system")))
-                parent_id = p.id if p else None
-            i = await _upsert_indication(
-                db, name=_str(c.get("name")), name_modern=_str(c.get("name_modern")),
-                system=_str(c.get("system")), synonyms=_str_list(c.get("synonyms")),
-                archaic=_str_list(c.get("archaic")), definition=_str(c.get("definition")),
-                parent_id=parent_id)
-            if i is not None:
-                indications_created += 1
-        if commit:
-            await db.commit()
+    indications_created, indication_fails = await _run_axis(
+        db, commit, cb, "Indication", indications_raw, _INDICATION_SYSTEM, "indications",
+        "medical_indication_vocab", _apply_indication)
 
     action_total = (await db.execute(select(MedicinalAction))).scalars().all()
     indication_total = (await db.execute(select(Indication))).scalars().all()
@@ -310,6 +271,64 @@ async def build_medical_vocab(db: AsyncSession, commit: bool = True, progress_ca
         "indication_terms_in": len(indications_raw),
         "actions_upserted": actions_created,
         "indications_upserted": indications_created,
+        "action_batches_failed": action_fails,
+        "indication_batches_failed": indication_fails,
         "action_vocab_total": len(action_total),
         "indication_vocab_total": len(indication_total),
     }
+
+
+async def _apply_action(db, c: dict) -> bool:
+    parent_id = None
+    parent = _str(c.get("parent"))
+    if parent and parent.lower() != _str(c.get("name")).lower():
+        p = await _upsert_action(db, name=parent, system=_str(c.get("system")))
+        parent_id = p.id if p else None
+    a = await _upsert_action(
+        db, name=_str(c.get("name")), name_modern=_str(c.get("name_modern")),
+        system=_str(c.get("system")), synonyms=_str_list(c.get("synonyms")),
+        parent_id=parent_id)
+    return a is not None
+
+
+async def _apply_indication(db, c: dict) -> bool:
+    parent_id = None
+    parent = _str(c.get("parent"))
+    if parent and parent.lower() != _str(c.get("name")).lower():
+        p = await _upsert_indication(db, name=parent, system=_str(c.get("system")))
+        parent_id = p.id if p else None
+    i = await _upsert_indication(
+        db, name=_str(c.get("name")), name_modern=_str(c.get("name_modern")),
+        system=_str(c.get("system")), synonyms=_str_list(c.get("synonyms")),
+        archaic=_str_list(c.get("archaic")), definition=_str(c.get("definition")),
+        parent_id=parent_id)
+    return i is not None
+
+
+async def _run_axis(db, commit, cb, label, terms, system_prompt, axis_key, task, apply) -> tuple[int, int]:
+    """Canonicalize one axis batch-by-batch. A failed batch (LLM error or
+    unparseable degenerate response) is logged and skipped — prior batches are
+    already committed, and a re-run retries the skipped terms cumulatively — rather
+    than aborting the whole pass."""
+    created = 0
+    failed = 0
+    batches = _batches(terms, TERMS_PER_BATCH)
+    for bi, batch in enumerate(batches):
+        cb(f"{label} batch {bi+1}/{len(batches)} ({len(batch)} terms)")
+        try:
+            concepts = await _with_heartbeat(
+                _canonicalize(system_prompt, axis_key, batch, task),
+                cb, f"{label} batch {bi+1}/{len(batches)}")
+        except Exception as e:  # noqa: BLE001 — isolate a bad batch, keep going
+            failed += 1
+            cb(f"{label} batch {bi+1}/{len(batches)} FAILED: {type(e).__name__}: {e}")
+            await db.rollback()
+            continue
+        for c in concepts:
+            if not isinstance(c, dict) or len(_str(c.get("name"))) < 2:
+                continue
+            if await apply(db, c):
+                created += 1
+        if commit:
+            await db.commit()
+    return created, failed
