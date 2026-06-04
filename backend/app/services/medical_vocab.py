@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.plant import MedicinalAction, Indication, PlantMedicinalUse
 from app.services.llm import chat_completion_json
-from app.services.medical_matching import _split_atoms, _norm
+from app.services.medical_matching import _split_atoms, _norm, _build_index
 
 _LLM_HEARTBEAT_INTERVAL = 30  # seconds
 # Distinct raw terms per LLM call. Each term is short (an action word or a short
@@ -252,16 +252,29 @@ async def build_medical_vocab(db: AsyncSession, commit: bool = True, progress_ca
             ind_atoms.setdefault(_norm(atom), atom)
     indications_raw = sorted(ind_atoms.values())
 
-    cb(f"Distinct action_raw: {len(actions_raw)}; distinct indication atoms: {len(indications_raw)}")
+    # ---- resume: drop raw terms already covered by the current vocabulary ----
+    # Each run only canonicalizes the GAPS, so a re-run cheaply mops up batches a
+    # previous run lost to provider 429s instead of re-sending every term. A term
+    # is "covered" if it exact-matches an existing concept's name/modern/synonym
+    # (and, for indications, archaic) key.
+    existing_actions = (await db.execute(select(MedicinalAction))).scalars().all()
+    existing_inds = (await db.execute(select(Indication))).scalars().all()
+    a_exact, _ = _build_index(existing_actions, extra_key_attrs=("name_modern", "synonyms"))
+    i_exact, _ = _build_index(existing_inds, extra_key_attrs=("name_modern", "synonyms", "archaic"))
+    actions_todo = [t for t in actions_raw if _norm(t) not in a_exact]
+    indications_todo = [t for t in indications_raw if _norm(t) not in i_exact]
+
+    cb(f"Distinct action_raw: {len(actions_raw)} ({len(actions_todo)} uncovered); "
+       f"indication atoms: {len(indications_raw)} ({len(indications_todo)} uncovered)")
 
     # ---- Phase A.1: actions ----
     actions_created, action_fails = await _run_axis(
-        db, commit, cb, "Action", actions_raw, _ACTION_SYSTEM, "actions",
+        db, commit, cb, "Action", actions_todo, _ACTION_SYSTEM, "actions",
         "medical_action_vocab", _apply_action)
 
     # ---- Phase A.2: indications ----
     indications_created, indication_fails = await _run_axis(
-        db, commit, cb, "Indication", indications_raw, _INDICATION_SYSTEM, "indications",
+        db, commit, cb, "Indication", indications_todo, _INDICATION_SYSTEM, "indications",
         "medical_indication_vocab", _apply_indication)
 
     action_total = (await db.execute(select(MedicinalAction))).scalars().all()
@@ -315,20 +328,26 @@ async def _run_axis(db, commit, cb, label, terms, system_prompt, axis_key, task,
     batches = _batches(terms, TERMS_PER_BATCH)
     for bi, batch in enumerate(batches):
         cb(f"{label} batch {bi+1}/{len(batches)} ({len(batch)} terms)")
+        # Guard the WHOLE batch — LLM call, upserts and commit. A provider 429 that
+        # outlasts retries, a degenerate unparseable response, or a flush error on
+        # one bad concept rolls back just this batch and continues; prior batches
+        # are committed and a re-run retries the gap.
         try:
             concepts = await _with_heartbeat(
                 _canonicalize(system_prompt, axis_key, batch, task),
                 cb, f"{label} batch {bi+1}/{len(batches)}")
+            batch_created = 0
+            for c in concepts:
+                if not isinstance(c, dict) or len(_str(c.get("name"))) < 2:
+                    continue
+                if await apply(db, c):
+                    batch_created += 1
+            if commit:
+                await db.commit()
+            created += batch_created
         except Exception as e:  # noqa: BLE001 — isolate a bad batch, keep going
             failed += 1
             cb(f"{label} batch {bi+1}/{len(batches)} FAILED: {type(e).__name__}: {e}")
             await db.rollback()
             continue
-        for c in concepts:
-            if not isinstance(c, dict) or len(_str(c.get("name"))) < 2:
-                continue
-            if await apply(db, c):
-                created += 1
-        if commit:
-            await db.commit()
     return created, failed
