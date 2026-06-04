@@ -28,6 +28,19 @@ _WORD_RE = re.compile(r"[а-яёa-z0-9]+", re.IGNORECASE)
 # Split a free-text indications field into atoms: commas, semicolons, slashes,
 # newlines, and standalone conjunctions ("кашель и насморк").
 _ATOM_SPLIT_RE = re.compile(r"\s*(?:[,;/\n]|\bи\b|\bили\b)\s*", re.IGNORECASE)
+# Parenthetical/bracketed asides are stripped BEFORE the split — otherwise an open
+# paren straddling a comma fragments badly ("кровотечения (маточные" lost its ")").
+_PAREN_RE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
+# An atom that is only a staging/qualifier scrap ("III степени", "II стадии",
+# "острой формы") is not an indication on its own — drop it. Anchored, and only
+# numerals/punctuation may precede the stage word, so a real phrase that merely
+# ENDS in a stage word ("сердечная недостаточность III степени") is kept whole.
+_STAGING_RE = re.compile(r"^[ivx\d\W]*\b(?:стади|степен|форм|типа?|фаз)", re.IGNORECASE)
+# Numeral-only fragments ("III", "2", "1-2") carry no indication meaning.
+_NUMERIC_ONLY_RE = re.compile(r"^[ivx\d\W]+$", re.IGNORECASE)
+# An atom longer than this is a descriptive clause, not a clean concept; skip it
+# rather than pollute the vocabulary with a sentence.
+_MAX_ATOM_WORDS = 6
 
 
 def _norm(s: str | None) -> str:
@@ -39,12 +52,21 @@ def _tokens(s: str | None) -> frozenset[str]:
 
 
 def _split_atoms(s: str | None) -> list[str]:
-    """Break a free-text indications field into individual indication phrases."""
+    """Break a free-text indications field into individual, hygienic indication
+    phrases. Strips parenthetical asides, then drops staging/qualifier scraps
+    ("III степени"), numeral-only fragments and over-long descriptive clauses, so
+    both Phase A (vocab build) and Phase B (matching) see clean atoms."""
     out: list[str] = []
-    for part in _ATOM_SPLIT_RE.split(s or ""):
-        p = part.strip(" .—-—()[]")
-        if len(_norm(p)) >= 2:
-            out.append(p)
+    for part in _ATOM_SPLIT_RE.split(_PAREN_RE.sub(" ", s or "")):
+        p = part.strip(" .,:;«»\"'()[]—–-")
+        n = _norm(p)
+        if len(n) < 3:
+            continue
+        if _NUMERIC_ONLY_RE.match(p) or _STAGING_RE.match(p):
+            continue
+        if len(n.split()) > _MAX_ATOM_WORDS:
+            continue
+        out.append(p)
     return out
 
 

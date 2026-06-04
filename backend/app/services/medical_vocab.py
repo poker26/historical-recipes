@@ -105,8 +105,10 @@ legitimate reference knowledge (водянка = отёки/асцит; груд
 падучая = эпилепсия; антонов огонь = гангрена) — use it.
 
 Return a JSON object {"indications": [ ... ]} whose value is an array of canonical concepts. For each:
-- name: the canonical term — MODERN where a modern term exists (e.g. "отёки", "стенокардия", "эпилепсia" \
-→ use "эпилепсия"), nominative case. Keep a historical term as `name` only if there is no modern equivalent.
+- name: the canonical term — prefer a broad MODERN UMBRELLA concept where one exists, so that a general \
+query matches all its variants (водянка / асцит / отёк ног → "отёки"; грудная жаба → "стенокардия"; \
+"эпилепсia" → "эпилепсия"), nominative singular. Do not over-split into hyper-specific concepts when a \
+common umbrella covers them. Keep a historical term as `name` only when there is genuinely no modern equivalent.
 - name_modern: the explicit modern/clinical name when `name` is kept historical, else "".
 - parent: the broader group as a Russian phrase (e.g. "болезни органов дыхания", "болезни ЖКТ", \
 "кожные болезни", "болезни сердца и сосудов"); "" if this IS a group.
@@ -115,8 +117,11 @@ Return a JSON object {"indications": [ ... ]} whose value is an array of canonic
 - synonyms: array of the OTHER raw forms from my list that denote this same concept and are NOT archaic \
 (genitive forms like "кашля", prepositional phrases like "при кашле", OCR/spelling variants). Include every \
 non-archaic raw input you assign here except the one chosen as `name`.
-- archaic: array of the raw forms from my list that are PRE-MODERN names of this concept (водянка, грудная \
-жаба, золотуха, ...). This is the bridge — put archaic disease names here, modern variants in `synonyms`.
+- archaic: array ONLY of genuine PRE-MODERN Russian disease names from my list — terms a modern reader would \
+NOT recognise as a current medical word (водянка, грудная жаба, золотуха, падучая, антонов огонь, ломота, \
+чахотка). This is the bridge. Do NOT put here: modern spelling/grammar variants (those go in `synonyms`), \
+staging or qualifier scraps ("III степени"), numbers, or descriptive phrases. If you are unsure whether a \
+term is truly archaic, put it in `synonyms`, not here.
 - definition: a SHORT (one clause) gloss of the concept, only if useful; else "".
 
 Be conservative: drop strings too vague to be an indication ("болезни", "разные недуги"). Map EVERY clear \

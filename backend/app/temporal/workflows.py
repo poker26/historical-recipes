@@ -241,11 +241,18 @@ class MedicalNormalizerWorkflow:
         totals: dict = {"actions_created": 0, "actions_batches": 0,
                         "indications_created": 0, "indications_batches": 0}
         for axis in ("actions", "indications"):
-            prev_remaining = None
+            # Sweep the uncovered backlog by offset rather than always re-serving the
+            # sorted head: an atom the model declines to map sits at the head forever
+            # and would block every mappable atom behind it. We walk offset across a
+            # full pass, and only stop the axis when a WHOLE sweep fails to shrink the
+            # remaining count (the leftovers are genuinely unmappable) — not on a
+            # single unproductive batch, which is normal mid-sweep.
+            offset = 0
+            sweep_baseline = None  # uncovered count at the start of the current sweep
             for _ in range(max_batches):
                 res = await workflow.execute_activity(
                     medical_vocab_batch_activity,
-                    args=[axis, batch_size],
+                    args=[axis, batch_size, offset],
                     start_to_close_timeout=_LONG,
                     heartbeat_timeout=_HEARTBEAT,
                     retry_policy=_RETRY,
@@ -253,14 +260,19 @@ class MedicalNormalizerWorkflow:
                 totals[f"{axis}_created"] += res.get("created", 0)
                 totals[f"{axis}_batches"] += 1
                 remaining = res.get("remaining", 0)
+                total = res.get("total", 0)
                 totals[f"{axis}_remaining"] = remaining
-                if res.get("processed", 0) == 0 or remaining == 0:
+                if total == 0 or remaining == 0:
                     break
-                # Stall guard: if the uncovered count didn't shrink, the rest are
-                # terms the model keeps declining to map — stop rather than spin.
-                if prev_remaining is not None and remaining >= prev_remaining:
-                    break
-                prev_remaining = remaining
+                if sweep_baseline is None:
+                    sweep_baseline = total
+                offset += batch_size
+                if offset >= total:
+                    # completed a full pass over the backlog
+                    if remaining >= sweep_baseline:
+                        break  # a whole sweep mapped nothing new — the rest is unmappable
+                    sweep_baseline = remaining
+                    offset = 0
 
         if normalize:
             totals["normalize"] = await workflow.execute_activity(

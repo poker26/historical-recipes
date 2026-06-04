@@ -1797,30 +1797,39 @@ async def ping_activity(name: str) -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 @activity.defn
-async def medical_vocab_batch_activity(axis: str, batch_size: int = 80) -> dict:
+async def medical_vocab_batch_activity(axis: str, batch_size: int = 80,
+                                       offset: int = 0) -> dict:
     """One durable batch of Phase-A medical-vocab canonicalization for ``axis``
     ("actions" | "indications").
 
-    Recomputes the UNCOVERED raw terms, canonicalizes the first ``batch_size`` of
-    them via the LLM and upserts the concepts. Because processing a term marks it
-    covered, repeated calls drain the backlog — the workflow loops until
-    ``remaining`` stops shrinking. Lets exceptions propagate so a provider 429 that
-    outlasts the LLM client's own retries becomes a retriable Temporal attempt
-    rather than a silently-dropped batch.
+    Recomputes the UNCOVERED raw terms and canonicalizes the ``batch_size`` slice
+    starting at ``offset`` via the LLM, upserting the concepts. The workflow walks
+    ``offset`` across the whole backlog (a "sweep") rather than always re-serving
+    the sorted head: an atom the model declines to map would otherwise sit at the
+    head forever and block every mappable atom behind it. ``total`` is the uncovered
+    count before this batch, so the workflow knows when a sweep is complete. Lets
+    exceptions propagate so a provider 429 that outlasts the LLM client's own
+    retries becomes a retriable Temporal attempt rather than a silently-dropped batch.
     """
     from app.services.medical_vocab import gather_uncovered, process_vocab_batch
 
     async with async_session() as db:
         uncovered = await gather_uncovered(db, axis)
-        if not uncovered:
+        total = len(uncovered)
+        if total == 0:
             _hb(f"medical vocab [{axis}]: nothing uncovered")
-            return {"axis": axis, "processed": 0, "created": 0, "remaining": 0}
-        batch = uncovered[:batch_size]
-        _hb(f"medical vocab [{axis}]: {len(uncovered)} uncovered, canonicalizing {len(batch)}")
+            return {"axis": axis, "processed": 0, "created": 0, "remaining": 0, "total": 0}
+        if offset >= total:
+            # the backlog shrank below this offset mid-sweep — nothing here to do
+            _hb(f"medical vocab [{axis}]: offset {offset} past end ({total} uncovered)")
+            return {"axis": axis, "processed": 0, "created": 0, "remaining": total, "total": total}
+        batch = uncovered[offset:offset + batch_size]
+        _hb(f"medical vocab [{axis}]: {total} uncovered, canonicalizing {len(batch)} @ offset {offset}")
         created = await process_vocab_batch(db, axis, batch)
         remaining = len(await gather_uncovered(db, axis))
         _hb(f"medical vocab [{axis}]: +{created} concepts, {remaining} still uncovered")
-        return {"axis": axis, "processed": len(batch), "created": created, "remaining": remaining}
+        return {"axis": axis, "processed": len(batch), "created": created,
+                "remaining": remaining, "total": total}
 
 
 @activity.defn
