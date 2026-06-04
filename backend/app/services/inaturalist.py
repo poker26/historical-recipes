@@ -21,7 +21,7 @@ import httpx
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.plant import Plant
+from app.models.plant import Plant, PlantBookMention
 
 logger = logging.getLogger(__name__)
 
@@ -82,15 +82,22 @@ def _pick_taxon(results: list[dict], wanted: str, iconic: str | None = None) -> 
 
 async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic: str | None = None) -> dict | None:
     """Resolve one Latin name to {taxon_id, photo_url, photo_attribution,
-    photo_license, common_name} or None if no usable match. Photo fields are
-    None when the species has no photo or its license isn't reusable.
+    photo_license, common_name}. Photo fields are None when the species has no
+    photo or its license isn't reusable.
 
-    On HTTP 429 (iNat throttle) backs off and retries a few times, honoring a
-    ``Retry-After`` header when present; if still throttled, returns None so the
-    plant stays unsynced and gets picked up on a later pass."""
+    Return contract distinguishes two "no photo" cases so the corpus sweep can
+    terminate instead of re-querying the same plants forever:
+
+    * ``None``                → TRANSIENT failure (HTTP error, 429 throttle,
+      bad/empty response). Caller leaves the plant UNSYNCED to retry later.
+    * ``{"taxon_id": None}``  → DEFINITIVE no usable match (unrecoverable Latin
+      name, or iNat has no such taxon). Caller marks it SYNCED so we stop
+      hitting iNat for it.
+
+    On HTTP 429 backs off and retries a few times, honoring ``Retry-After``."""
     query = _clean_binomial(name_latin)
     if not query:
-        return None
+        return {"taxon_id": None}  # unusable Latin (abbrev/genus-only) — never resolvable
     params = {"q": query, "rank": "species", "is_active": "true", "per_page": 5, "locale": "ru"}
     if iconic:
         params["iconic_taxa"] = iconic
@@ -121,7 +128,7 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
 
     taxon = _pick_taxon(results, query, iconic=iconic)
     if not taxon:
-        return None
+        return {"taxon_id": None}  # iNat has no matching taxon in the right kingdom
 
     out = {
         "taxon_id": taxon.get("id"),
@@ -149,22 +156,37 @@ async def enrich_plants_inat(
     limit: int | None = None,
     force: bool = False,
     pace_seconds: float = 1.6,
+    book_id=None,
+    progress=None,
 ) -> dict:
-    """Corpus-wide enrichment pass. Resolves each plant's ``name_latin`` to an
-    iNat taxon and stores a license-clean photo. Idempotent & resumable: by
-    default only touches plants not yet synced (``inat_synced_at`` NULL); pass
-    ``force=True`` to refresh everything. ``limit`` bounds one call so it stays
-    under proxy timeouts — run repeatedly until ``remaining`` hits 0.
+    """Enrichment pass. Resolves each plant's ``name_latin`` to an iNat taxon and
+    stores a license-clean photo. Idempotent & resumable: by default only touches
+    plants not yet synced (``inat_synced_at`` NULL); pass ``force=True`` to refresh
+    everything. ``limit`` bounds one call so it stays under proxy timeouts.
+
+    ``book_id`` scopes the pass to plants mentioned in one book — the per-book
+    pipeline step uses this so a freshly-ingested book enriches only its own new
+    plants. ``progress(done, total, name)`` is an optional callback (the Temporal
+    activity wires it to ``activity.heartbeat``).
+
+    Termination: a DEFINITIVE no-match marks the plant synced (so the corpus
+    sweep eventually drains ``remaining`` to a floor of only transiently-throttled
+    plants), while a transient throttle leaves it unsynced to retry on a later
+    pass — counted separately as ``throttled``.
     """
     stmt = select(Plant).where(Plant.name_latin.isnot(None))
     if not force:
         stmt = stmt.where(Plant.inat_synced_at.is_(None))
+    if book_id is not None:
+        stmt = stmt.where(Plant.id.in_(
+            select(PlantBookMention.plant_id).where(PlantBookMention.book_id == book_id)
+        ))
     stmt = stmt.order_by(Plant.name)
     if limit:
         stmt = stmt.limit(limit)
     plants = (await db.execute(stmt)).scalars().all()
 
-    processed = taxa_resolved = photos_set = no_match = 0
+    processed = taxa_resolved = photos_set = no_match = throttled = 0
     plan: list[dict] = []
     now = datetime.now(timezone.utc)
 
@@ -173,8 +195,14 @@ async def enrich_plants_inat(
             processed += 1
             iconic = _ICONIC_FOR_KINGDOM.get(p.kingdom or "растение", "Plantae")
             res = await resolve_taxon_photo(client, p.name_latin, iconic=iconic)
-            if res is None or not res.get("taxon_id"):
+            if res is None:
+                # Transient (throttle/HTTP): leave unsynced so a later pass retries.
+                throttled += 1
+            elif not res.get("taxon_id"):
+                # Definitive no match: mark synced so we stop re-querying iNat for it.
                 no_match += 1
+                if not dry_run:
+                    p.inat_synced_at = now
             else:
                 taxa_resolved += 1
                 if res.get("photo_url"):
@@ -194,6 +222,11 @@ async def enrich_plants_inat(
                         "has_photo": bool(res.get("photo_url")),
                         "license": res.get("photo_license"),
                     })
+            if progress is not None:
+                try:
+                    progress(i + 1, len(plants), p.name)
+                except Exception:
+                    pass
             # Pace to respect ≤60 req/min (skip the trailing sleep).
             if i < len(plants) - 1:
                 await asyncio.sleep(pace_seconds)
@@ -201,10 +234,15 @@ async def enrich_plants_inat(
     if not dry_run:
         await db.commit()
 
-    remaining = (await db.execute(
+    remaining_stmt = (
         select(func.count()).select_from(Plant)
         .where(Plant.name_latin.isnot(None), Plant.inat_synced_at.is_(None))
-    )).scalar()
+    )
+    if book_id is not None:
+        remaining_stmt = remaining_stmt.where(Plant.id.in_(
+            select(PlantBookMention.plant_id).where(PlantBookMention.book_id == book_id)
+        ))
+    remaining = (await db.execute(remaining_stmt)).scalar()
 
     summary = {
         "dry_run": dry_run,
@@ -212,6 +250,7 @@ async def enrich_plants_inat(
         "taxa_resolved": taxa_resolved,
         "photos_set": photos_set,
         "no_match": no_match,
+        "throttled": throttled,
         "remaining": remaining,
         "plan": plan,
     }

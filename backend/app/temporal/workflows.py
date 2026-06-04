@@ -25,6 +25,7 @@ with workflow.unsafe.imports_passed_through():
         normalize_corpus_activity,
         match_ingredients_activity,
         index_activity,
+        enrich_inat_activity,
         ping_activity,
     )
 
@@ -87,6 +88,9 @@ PIPELINE_STEPS_HERBALISM = [
     ("extract_recipes", extract_recipes_activity, _LONG, _HEARTBEAT),
     ("match_ingredients", match_ingredients_activity, _SHORT, None),
     ("index", index_activity, _LONG, _HEARTBEAT),
+    # Tail step: pull iNat photos for this book's new plants. Best-effort — the
+    # activity never raises, so a throttled/offline iNat can't fail the pipeline.
+    ("enrich_inat", enrich_inat_activity, _LONG, _HEARTBEAT),
 ]
 # Reference-normalizer domain: a property-first reference (e.g. a phytochemistry
 # monograph) whose product is a controlled vocabulary + a corpus-wide normalize,
@@ -161,6 +165,56 @@ class BookPipelineWorkflow:
             workflow.logger.info(f"pipeline step done: {name} -> {res}")
 
         return results
+
+
+@workflow.defn
+class InatEnrichmentWorkflow:
+    """Corpus-wide iNaturalist enrichment as a durable, resumable sweep.
+
+    Replaces the ad-hoc detached shell loop that kept dying on SSH drops, 429
+    storms and backend redeploys. Runs paced batches (each a separate, retriable
+    activity) until no unsynced plants remain — surviving worker restarts via
+    Temporal. Trigger manually (web button) or on a schedule.
+
+    Termination: stops when ``remaining`` hits 0 (definitive no-matches are
+    marked synced by the activity, so it actually drains), when a batch processes
+    nothing, or — under sustained throttling where a whole batch is 429'd (no
+    resolves, no definitive no-matches) — after a few backed-off stalls.
+    """
+
+    @workflow.run
+    async def run(self, batch_size: int = 120, max_batches: int = 200) -> dict:
+        totals = {"processed": 0, "taxa_resolved": 0, "photos_set": 0,
+                  "no_match": 0, "throttled": 0, "batches": 0, "remaining": None}
+        stall = 0
+        for _ in range(max_batches):
+            res = await workflow.execute_activity(
+                enrich_inat_activity,
+                args=[None, batch_size, False],
+                start_to_close_timeout=_LONG,
+                heartbeat_timeout=_HEARTBEAT,
+                retry_policy=_RETRY,
+            )
+            totals["processed"] += res.get("processed", 0)
+            totals["taxa_resolved"] += res.get("taxa_resolved", 0)
+            totals["photos_set"] += res.get("photos_set", 0)
+            totals["no_match"] += res.get("no_match", 0)
+            totals["throttled"] += res.get("throttled", 0)
+            totals["batches"] += 1
+            totals["remaining"] = res.get("remaining")
+
+            if res.get("remaining") in (0, -1) or res.get("processed", 0) == 0:
+                break
+            # Whole batch throttled — iNat is rate-limiting hard. Back off and
+            # bail after repeated stalls so we don't spin indefinitely.
+            if res.get("taxa_resolved", 0) == 0 and res.get("no_match", 0) == 0:
+                stall += 1
+                if stall >= 4:
+                    break
+                await workflow.sleep(timedelta(minutes=3))
+            else:
+                stall = 0
+        return totals
 
 
 @workflow.defn

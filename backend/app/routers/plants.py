@@ -78,6 +78,37 @@ async def enrich_inat(
     return {"status": "completed", **result}
 
 
+@router.post("/enrich-inat/run")
+async def run_enrich_inat():
+    """Start the durable corpus-wide iNat enrichment sweep (Temporal).
+
+    The robust replacement for hammering ``/enrich-inat`` in a shell loop: one
+    ``InatEnrichmentWorkflow`` paces through every unsynced plant in batches,
+    retries 429s, and resumes after a worker restart. Rejects a second start
+    while one is already running."""
+    from temporalio.service import RPCError
+    from app.config import settings
+    from app.temporal.client import get_temporal_client
+    from app.temporal.workflows import InatEnrichmentWorkflow
+
+    client = await get_temporal_client()
+    wf_id = "inat-enrichment"
+    try:
+        desc = await client.get_workflow_handle(wf_id).describe()
+        if desc.status and desc.status.name == "RUNNING":
+            raise HTTPException(status_code=409, detail="iNat enrichment already running")
+    except RPCError:
+        pass  # no existing workflow — fine
+
+    handle = await client.start_workflow(
+        InatEnrichmentWorkflow.run,
+        args=[],
+        id=wf_id,
+        task_queue=settings.temporal_task_queue,
+    )
+    return {"status": "started", "workflow_id": handle.id, "run_id": handle.result_run_id}
+
+
 def _plant_summary(p: Plant, uses_count: int = 0) -> dict:
     return {
         "id": str(p.id),

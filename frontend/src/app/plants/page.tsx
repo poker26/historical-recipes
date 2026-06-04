@@ -12,6 +12,18 @@ export default function PlantsPage() {
   const [action, setAction] = useState("");
   const [toxicOnly, setToxicOnly] = useState(false);
   const [facets, setFacets] = useState<PlantFacets | null>(null);
+  const [enrichMsg, setEnrichMsg] = useState<string | null>(null);
+
+  const startEnrichment = async () => {
+    setEnrichMsg("Запускаю обогащение iNaturalist…");
+    try {
+      await api.runInatEnrichment();
+      setEnrichMsg("Обогащение запущено (Temporal). Фото подтянутся по мере обработки.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setEnrichMsg(msg.includes("409") ? "Обогащение уже выполняется." : `Ошибка: ${msg}`);
+    }
+  };
 
   useEffect(() => {
     api.getPlantFacets().then(setFacets).catch(console.error);
@@ -33,7 +45,17 @@ export default function PlantsPage() {
     <>
       <div className="page-header">
         <h1>Herbarium</h1>
-        <span style={{ color: "var(--text-muted)" }}>{plants.length} plants</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
+          {enrichMsg && <span style={{ color: "var(--text-muted)", fontSize: 13 }}>{enrichMsg}</span>}
+          <span style={{ color: "var(--text-muted)" }}>{plants.length} plants</span>
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={startEnrichment}
+            title="Подтянуть недостающие фото растений из iNaturalist (фоновый Temporal-процесс)"
+          >
+            📷 iNaturalist
+          </button>
+        </div>
       </div>
 
       <div className="search-bar" style={{ flexWrap: "wrap", gap: 8 }}>

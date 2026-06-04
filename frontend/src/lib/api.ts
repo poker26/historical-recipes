@@ -405,6 +405,10 @@ export const api = {
   },
   getPlantFacets: () => apiFetch<PlantFacets>("/api/plants/facets"),
   getPlant: (id: string) => apiFetch<PlantDetail>(`/api/plants/${id}`),
+  // Start the durable corpus-wide iNaturalist photo enrichment (Temporal sweep).
+  runInatEnrichment: () =>
+    apiFetch<{ status: string; workflow_id: string; run_id: string }>(
+      "/api/plants/enrich-inat/run", { method: "POST" }),
 
   // Compounds (controlled phytochemistry vocabulary)
   listCompounds: () => apiFetch<Compound[]>("/api/compounds"),

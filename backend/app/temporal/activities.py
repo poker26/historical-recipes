@@ -182,6 +182,50 @@ async def convert_activity(book_id: str) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# iNaturalist enrichment (pipeline tail step + standalone corpus sweep)
+# ──────────────────────────────────────────────────────────────────────
+
+@activity.defn
+async def enrich_inat_activity(book_id: str | None = None, limit: int = 150,
+                               force: bool = False) -> dict:
+    """Durable iNaturalist enrichment. Two callers:
+
+    * as the tail step of the herbalism/fungi pipeline it receives the book_id
+      and enriches only that book's freshly-added (latin-named, unsynced) plants;
+    * ``InatEnrichmentWorkflow`` calls it with ``book_id=None`` to drain the whole
+      corpus in paced batches.
+
+    Idempotent (only unsynced plants) and resumable. iNat 429s are absorbed by
+    the service's backoff; any unexpected error is swallowed into the summary so
+    a transient iNat outage never fails an otherwise-successful book pipeline —
+    the plants simply stay unsynced for a later sweep.
+    """
+    from app.services.inaturalist import enrich_plants_inat
+
+    bid = uuid.UUID(book_id) if book_id else None
+
+    def _progress(done, total, name):
+        _hb(f"iNat enrich {done}/{total}: {name}")
+
+    try:
+        async with async_session() as db:
+            summary = await enrich_plants_inat(
+                db, dry_run=False, limit=limit, force=force,
+                book_id=bid, progress=_progress,
+            )
+    except Exception as e:  # noqa: BLE001 — best-effort enrichment, never fatal
+        logger.warning(f"iNat enrich activity error: {type(e).__name__}: {e}")
+        return {"error": f"{type(e).__name__}: {e}", "processed": 0,
+                "taxa_resolved": 0, "photos_set": 0, "no_match": 0,
+                "throttled": 0, "remaining": -1}
+
+    _hb(f"iNat enrich done: taxa={summary['taxa_resolved']} photos={summary['photos_set']} "
+        f"no_match={summary['no_match']} throttled={summary['throttled']} "
+        f"remaining={summary['remaining']}")
+    return summary
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Step 1: Classify
 # ──────────────────────────────────────────────────────────────────────
 
