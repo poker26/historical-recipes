@@ -5,10 +5,12 @@ Design notes (validated against the live API):
 - The bridge is ALWAYS ``name_latin`` → ``taxon_id`` via ``GET /v1/taxa?q=``.
   Searching observations by name directly is fuzzy and returns wrong species.
 - iNat asks for ≤60 req/min; the corpus pass paces itself with a sleep.
-- The product may be commercial, so we only persist a photo whose ``license_code``
-  permits that (CC0 / CC-BY / CC-BY-SA). Other photos (CC *-NC, *-ND, or
-  All-Rights-Reserved/None) are skipped — but we still record ``inat_taxon_id``
-  so the future "find nearby observations" feature works regardless.
+- Photos are shown only on the internal (mTLS-locked) herbarium admin UI as a
+  curation aid, not as resold data, so we persist any Creative-Commons-licensed
+  default photo (``DISPLAY_OK_LICENSES``, incl. the *-NC / *-ND variants — CC-BY-NC
+  is the commonest license on iNat). Only All-Rights-Reserved / unlicensed photos
+  are skipped. The stored ``photo_license`` lets a future paid/public surface
+  re-tier down to the commercial-safe subset without re-fetching.
 - Attribution is always stored and must always be displayed.
 """
 
@@ -30,7 +32,20 @@ INAT_BASE = "https://api.inaturalist.org/v1"
 _HEADERS = {"User-Agent": "historical-recipes/1.0 (herbarium enrichment; contact via hist.begemot26.ru)"}
 
 # Licenses we may reuse in a possibly-commercial product (always with attribution).
+# Kept for future tiering: when photos ever surface in the paid/public product we
+# filter the served set down to this subset.
 COMMERCIAL_OK_LICENSES = {"cc0", "cc-by", "cc-by-sa"}
+
+# Licenses we accept for DISPLAY on the internal (mTLS-locked) herbarium admin UI.
+# Photos here are a curation aid, not resold data, so any Creative Commons license
+# is fine as long as attribution is shown (which we always store). This deliberately
+# includes the *-NC / *-ND variants (CC-BY-NC is by far the commonest license on
+# iNat). All-Rights-Reserved / unlicensed (null code) is still skipped. The stored
+# `photo_license` lets us re-tier to COMMERCIAL_OK_LICENSES later without re-fetching.
+DISPLAY_OK_LICENSES = {
+    "cc0", "cc-by", "cc-by-sa", "cc-by-nd",
+    "cc-by-nc", "cc-by-nc-sa", "cc-by-nc-nd",
+}
 
 # Constrain matches to the right kingdom so an epithet collision (e.g. a plant
 # and an animal both named "* japonica") can never pull in the wrong creature.
@@ -139,7 +154,7 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
     }
     photo = taxon.get("default_photo") or {}
     license_code = (photo.get("license_code") or "").lower()
-    if photo and license_code in COMMERCIAL_OK_LICENSES:
+    if photo and license_code in DISPLAY_OK_LICENSES:
         # medium_url (~500px) is the display size; the frontend swaps "medium"
         # → "square" for the list thumbnail.
         out["photo_url"] = photo.get("medium_url") or photo.get("url")
