@@ -1,0 +1,150 @@
+"""`/api/medical` — the medical-normalizer's corpus operations + read surface.
+
+Two corpus-wide maintenance ops (mirroring `/api/compounds`):
+
+- ``POST /build-vocab`` (Phase A) canonicalizes the distinct ``action_raw`` and
+  ``indications`` atoms the corpus has accumulated into the ``MedicinalAction`` /
+  ``Indication`` vocabularies, with the archaic→modern bridge.
+- ``POST /normalize`` (Phase B) re-derives ``action_id`` + ``indication_ids`` on
+  every ``PlantMedicinalUse`` from those vocabularies. Idempotent full recompute.
+
+Plus a read surface over the vocabularies for the admin UI / MCP layer.
+"""
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select, func, or_
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.models.plant import MedicinalAction, Indication, PlantMedicinalUse, Plant
+from app.services.medical_vocab import build_medical_vocab
+from app.services.medical_matching import normalize_medical_uses
+
+router = APIRouter()
+
+
+@router.post("/build-vocab")
+async def build_vocab(db: AsyncSession = Depends(get_db)):
+    """Phase A — corpus-bootstrap the action + indication vocabularies from the
+    distinct raw strings already in plant_medicinal_uses. Cumulative & idempotent;
+    re-run after loading new phytotherapy books to fold in their new terms."""
+    result = await build_medical_vocab(db)
+    return {"status": "completed", **result}
+
+
+@router.post("/normalize")
+async def normalize(db: AsyncSession = Depends(get_db)):
+    """Phase B — map every PlantMedicinalUse's action_raw + free-text indications
+    to the controlled vocabularies (action_id + indication_ids). Idempotent
+    corpus-wide recompute; the medical analog of POST /api/compounds/normalize."""
+    result = await normalize_medical_uses(db)
+    return {"status": "completed", **result}
+
+
+@router.get("/actions")
+async def list_actions(db: AsyncSession = Depends(get_db)):
+    """The action vocabulary with how many use-facts each term normalizes."""
+    counts = dict((aid, n) for aid, n in (await db.execute(
+        select(PlantMedicinalUse.action_id, func.count())
+        .where(PlantMedicinalUse.action_id.isnot(None))
+        .group_by(PlantMedicinalUse.action_id)
+    )).all())
+    rows = (await db.execute(select(MedicinalAction).order_by(MedicinalAction.name))).scalars().all()
+    return [
+        {
+            "id": str(a.id),
+            "name": a.name,
+            "name_modern": a.name_modern,
+            "parent_id": str(a.parent_id) if a.parent_id else None,
+            "system": a.system,
+            "synonyms": a.synonyms or [],
+            "linked_facts": counts.get(a.id, 0),
+        }
+        for a in rows
+    ]
+
+
+@router.get("/indications")
+async def list_indications(db: AsyncSession = Depends(get_db)):
+    """The indication vocabulary. ``linked_facts`` counts uses whose
+    indication_ids array contains the concept (via && over the GIN index)."""
+    rows = (await db.execute(select(Indication).order_by(Indication.name))).scalars().all()
+    counts: dict[uuid.UUID, int] = {}
+    for ind in rows:
+        n = (await db.execute(
+            select(func.count()).select_from(PlantMedicinalUse)
+            .where(PlantMedicinalUse.indication_ids.any(ind.id))
+        )).scalar_one()
+        counts[ind.id] = n
+    return [
+        {
+            "id": str(i.id),
+            "name": i.name,
+            "name_modern": i.name_modern,
+            "parent_id": str(i.parent_id) if i.parent_id else None,
+            "system": i.system,
+            "synonyms": i.synonyms or [],
+            "archaic": i.archaic or [],
+            "definition": i.definition,
+            "linked_facts": counts.get(i.id, 0),
+        }
+        for i in rows
+    ]
+
+
+@router.get("/indications/{indication_id}")
+async def get_indication(indication_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """A single indication concept: its archaic bridge names, its place in the
+    hierarchy, and the plants whose medicinal uses normalize to it."""
+    ind = (await db.execute(
+        select(Indication).where(Indication.id == indication_id)
+    )).scalar_one_or_none()
+    if ind is None:
+        raise HTTPException(status_code=404, detail="Indication not found")
+
+    parent = None
+    if ind.parent_id:
+        p = (await db.execute(
+            select(Indication).where(Indication.id == ind.parent_id)
+        )).scalar_one_or_none()
+        if p is not None:
+            parent = {"id": str(p.id), "name": p.name}
+
+    children = (await db.execute(
+        select(Indication).where(Indication.parent_id == ind.id).order_by(Indication.name)
+    )).scalars().all()
+
+    # Plants treated for this indication (concept + its descendants).
+    concept_ids = [ind.id] + [ch.id for ch in children]
+    fact_rows = (await db.execute(
+        select(PlantMedicinalUse, Plant)
+        .join(Plant, PlantMedicinalUse.plant_id == Plant.id)
+        .where(or_(*[PlantMedicinalUse.indication_ids.any(cid) for cid in concept_ids]))
+        .order_by(Plant.name)
+    )).all()
+    plants: dict[str, dict] = {}
+    for use, plant in fact_rows:
+        pid = str(plant.id)
+        entry = plants.setdefault(pid, {
+            "id": pid, "name": plant.name, "name_latin": plant.name_latin,
+            "parts": [], "raw_indications": [],
+        })
+        if use.part and use.part not in entry["parts"]:
+            entry["parts"].append(use.part)
+        if use.indications and use.indications not in entry["raw_indications"]:
+            entry["raw_indications"].append(use.indications)
+
+    return {
+        "id": str(ind.id),
+        "name": ind.name,
+        "name_modern": ind.name_modern,
+        "parent": parent,
+        "parent_id": str(ind.parent_id) if ind.parent_id else None,
+        "system": ind.system,
+        "synonyms": ind.synonyms or [],
+        "archaic": ind.archaic or [],
+        "definition": ind.definition,
+        "children": [{"id": str(ch.id), "name": ch.name} for ch in children],
+        "plants": list(plants.values()),
+    }

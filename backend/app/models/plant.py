@@ -69,7 +69,39 @@ class MedicinalAction(Base):
     parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("medicinal_actions.id", ondelete="SET NULL"))
     name: Mapped[str] = mapped_column(Text, unique=True)         # canonical action term, e.g. "мочегонное"
     name_modern: Mapped[str | None] = mapped_column(Text)        # modern/clinical synonym, e.g. "диуретическое"
+    synonyms: Mapped[list[str] | None] = mapped_column(ARRAY(String))  # alternate spellings to match action_raw against
     system: Mapped[str | None] = mapped_column(String(50))       # body system tag: ЖКТ, ССС, ЦНС, дыхание, ...
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
+
+
+class Indication(Base):
+    """Controlled, hierarchical vocabulary of medicinal indications (показания) —
+    what a remedy is used *for* (symptoms and conditions).
+
+    The disease/symptom analog of ``MedicinalAction``: a top-level group (e.g.
+    "болезни органов дыхания", ``parent_id`` NULL) with concrete indications (e.g.
+    "кашель") pointing at their group. Built/grown by the medical-normalizer pass
+    from the free-text ``PlantMedicinalUse.indications`` already in the corpus,
+    then used to normalize those strings so the catalogue can answer "какие
+    растения при кашле".
+
+    Its headline field is ``archaic``: pre-modern names of the same concept
+    (водянка → отёки, грудная жаба → стенокардия, золотуха → скрофулёз). A query
+    for either an archaic or a modern term resolves to the same concept, bridging
+    a historical лечебник to a modern question.
+    """
+
+    __tablename__ = "indications"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("indications.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(Text, unique=True)         # canonical term (modern where one exists), e.g. "отёки"
+    name_modern: Mapped[str | None] = mapped_column(Text)        # explicit modern/clinical name if `name` kept historical
+    synonyms: Mapped[list[str] | None] = mapped_column(ARRAY(String))  # alternate spellings/forms
+    archaic: Mapped[list[str] | None] = mapped_column(ARRAY(String))   # archaic names mapped to this concept (the bridge)
+    system: Mapped[str | None] = mapped_column(String(50))      # body system: дыхание/ЖКТ/ССС/ЦНС/кожа/мочеполовая/...
+    definition: Mapped[str | None] = mapped_column(Text)
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
 
 
 class Compound(Base):
@@ -109,6 +141,7 @@ class PlantMedicinalUse(Base):
     action_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("medicinal_actions.id", ondelete="SET NULL"))
     action_raw: Mapped[str | None] = mapped_column(Text)         # action as written, before normalization to action_id
     indications: Mapped[str | None] = mapped_column(Text)        # what it treats: "лихорадка, кашель"
+    indication_ids: Mapped[list[uuid.UUID] | None] = mapped_column(ARRAY(UUID(as_uuid=True)))  # normalized concepts (free text → Indication ids)
     preparation: Mapped[str | None] = mapped_column(String(50))  # настой / отвар / настойка / мазь / припарка / сок
     dosage: Mapped[str | None] = mapped_column(Text)             # method & dose of use
     contraindications: Mapped[str | None] = mapped_column(Text)

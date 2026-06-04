@@ -101,7 +101,9 @@ async def search_plants(
             "дубильные вещества", "алкалоиды".
         action: medicinal action (normalized vocabulary + raw), e.g. "седативное".
             Use list_vocabulary("actions") to see valid values.
-        indication: what it is used for (free text over indications).
+        indication: what it is used for — a symptom/disease. Resolved through the
+            indication vocabulary incl. the archaic→modern bridge ("водянка" finds
+            "отёки"), with a free-text fallback. Use find_indication to see concepts.
         family: botanical/fungal family (Russian or Latin), e.g. "Розоцветные".
         toxic: True → only toxic taxa, False → only non-toxic.
         edibility: "съедобно" | "условно-съедобно" | "несъедобно" | "ядовито".
@@ -237,6 +239,95 @@ async def get_compound(compound_id: str) -> dict:
     with get_plant(id)."""
     _record_usage("get_compound", "discovery")
     return await _request("GET", f"/api/compounds/{compound_id}")
+
+
+@mcp.tool()
+async def find_indication(q: str | None = None, limit: int = 50) -> list | dict:
+    """Browse the controlled INDICATION vocabulary (показания: what a remedy is used
+    FOR — symptoms and diseases) with hierarchy, modern/archaic names and how many
+    use-facts each concept normalizes. Its headline is the archaic→modern BRIDGE:
+    "водянка" lives under the modern concept "отёки", so a 19th-c. term and a modern
+    one resolve to the same row. Use a returned id with get_indication to list the
+    plants that treat it.
+
+    Args:
+        q: optional substring filter over name / modern name / synonyms / archaic
+            names (matches an archaic query like "грудная жаба" too).
+        limit: max concepts to return (default 50).
+
+    Returns vocabulary concepts (id, name, name_modern, synonyms, archaic, system,
+    parent_id, linked_facts)."""
+    _record_usage("find_indication", "discovery")
+    rows = await _request("GET", "/api/medical/indications")
+    if isinstance(rows, dict):  # error
+        return rows
+    if q:
+        ql = q.strip().lower()
+        def hit(c: dict) -> bool:
+            hay = " ".join(filter(None, [
+                c.get("name"), c.get("name_modern"),
+                " ".join(c.get("synonyms") or []), " ".join(c.get("archaic") or []),
+            ])).lower()
+            return ql in hay
+        rows = [c for c in rows if hit(c)]
+    return rows[:limit]
+
+
+@mcp.tool()
+async def get_indication(indication_id: str) -> dict:
+    """A single indication concept plus the PLANTS whose medicinal uses normalize to
+    it (concept + its hierarchy descendants). Answers "какие растения при X"
+    authoritatively, including via archaic names.
+
+    Args:
+        indication_id: UUID from find_indication.
+
+    Returns the concept (name, name_modern, synonyms, archaic, system, definition,
+    parent/children) and a `plants` list (id, name, name_latin, parts,
+    raw_indications). Read each plant in full with get_plant(id)."""
+    _record_usage("get_indication", "discovery")
+    return await _request("GET", f"/api/medical/indications/{indication_id}")
+
+
+@mcp.tool()
+async def plants_for_condition(
+    condition: str,
+    kingdom: str | None = None,
+    toxic: bool | None = None,
+    limit: int = 50,
+) -> dict:
+    """Find plants/fungi for a medical CONDITION expressed as a user would — a
+    symptom or disease ("кашель", "бессонница") OR an archaic disease name
+    ("водянка", "грудная жаба") OR a medicinal action ("отхаркивающее"). Resolves
+    the term across BOTH medical axes — the indication axis (показания, with the
+    archaic→modern bridge) and the action axis (действие) — and unions the plants,
+    because a historical corpus records "what it treats" on either axis. This is the
+    medical entry point; for finer control use search_plants(indication=…, action=…).
+
+    Args:
+        condition: a symptom, disease, archaic disease name, or medicinal action.
+        kingdom: "растение" | "гриб". Omit for both.
+        toxic: True → only toxic, False → only non-toxic.
+        limit: max plants to return (default 50).
+
+    Returns {condition, count, plants:[…]} where each plant is a card (id, name,
+    name_latin, family, is_toxic, kingdom, uses_count, photo…). Read a full grounded
+    monograph with get_plant(id); use find_indication to inspect the concept."""
+    _record_usage("plants_for_condition", "discovery")
+    base = {"kingdom": kingdom, "is_toxic": toxic}
+    by_ind = await _request("GET", "/api/plants/", params={**base, "indication": condition})
+    by_act = await _request("GET", "/api/plants/", params={**base, "action": condition})
+    merged: dict[str, dict] = {}
+    for rows in (by_ind, by_act):
+        if isinstance(rows, list):
+            for p in rows:
+                pid = p.get("id")
+                if pid and pid not in merged:
+                    merged[pid] = p
+    if not merged and isinstance(by_ind, dict) and "error" in by_ind:
+        return by_ind
+    plants = list(merged.values())[:limit]
+    return {"condition": condition, "count": len(plants), "plants": plants}
 
 
 # ────────────────────────────── Full tier (product) ─────────────────────────────

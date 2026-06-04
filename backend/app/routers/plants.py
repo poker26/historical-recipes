@@ -11,6 +11,7 @@ from app.models.recipe import Recipe, RecipeIngredient
 from app.models.plant import (
     Plant,
     MedicinalAction,
+    Indication,
     PlantMedicinalUse,
     PlantCompound,
     PlantHarvest,
@@ -181,22 +182,57 @@ async def list_plants(
         )
     if action:
         like = f"%{action.strip()}%"
-        action_ids = select(MedicinalAction.id).where(
-            or_(MedicinalAction.name.ilike(like), MedicinalAction.name_modern.ilike(like))
-        )
+        # Resolve to vocabulary terms (name / modern / synonyms), then expand to
+        # the matched terms' hierarchy descendants (a group like "действие на ЖКТ"
+        # also pulls "вяжущее"). Keep the verbatim action_raw fallback.
+        matched_actions = (await db.execute(
+            select(MedicinalAction.id).where(
+                or_(
+                    MedicinalAction.name.ilike(like),
+                    MedicinalAction.name_modern.ilike(like),
+                    func.array_to_string(MedicinalAction.synonyms, " ").ilike(like),
+                )
+            )
+        )).scalars().all()
+        action_id_set = set(matched_actions)
+        if action_id_set:
+            descendants = (await db.execute(
+                select(MedicinalAction.id).where(MedicinalAction.parent_id.in_(action_id_set))
+            )).scalars().all()
+            action_id_set.update(descendants)
         stmt = stmt.where(
             Plant.medicinal_uses.any(
                 or_(
                     PlantMedicinalUse.action_raw.ilike(like),
-                    PlantMedicinalUse.action_id.in_(action_ids),
+                    PlantMedicinalUse.action_id.in_(action_id_set),
                 )
             )
         )
     if indication:
         like = f"%{indication.strip()}%"
-        stmt = stmt.where(
-            Plant.medicinal_uses.any(PlantMedicinalUse.indications.ilike(like))
-        )
+        # Resolve the query against the controlled vocabulary so a modern OR an
+        # archaic term ("водянка") both reach the same concept, then expand to the
+        # concept's children. Match the normalized indication_ids on either, AND
+        # keep the verbatim free-text fallback for uses not yet normalized.
+        matched = (await db.execute(
+            select(Indication.id, Indication.parent_id).where(
+                or_(
+                    Indication.name.ilike(like),
+                    Indication.name_modern.ilike(like),
+                    func.array_to_string(Indication.synonyms, " ").ilike(like),
+                    func.array_to_string(Indication.archaic, " ").ilike(like),
+                )
+            )
+        )).all()
+        concept_ids = {iid for iid, _ in matched}
+        if concept_ids:
+            children = (await db.execute(
+                select(Indication.id).where(Indication.parent_id.in_(concept_ids))
+            )).scalars().all()
+            concept_ids.update(children)
+        preds = [PlantMedicinalUse.indications.ilike(like)]
+        preds += [PlantMedicinalUse.indication_ids.any(cid) for cid in concept_ids]
+        stmt = stmt.where(Plant.medicinal_uses.any(or_(*preds)))
     if family:
         like = f"%{family.strip()}%"
         stmt = stmt.where(or_(Plant.family.ilike(like), Plant.family_latin.ilike(like)))
