@@ -32,6 +32,10 @@ _HEADERS = {"User-Agent": "historical-recipes/1.0 (herbarium enrichment; contact
 # Licenses we may reuse in a possibly-commercial product (always with attribution).
 COMMERCIAL_OK_LICENSES = {"cc0", "cc-by", "cc-by-sa"}
 
+# Constrain matches to the right kingdom so an epithet collision (e.g. a plant
+# and an animal both named "* japonica") can never pull in the wrong creature.
+_ICONIC_FOR_KINGDOM = {"растение": "Plantae", "гриб": "Fungi"}
+
 # Drop the author citation from a binomial so the iNat query is clean:
 # "Gratiola officinalis L." → "Gratiola officinalis", "Mentha × piperita" → "Mentha piperita".
 _NON_ALPHA = re.compile(r"[^a-zA-Zа-яёА-ЯЁ\s]")
@@ -47,44 +51,75 @@ def _clean_binomial(name_latin: str | None) -> str | None:
         # genus-only or junk — still usable as a genus query, but skip: a
         # genus photo would mislabel the species page.
         return None
-    return f"{toks[0]} {toks[1]}"
+    genus, species = toks[0], toks[1]
+    # An abbreviated genus ("A. japonica", "G. robertianum" — a determiner shorthand
+    # after first mention) is unrecoverable: the single letter makes iNat fuzzy-match
+    # the epithet to the wrong species, even the wrong kingdom. Refuse it.
+    if len(genus) <= 1:
+        return None
+    return f"{genus} {species}"
 
 
-def _pick_taxon(results: list[dict], wanted: str) -> dict | None:
-    """Choose the best taxon match. Prefer an exact (case-insensitive) species
-    name; otherwise the first active species; otherwise the first result."""
+def _pick_taxon(results: list[dict], wanted: str, iconic: str | None = None) -> dict | None:
+    """Choose the best taxon match within the requested kingdom. Prefer an exact
+    (case-insensitive) species name; otherwise the first active species; otherwise
+    the first candidate. If ``iconic`` is set and no result is in that kingdom,
+    return None rather than mismatch across kingdoms."""
+    cands = results
+    if iconic:
+        cands = [r for r in results if (r.get("iconic_taxon_name") or "") == iconic]
+        if not cands:
+            return None
     wanted_l = wanted.lower()
-    species = [r for r in results if r.get("rank") == "species"]
+    species = [r for r in cands if r.get("rank") == "species"]
     for r in species:
         if (r.get("name") or "").lower() == wanted_l:
             return r
     if species:
         return species[0]
-    return results[0] if results else None
+    return cands[0] if cands else None
 
 
-async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str) -> dict | None:
+async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic: str | None = None) -> dict | None:
     """Resolve one Latin name to {taxon_id, photo_url, photo_attribution,
     photo_license, common_name} or None if no usable match. Photo fields are
-    None when the species has no photo or its license isn't reusable."""
+    None when the species has no photo or its license isn't reusable.
+
+    On HTTP 429 (iNat throttle) backs off and retries a few times, honoring a
+    ``Retry-After`` header when present; if still throttled, returns None so the
+    plant stays unsynced and gets picked up on a later pass."""
     query = _clean_binomial(name_latin)
     if not query:
         return None
-    try:
-        resp = await client.get(
-            f"{INAT_BASE}/taxa",
-            params={"q": query, "rank": "species", "is_active": "true", "per_page": 5, "locale": "ru"},
-            headers=_HEADERS,
-        )
+    params = {"q": query, "rank": "species", "is_active": "true", "per_page": 5, "locale": "ru"}
+    if iconic:
+        params["iconic_taxa"] = iconic
+    results = None
+    for attempt in range(4):
+        try:
+            resp = await client.get(f"{INAT_BASE}/taxa", params=params, headers=_HEADERS)
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning(f"iNat taxa error for {query!r}: {type(e).__name__}: {e}")
+            return None
+        if resp.status_code == 429:
+            retry_after = resp.headers.get("Retry-After")
+            delay = float(retry_after) if (retry_after or "").isdigit() else (5 * (attempt + 1))
+            logger.warning(f"iNat 429 for {query!r}; backing off {delay}s (attempt {attempt+1}/4)")
+            await asyncio.sleep(delay)
+            continue
         if resp.status_code != 200:
             logger.warning(f"iNat taxa HTTP {resp.status_code} for {query!r}")
             return None
-        results = resp.json().get("results", [])
-    except (httpx.HTTPError, ValueError) as e:
-        logger.warning(f"iNat taxa error for {query!r}: {type(e).__name__}: {e}")
+        try:
+            results = resp.json().get("results", [])
+        except ValueError as e:
+            logger.warning(f"iNat taxa unparseable body for {query!r}: {e}")
+            return None
+        break
+    if results is None:  # exhausted retries while throttled
         return None
 
-    taxon = _pick_taxon(results, query)
+    taxon = _pick_taxon(results, query, iconic=iconic)
     if not taxon:
         return None
 
@@ -113,7 +148,7 @@ async def enrich_plants_inat(
     dry_run: bool = True,
     limit: int | None = None,
     force: bool = False,
-    pace_seconds: float = 1.1,
+    pace_seconds: float = 1.6,
 ) -> dict:
     """Corpus-wide enrichment pass. Resolves each plant's ``name_latin`` to an
     iNat taxon and stores a license-clean photo. Idempotent & resumable: by
@@ -136,7 +171,8 @@ async def enrich_plants_inat(
     async with httpx.AsyncClient(timeout=30) as client:
         for i, p in enumerate(plants):
             processed += 1
-            res = await resolve_taxon_photo(client, p.name_latin)
+            iconic = _ICONIC_FOR_KINGDOM.get(p.kingdom or "растение", "Plantae")
+            res = await resolve_taxon_photo(client, p.name_latin, iconic=iconic)
             if res is None or not res.get("taxon_id"):
                 no_match += 1
             else:
