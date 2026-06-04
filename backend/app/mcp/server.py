@@ -274,28 +274,47 @@ async def get_recipe(recipe_id: str) -> dict:
 @mcp.tool()
 async def find_observations_nearby(
     plant_id: str,
-    lat: float,
-    lng: float,
+    region: str | None = None,
+    lat: float | None = None,
+    lng: float | None = None,
     radius_km: float = 50.0,
     limit: int = 20,
 ) -> dict:
-    """Live iNaturalist sightings of a plant/fungus near a coordinate — "where can
-    I find this nearby". This is live external data (not the corpus): iNat
-    attribution is returned and must be displayed.
+    """Live iNaturalist sightings of a plant/fungus — "where can I find this, and
+    how common / when is it seen". This is live external data (not the corpus):
+    iNat attribution is returned and must be displayed.
+
+    Scope the search EITHER by a named region OR by a coordinate:
+      - region: a place name at any granularity — district, town vicinity, or
+        oblast (e.g. "Собинский район", "окрестности Суздаля", "Владимирская
+        область"). PREFER this for vernacular "where in X" questions: it follows
+        the real place boundary rather than a fuzzy circle. The name is resolved
+        to an iNat place server-side (largest matching boundary wins).
+      - lat + lng (+ radius_km): a coordinate and circular radius. Use when you
+        have exact coordinates rather than a place name.
+    If both are given, region takes precedence.
 
     Args:
         plant_id: UUID of the plant (its iNat taxon is resolved server-side).
-        lat, lng: centre coordinate (decimal degrees).
-        radius_km: search radius in km (default 50).
+        region: place name to scope to (see above).
+        lat, lng: centre coordinate (decimal degrees), alternative to region.
+        radius_km: search radius in km for the coordinate path (default 50).
         limit: max observations (default 20, capped at 50).
 
-    Returns research-grade observations (date, place, location, photo+attribution,
-    observer, iNat uri), newest first. Empty with a note if the plant was never
-    resolved to an iNat taxon."""
+    Returns the resolved scope plus ``total_count`` (how many sightings exist in
+    that region/radius — a commonness signal), ``seasonality`` (per-month
+    histogram of when it's observed), and a sample of observations (date, place,
+    location, photo+attribution, observer, iNat uri), newest first. Empty with a
+    note if the plant was never resolved to an iNat taxon."""
     _record_usage("find_observations_nearby", "live")
-    return await _request("GET", f"/api/plants/{plant_id}/observations", params={
-        "lat": lat, "lng": lng, "radius_km": radius_km, "limit": limit,
-    })
+    params: dict = {"radius_km": radius_km, "limit": limit}
+    if region:
+        params["place"] = region
+    if lat is not None:
+        params["lat"] = lat
+    if lng is not None:
+        params["lng"] = lng
+    return await _request("GET", f"/api/plants/{plant_id}/observations", params=params)
 
 
 if __name__ == "__main__":

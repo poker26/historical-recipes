@@ -21,7 +21,7 @@ from app.models.plant import (
 )
 from app.services.plant_matching import relink_recipe_ingredients, merge_plants_by_latin_key
 from app.services.qdrant import delete_points
-from app.services.inaturalist import enrich_plants_inat, nearby_observations
+from app.services.inaturalist import enrich_plants_inat, find_observations
 
 router = APIRouter()
 
@@ -274,26 +274,40 @@ def _book_title_map(books: list[Book]) -> dict[str, str]:
 @router.get("/{plant_id}/observations")
 async def plant_observations(
     plant_id: uuid.UUID,
-    lat: float,
-    lng: float,
+    lat: float | None = None,
+    lng: float | None = None,
     radius_km: float = 50.0,
+    place: str | None = None,
+    place_id: int | None = None,
     limit: int = 20,
     db: AsyncSession = Depends(get_db),
 ):
-    """Live iNaturalist "find nearby observations" for one plant/fungus.
+    """Live iNaturalist "where to find this plant/fungus" lookup.
 
     Resolves the plant's stored ``inat_taxon_id`` (set during enrichment) and asks
-    iNat for research-grade sightings of that taxon within ``radius_km`` of the
-    coordinate. A value-add over the corpus, NOT corpus data — attribution from
-    iNat is returned and must be displayed. Returns an empty set with a note if
-    the plant was never resolved to a taxon."""
+    iNat for sightings of that taxon, scoped either to:
+      - a NAMED region (``place``, e.g. "Собинский район", "окрестности Суздаля",
+        "Владимирская область") — resolved to an iNat place boundary; or
+      - a ``place_id`` directly; or
+      - a coordinate + ``radius_km``.
+    The named-region path is preferred for vernacular queries: it follows the
+    real administrative/place boundary instead of a fuzzy circle. The response
+    also carries ``total_count`` (how many sightings exist in scope) and
+    ``seasonality`` (per-month histogram) so an agent can answer "how common" and
+    "when to look". A value-add over the corpus, NOT corpus data — iNat
+    attribution is returned and must be displayed. Returns an empty set with a
+    note if the plant was never resolved to a taxon."""
     plant = (await db.execute(select(Plant).where(Plant.id == plant_id))).scalar_one_or_none()
     if plant is None:
         raise HTTPException(status_code=404, detail="Plant not found")
     if not plant.inat_taxon_id:
         return {"taxon_id": None, "count": 0, "observations": [],
                 "note": "plant not resolved to an iNat taxon yet"}
-    return await nearby_observations(plant.inat_taxon_id, lat, lng, radius_km=radius_km, limit=limit)
+    return await find_observations(
+        plant.inat_taxon_id,
+        lat=lat, lng=lng, radius_km=radius_km,
+        place=place, place_id=place_id, limit=limit,
+    )
 
 
 @router.get("/{plant_id}")

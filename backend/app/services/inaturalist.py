@@ -165,49 +165,134 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
     return out
 
 
-async def nearby_observations(
+async def resolve_place(client: httpx.AsyncClient, query: str) -> dict | None:
+    """Resolve a free-text place name (a district, town vicinity, region — any
+    granularity) to an iNat ``place_id`` via ``GET /v1/places/autocomplete``.
+
+    Picking heuristic: autocomplete's first hit is unreliable for "where to look"
+    queries — e.g. "Суздаль" ranks "Суздальский парк" (a point) above "Суздальский
+    район". We instead take the candidate with the LARGEST ``bbox_area``, which is
+    the district/region-sized place a "where can I find X around here" question
+    actually means. Returns ``None`` on no match or transport error so the caller
+    degrades gracefully. ``display_name`` is echoed back so the consumer can tell
+    the user which place was used (covers the deliberate imprecision)."""
+    try:
+        resp = await client.get(f"{INAT_BASE}/places/autocomplete",
+                                params={"q": query}, headers=_HEADERS)
+        if resp.status_code != 200:
+            logger.warning(f"iNat places HTTP {resp.status_code} for {query!r}")
+            return None
+        results = resp.json().get("results", [])
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning(f"iNat places error for {query!r}: {type(e).__name__}: {e}")
+        return None
+    if not results:
+        return None
+    best = max(results, key=lambda p: p.get("bbox_area") or 0.0)
+    return {
+        "place_id": best.get("id"),
+        "display_name": best.get("display_name"),
+        "bbox_area": best.get("bbox_area"),
+    }
+
+
+async def _obs_total(client: httpx.AsyncClient, scope: dict) -> int | None:
+    """Cheap frequency: total research-grade observations matching ``scope``
+    (per_page=0 returns only the count, no records). None on error."""
+    try:
+        resp = await client.get(f"{INAT_BASE}/observations",
+                                params={**scope, "per_page": 0}, headers=_HEADERS)
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("total_results")
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+async def _obs_seasonality(client: httpx.AsyncClient, scope: dict) -> dict | None:
+    """Phenology: observation counts binned by calendar month (1–12) — answers
+    "when in the year to look". None on error."""
+    try:
+        resp = await client.get(f"{INAT_BASE}/observations/histogram", headers=_HEADERS,
+                                params={**scope, "date_field": "observed",
+                                        "interval": "month_of_year"})
+        if resp.status_code != 200:
+            return None
+        hist = resp.json().get("results", {}).get("month_of_year", {})
+        return {int(k): v for k, v in hist.items()}
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+
+
+async def find_observations(
     taxon_id: int,
-    lat: float,
-    lng: float,
+    *,
+    lat: float | None = None,
+    lng: float | None = None,
     radius_km: float = 50.0,
+    place: str | None = None,
+    place_id: int | None = None,
     limit: int = 20,
 ) -> dict:
-    """Live "find nearby observations" lookup: research-grade iNat sightings of one
-    taxon within ``radius_km`` of a coordinate, newest first.
+    """Live "where can I find this" lookup over research-grade iNat sightings of one
+    taxon. The plant's ``inat_taxon_id`` is resolved upstream (caller passes it in).
 
-    This is the geo dimension on top of the stored enrichment — the plant's
-    ``inat_taxon_id`` is resolved upstream (the caller passes it in), so this is a
-    pure passthrough to iNat's ``/observations`` with no DB access. Returns a
-    compact, attribution-bearing shape (iNat ToS requires displaying attribution).
-    Never raises: on any HTTP/throttle error it returns ``observations: []`` plus
-    an ``error`` string, so a consumer tool degrades gracefully.
-    """
-    params = {
-        "taxon_id": taxon_id,
-        "lat": lat,
-        "lng": lng,
-        "radius": radius_km,  # iNat radius is in km
-        "per_page": min(max(limit, 1), 50),
-        "order_by": "observed_on",
-        "order": "desc",
-        "quality_grade": "research",
-        "photos": "true",
-        "geo": "true",
-        "locale": "ru",
-    }
+    Scope is EITHER a named place (``place`` free-text → resolved to ``place_id``,
+    or an explicit ``place_id``) OR a coordinate circle (``lat``/``lng`` + ``radius_km``).
+    A named place is the natural fit for questions like "где в Собинском районе /
+    окрестностях Суздаля поискать барвинок".
+
+    Returns: ``total_count`` (how common it is in that scope), ``seasonality`` (per-
+    month observation counts — when to look), and a newest-first sample of
+    ``observations`` each carrying ``place_guess`` (where exactly) + coords + photo
+    and attribution (iNat ToS requires displaying it). Never raises — on any error
+    it returns empty fields plus an ``error``/``note`` so a consumer degrades."""
     async with httpx.AsyncClient(timeout=30) as client:
+        place_info = None
+        if place_id is None and place:
+            place_info = await resolve_place(client, place)
+            if place_info is None:
+                return {"taxon_id": taxon_id, "scope": None, "total_count": None,
+                        "seasonality": None, "count": 0, "observations": [],
+                        "error": f"place not found: {place!r}"}
+            place_id = place_info["place_id"]
+
+        if place_id is not None:
+            scope = {"place_id": place_id}
+            scope_label = place_info["display_name"] if place_info else f"place {place_id}"
+        elif lat is not None and lng is not None:
+            scope = {"lat": lat, "lng": lng, "radius": radius_km}
+            scope_label = f"{radius_km} km around {lat},{lng}"
+        else:
+            return {"taxon_id": taxon_id, "scope": None, "total_count": None,
+                    "seasonality": None, "count": 0, "observations": [],
+                    "error": "provide either a place/place_id or lat+lng"}
+
+        base = {"taxon_id": taxon_id, "quality_grade": "research", "locale": "ru", **scope}
+
+        total = await _obs_total(client, base)
+        seasonality = await _obs_seasonality(client, base)
+
+        list_params = {**base, "per_page": min(max(limit, 1), 50),
+                       "order_by": "observed_on", "order": "desc",
+                       "photos": "true", "geo": "true"}
         try:
-            resp = await client.get(f"{INAT_BASE}/observations", params=params, headers=_HEADERS)
+            resp = await client.get(f"{INAT_BASE}/observations", params=list_params, headers=_HEADERS)
         except httpx.HTTPError as e:
             logger.warning(f"iNat observations error for taxon {taxon_id}: {type(e).__name__}: {e}")
-            return {"taxon_id": taxon_id, "count": 0, "observations": [], "error": str(e)}
+            return {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
+                    "total_count": total, "seasonality": seasonality,
+                    "count": 0, "observations": [], "error": str(e)}
         if resp.status_code != 200:
-            return {"taxon_id": taxon_id, "count": 0, "observations": [],
-                    "error": f"iNat HTTP {resp.status_code}"}
+            return {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
+                    "total_count": total, "seasonality": seasonality,
+                    "count": 0, "observations": [], "error": f"iNat HTTP {resp.status_code}"}
         try:
             results = resp.json().get("results", [])
         except ValueError as e:
-            return {"taxon_id": taxon_id, "count": 0, "observations": [], "error": f"bad body: {e}"}
+            return {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
+                    "total_count": total, "seasonality": seasonality,
+                    "count": 0, "observations": [], "error": f"bad body: {e}"}
 
     obs: list[dict] = []
     for r in results:
@@ -226,7 +311,9 @@ async def nearby_observations(
             "photo_attribution": photo.get("attribution"),
             "photo_license": photo.get("license_code"),
         })
-    return {"taxon_id": taxon_id, "count": len(obs), "observations": obs}
+    return {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
+            "total_count": total, "seasonality": seasonality,
+            "count": len(obs), "observations": obs}
 
 
 async def enrich_plants_inat(
