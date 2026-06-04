@@ -113,6 +113,7 @@ export interface Plant {
   id: string;
   name: string;
   name_latin: string | null;
+  name_modern: string | null;
   names_historical: string[] | null;
   family: string | null;
   family_latin: string | null;

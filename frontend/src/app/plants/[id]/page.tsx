@@ -57,6 +57,11 @@ export default function PlantDetailPage() {
             {plant.name}
             {plant.is_toxic && <span className="badge badge-red">⚠ toxic</span>}
           </h1>
+          {plant.name_modern && plant.name_modern !== plant.name && (
+            <div style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 2 }}>
+              совр. {plant.name_modern} · iNaturalist
+            </div>
+          )}
         </div>
       </div>
 

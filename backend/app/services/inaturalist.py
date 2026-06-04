@@ -55,6 +55,17 @@ _ICONIC_FOR_KINGDOM = {"растение": "Plantae", "гриб": "Fungi"}
 # "Gratiola officinalis L." → "Gratiola officinalis", "Mentha × piperita" → "Mentha piperita".
 _NON_ALPHA = re.compile(r"[^a-zA-Zа-яёА-ЯЁ\s]")
 
+# iNat's preferred_common_name at locale=ru is the modern Russian name when one
+# exists (else None — it does NOT fall back to English for us). We still guard with
+# this: only a name that actually contains Cyrillic is accepted as the "modern
+# Russian name", so a stray latin/English label never lands in name_modern, and a
+# bare-latin `name` is only ever promoted to a genuinely Russian string.
+_CYRILLIC = re.compile(r"[а-яёА-ЯЁ]")
+
+
+def _has_cyrillic(s: str | None) -> bool:
+    return bool(s and _CYRILLIC.search(s))
+
 
 def _clean_binomial(name_latin: str | None) -> str | None:
     if not name_latin:
@@ -407,11 +418,23 @@ async def enrich_plants_inat(
     pace_seconds: float = 1.6,
     book_id=None,
     progress=None,
+    promote_latin_names: bool = True,
 ) -> dict:
     """Enrichment pass. Resolves each plant's ``name_latin`` to an iNat taxon and
-    stores a license-clean photo. Idempotent & resumable: by default only touches
-    plants not yet synced (``inat_synced_at`` NULL); pass ``force=True`` to refresh
-    everything. ``limit`` bounds one call so it stays under proxy timeouts.
+    stores a license-clean photo PLUS the modern Russian common name
+    (``preferred_common_name`` at locale=ru → ``Plant.name_modern``). Idempotent &
+    resumable: by default only touches plants not yet synced (``inat_synced_at``
+    NULL); pass ``force=True`` to refresh everything. ``limit`` bounds one call so
+    it stays under proxy timeouts.
+
+    ``name_modern`` is stored for every plant iNat gives a Russian name for — it is
+    external data, kept distinct from the book-grounded ``name``. Separately, when
+    ``promote_latin_names`` is set (default), a plant whose source headword
+    ``name`` is bare Latin (no Cyrillic) and for which iNat returned a Cyrillic
+    name has that name promoted into ``name`` too — the Latin is preserved in
+    ``name_latin``, so nothing is lost and the herbarium title stops being Latin.
+    This is the only case where external data touches ``name``; a plant that
+    already has a Russian headword keeps it untouched.
 
     ``book_id`` scopes the pass to plants mentioned in one book — the per-book
     pipeline step uses this so a freshly-ingested book enriches only its own new
@@ -436,6 +459,7 @@ async def enrich_plants_inat(
     plants = (await db.execute(stmt)).scalars().all()
 
     processed = taxa_resolved = photos_set = no_match = throttled = 0
+    names_set = names_promoted = 0
     plan: list[dict] = []
     now = datetime.now(timezone.utc)
 
@@ -456,12 +480,26 @@ async def enrich_plants_inat(
                 taxa_resolved += 1
                 if res.get("photo_url"):
                     photos_set += 1
+                # Modern Russian common name (locale=ru). Accept only a genuinely
+                # Cyrillic string; store it as name_modern and, for a bare-Latin
+                # headword, promote it into name too (Latin stays in name_latin).
+                common = res.get("common_name")
+                got_name = _has_cyrillic(common)
+                promoted = promote_latin_names and got_name and not _has_cyrillic(p.name)
+                if got_name:
+                    names_set += 1
+                if promoted:
+                    names_promoted += 1
                 if not dry_run:
                     p.inat_taxon_id = res["taxon_id"]
                     p.photo_url = res.get("photo_url")
                     p.photo_attribution = res.get("photo_attribution")
                     p.photo_license = res.get("photo_license")
                     p.photo_source = "inaturalist" if res.get("photo_url") else None
+                    if got_name:
+                        p.name_modern = common
+                    if promoted:
+                        p.name = common
                     p.inat_synced_at = now
                 if len(plan) < 25:
                     plan.append({
@@ -470,6 +508,8 @@ async def enrich_plants_inat(
                         "taxon_id": res["taxon_id"],
                         "has_photo": bool(res.get("photo_url")),
                         "license": res.get("photo_license"),
+                        "name_modern": common if got_name else None,
+                        "promoted_from_latin": promoted,
                     })
             if progress is not None:
                 try:
@@ -498,6 +538,8 @@ async def enrich_plants_inat(
         "processed": processed,
         "taxa_resolved": taxa_resolved,
         "photos_set": photos_set,
+        "names_set": names_set,
+        "names_promoted": names_promoted,
         "no_match": no_match,
         "throttled": throttled,
         "remaining": remaining,

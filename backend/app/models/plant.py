@@ -21,8 +21,9 @@ class Plant(Base):
     __tablename__ = "plants"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(Text)                       # canonical modern Russian name
+    name: Mapped[str] = mapped_column(Text)                       # headword as the source book titled it (often archaic, occasionally the bare Latin when the old dictionary gave no Russian name)
     name_latin: Mapped[str | None] = mapped_column(Text)          # binomial + author, e.g. "Rubus caesius L."
+    name_modern: Mapped[str | None] = mapped_column(Text)         # modern Russian common name resolved from iNaturalist (preferred_common_name, locale=ru) — EXTERNAL data, parallel to the iNat photo, not a book-grounded fact
     names_historical: Mapped[list[str] | None] = mapped_column(ARRAY(String))  # "другие названия" / folk / pre-reform
     family: Mapped[str | None] = mapped_column(Text)              # Russian family name, e.g. "розовые"
     family_latin: Mapped[str | None] = mapped_column(Text)        # e.g. "Rosaceae"

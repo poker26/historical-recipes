@@ -109,6 +109,9 @@ export default function PlantsPage() {
                   <h3 style={{ margin: 0 }}>{p.name}</h3>
                   {p.is_toxic && <span className="badge badge-red" title="Toxic plant">⚠ toxic</span>}
                 </div>
+                {p.name_modern && p.name_modern !== p.name && (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>совр. {p.name_modern}</div>
+                )}
                 {p.name_latin && <div style={{ fontSize: 13, fontStyle: "italic", color: "var(--text-muted)" }}>{p.name_latin}</div>}
                 {(p.family || p.family_latin) && (
                   <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>

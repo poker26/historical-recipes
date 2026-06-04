@@ -115,6 +115,7 @@ def _plant_summary(p: Plant, uses_count: int = 0) -> dict:
         "id": str(p.id),
         "name": p.name,
         "name_latin": p.name_latin,
+        "name_modern": p.name_modern,
         "names_historical": p.names_historical,
         "family": p.family,
         "family_latin": p.family_latin,
@@ -165,6 +166,7 @@ async def list_plants(
         stmt = stmt.where(
             or_(
                 Plant.name.ilike(like),
+                Plant.name_modern.ilike(like),
                 Plant.name_latin.ilike(like),
                 # ARRAY column: match any historical name
                 func.array_to_string(Plant.names_historical, " ").ilike(like),
@@ -422,6 +424,7 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         "id": str(plant.id),
         "name": plant.name,
         "name_latin": plant.name_latin,
+        "name_modern": plant.name_modern,
         "names_historical": plant.names_historical,
         "family": plant.family,
         "family_latin": plant.family_latin,
