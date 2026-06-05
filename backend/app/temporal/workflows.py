@@ -47,7 +47,12 @@ _RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=10),
     backoff_coefficient=2.0,
     maximum_interval=timedelta(minutes=2),
-    maximum_attempts=4,
+    # A big book (e.g. the 105-chunk «Ботанический Словарь») extracts ~25 chunks
+    # per 3h start_to_close window, so it needs several attempts to finish; the
+    # chunk-resumable activities make each retry cheap (skip done chunks), so a
+    # generous cap just lets large inputs complete rather than dying one chunk
+    # short. Non-resumable/transient failures still stop fast via the backoff.
+    maximum_attempts=10,
     non_retryable_error_types=["ValueError"],
 )
 

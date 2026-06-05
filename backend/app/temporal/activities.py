@@ -1033,10 +1033,15 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
     the retry resumes from the next unprocessed chunk instead of re-reading the
     whole book and re-spending tokens on chunks already done.
 
-    Fresh vs. resume is keyed on ``activity.info().attempt``:
-      * attempt 1  -> fresh run: drop this book's prior facts + stale chunk
-                      markers, then process every chunk.
-      * attempt >1 -> retry: keep committed chunks, skip them, do the rest.
+    Fresh vs. resume is keyed on whether ANY chunk is already committed:
+      * no completed-chunk markers -> fresh run: drop this book's prior facts +
+                      stale chunk markers, then process every chunk.
+      * some completed-chunk markers -> resume: keep committed chunks, skip them,
+                      do the rest. This holds even across a brand-new workflow run
+                      started at this step (e.g. re-running a big book that ran out
+                      of retries one chunk short) — partial progress is never
+                      thrown away. To force a clean re-extract, clear this book's
+                      plant-chunk ProcessingLog markers first.
     A single chunk that fails to parse is logged + skipped (not fatal) so one bad
     chunk never dooms the whole book.
     """
@@ -1058,10 +1063,26 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
     _hb(f"Plant extraction: {n} chunk(s) from {len(full_text)} chars (attempt {attempt})")
 
     async with async_session() as db:
-        if attempt == 1:
-            # Fresh run: drop this book's prior contributions AND stale chunk
-            # markers so everything is re-derived cleanly. Shared Plant rows and
-            # other books' contributions are untouched.
+        # Completed-chunk markers from ANY prior run (this attempt, an earlier
+        # retry, or a previous — possibly failed — workflow run). Only COMPLETED
+        # chunks count: a "failed" marker must NOT, or a chunk that died on a
+        # transient blip would be skipped forever and its plants lost.
+        logs = (await db.execute(select(ProcessingLog).where(
+            ProcessingLog.book_id == bid,
+            ProcessingLog.step == _PLANT_CHUNK_STEP,
+        ))).scalars().all()
+        done_chunks: set[int] = {
+            lg.details["chunk"] for lg in logs
+            if lg.status == "completed" and lg.details
+            and lg.details.get("chunk") is not None
+        }
+
+        # Fresh slate ONLY when nothing is committed yet (attempt 1 of a book with
+        # no completed chunks). Once any chunk is committed we resume instead — even
+        # across a brand-new workflow run started at this step — so re-running a big
+        # book that exhausted its retries finishes the REMAINING chunks rather than
+        # nuking thousands of committed rows and re-spending tokens on done chunks.
+        if attempt == 1 and not done_chunks:
             for tbl in (PlantMedicinalUse, PlantCompound, PlantHarvest, PlantHabitat,
                         PlantToxicity, PlantCulinaryUse):
                 await db.execute(delete(tbl).where(tbl.source_book_id == bid))
@@ -1069,22 +1090,6 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
             await db.execute(delete(ProcessingLog).where(
                 ProcessingLog.book_id == bid, ProcessingLog.step == _PLANT_CHUNK_STEP))
             await db.commit()
-            done_chunks: set[int] = set()
-        else:
-            logs = (await db.execute(select(ProcessingLog).where(
-                ProcessingLog.book_id == bid,
-                ProcessingLog.step == _PLANT_CHUNK_STEP,
-            ))).scalars().all()
-            # Only treat COMPLETED chunks as done. A "failed" marker must NOT count
-            # as done — otherwise a chunk that died on a transient blip is skipped
-            # forever on retry and its plants are lost. (Re-running a failed chunk
-            # is safe: fresh attempt-1 runs wipe this book's prior facts, and a
-            # resumed chunk had nothing committed to duplicate.)
-            done_chunks = {
-                lg.details["chunk"] for lg in logs
-                if lg.status == "completed" and lg.details
-                and lg.details.get("chunk") is not None
-            }
 
         # Normalization map: action term / modern synonym -> MedicinalAction.id
         actions = (await db.execute(select(MedicinalAction))).scalars().all()
