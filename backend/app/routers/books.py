@@ -5,12 +5,14 @@ from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from minio.error import S3Error
 
 from app.database import get_db
 from app.models.book import Book, BookPage, BookChunk, ProcessingLog
 from app.models.recipe import Recipe
 from app.schemas.book import (
     BookOut, BookDetailOut, BookPageOut, BookChunkOut, ChunkUpdate, ProcessingLogOut,
+    BookImportFromMinio, MinioObjectOut,
 )
 from app.services import minio as minio_svc
 from app.services import qdrant as qdrant_svc
@@ -141,6 +143,132 @@ async def upload_book(
     await db.commit()
     await db.refresh(book)
     return book
+
+
+@router.get("/minio/objects", response_model=list[MinioObjectOut])
+async def browse_minio(
+    prefix: str = Query("", description="Object key prefix to list under"),
+    bucket: str | None = Query(None, description="Bucket to browse (defaults to app bucket)"),
+):
+    """Browse objects in MinIO to pick an existing book to import.
+
+    Lets the wizard show what's already in the bucket instead of forcing a
+    re-upload. ``bucket`` defaults to the app bucket; pass another to look at a
+    book the user keeps elsewhere."""
+    try:
+        objects = await run_in_threadpool(
+            minio_svc.list_objects_detailed, prefix, bucket
+        )
+    except Exception as exc:  # bad bucket / connectivity — surface as 400
+        raise HTTPException(status_code=400, detail=f"MinIO browse failed: {exc}")
+    return [MinioObjectOut(**o) for o in objects]
+
+
+@router.post("/from-minio", response_model=BookOut)
+async def import_book_from_minio(
+    body: BookImportFromMinio,
+    db: AsyncSession = Depends(get_db),
+):
+    """Register a book that ALREADY lives in MinIO — no re-upload.
+
+    The object is referenced in place when it's in the app bucket, or
+    server-side copied into the canonical ``books/{id}/original.{ext}`` layout
+    when it lives in a different bucket.  This avoids round-tripping a
+    multi-hundred-MB scan through the browser just to re-store it where MinIO
+    already has it.  pdf_type is detected the same way as a real upload: PDFs
+    are sniffed with PyMuPDF, born-text is ``text``, DjVu stays ``pending``
+    until the convert step produces a PDF."""
+    source_format = ingest_svc.detect_source_format(body.source_path)
+    if not source_format:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Accepted: .pdf, .djvu, .txt, .docx",
+        )
+
+    # Verify the source object exists (and is reachable) before creating a row.
+    try:
+        stat = await run_in_threadpool(
+            minio_svc.stat_file, body.source_path, body.source_bucket
+        )
+    except S3Error as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Object not found in MinIO: {body.source_path} ({exc.code})",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"MinIO stat failed: {exc}")
+
+    # Decide pdf_type.  Only PDFs need a content sniff (download for PyMuPDF);
+    # djvu defers to convert/classify, born-text is text.
+    from app.config import settings
+    same_bucket = (body.source_bucket or settings.minio_bucket) == settings.minio_bucket
+
+    if source_format in ingest_svc.BORN_TEXT_FORMATS:
+        pdf_type = "text"
+    elif source_format == "djvu":
+        pdf_type = "pending"
+    else:  # pdf — download once to detect text/image/mixed
+        content = await run_in_threadpool(
+            _download_for_detect, body.source_path, body.source_bucket
+        )
+        pdf_type = await run_in_threadpool(_detect_pdf_type, content)
+
+    book = Book(
+        title=body.title,
+        domain=body.domain,
+        language=body.language,
+        author=body.author,
+        year=body.year,
+        pdf_type=pdf_type,
+        source_format=source_format,
+        status="uploaded",
+    )
+    db.add(book)
+    await db.flush()
+
+    dst_path = f"books/{book.id}/original.{source_format}"
+    if same_bucket and body.source_path == dst_path:
+        # Already in the canonical place — reference it directly.
+        file_path = body.source_path
+        imported_via = "in_place"
+    else:
+        # Server-side copy into the canonical layout (works cross-bucket too).
+        file_path = await run_in_threadpool(
+            minio_svc.copy_object, body.source_path, dst_path, body.source_bucket
+        )
+        imported_via = "copied"
+    book.file_path = file_path
+
+    log = ProcessingLog(
+        book_id=book.id, step="upload", status="completed",
+        details={
+            "size": getattr(stat, "size", None),
+            "pdf_type": pdf_type,
+            "source_format": source_format,
+            "imported_from_minio": {
+                "bucket": body.source_bucket or settings.minio_bucket,
+                "path": body.source_path,
+                "via": imported_via,
+            },
+        },
+    )
+    db.add(log)
+
+    await db.commit()
+    await db.refresh(book)
+    return book
+
+
+def _download_for_detect(path: str, bucket: str | None) -> bytes:
+    """Download an object (optionally from a non-app bucket) for pdf-type sniffing."""
+    from app.config import settings
+    client = minio_svc.get_client()
+    response = client.get_object(bucket or settings.minio_bucket, path)
+    try:
+        return response.read()
+    finally:
+        response.close()
+        response.release_conn()
 
 
 @router.patch("/{book_id}", response_model=BookOut)

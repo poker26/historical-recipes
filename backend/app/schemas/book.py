@@ -23,6 +23,26 @@ class BookUpdate(BaseModel):
     status: str | None = None
 
 
+class BookImportFromMinio(BaseModel):
+    """Import a book that already lives in MinIO instead of re-uploading.
+
+    ``source_path`` is the object key; ``source_bucket`` defaults to the app
+    bucket — pass another bucket to pull a book the user keeps elsewhere (then
+    it is server-side copied into the canonical ``books/{id}/`` layout)."""
+    source_path: str
+    source_bucket: str | None = None
+    title: str
+    domain: str = "recipes"
+    language: str = "modern_ru"
+    author: str | None = None
+    year: int | None = None
+
+
+class MinioObjectOut(BaseModel):
+    path: str
+    size: int
+
+
 class BookOut(BaseModel):
     id: uuid.UUID
     title: str

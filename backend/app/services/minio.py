@@ -74,3 +74,32 @@ def file_exists(path: str) -> bool:
         return True
     except S3Error:
         return False
+
+
+def stat_file(path: str, bucket: str | None = None):
+    """Stat an object (raises S3Error if missing). ``bucket`` defaults to the
+    app bucket; pass another to inspect an object the user keeps elsewhere."""
+    client = get_client()
+    return client.stat_object(bucket or settings.minio_bucket, path)
+
+
+def list_objects_detailed(prefix: str = "", bucket: str | None = None) -> list[dict]:
+    """List objects under ``prefix`` with their sizes — for browsing a bucket to
+    pick an existing book to import. ``bucket`` defaults to the app bucket."""
+    client = get_client()
+    objects = client.list_objects(bucket or settings.minio_bucket, prefix=prefix, recursive=True)
+    return [{"path": o.object_name, "size": o.size} for o in objects]
+
+
+def copy_object(src_path: str, dst_path: str, src_bucket: str | None = None) -> str:
+    """Server-side copy ``src_path`` -> ``dst_path`` within MinIO (no round-trip
+    through the backend). ``src_bucket`` defaults to the app bucket; the
+    destination is always the app bucket. Used to import a book that lives in a
+    DIFFERENT bucket into the canonical ``books/{id}/`` layout."""
+    from minio.commonconfig import CopySource
+    client = get_client()
+    client.copy_object(
+        settings.minio_bucket, dst_path,
+        CopySource(src_bucket or settings.minio_bucket, src_path),
+    )
+    return dst_path
