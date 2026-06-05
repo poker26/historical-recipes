@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.plant import MedicinalAction, Indication, PlantMedicinalUse, Plant
 from app.services.medical_matching import normalize_medical_uses
+from app.services.medical_dedup import dedup_indications
 
 router = APIRouter()
 
@@ -65,6 +66,19 @@ async def normalize(db: AsyncSession = Depends(get_db)):
     (re)build the vocabularies first."""
     result = await normalize_medical_uses(db)
     return {"status": "completed", **result}
+
+
+@router.post("/dedup")
+async def dedup(apply: bool = False, db: AsyncSession = Depends(get_db)):
+    """Merge near-duplicate INDICATION concepts (водянка/асцит/брюшная водянка,
+    понос/поносы, отёки/отеки …). Review-first: ``apply=false`` (default) returns
+    the proposed merges + the clusters skipped for hierarchy reasons WITHOUT
+    writing; ``apply=true`` folds each duplicate's surface forms into the canonical
+    concept (recall preserved), repoints every PlantMedicinalUse link + child
+    parent_id, deletes the duplicates, commits. Idempotent — a second apply finds
+    nothing left to merge."""
+    result = await dedup_indications(db, apply=apply)
+    return {"status": "applied" if apply else "dry_run", **result}
 
 
 @router.get("/actions")
