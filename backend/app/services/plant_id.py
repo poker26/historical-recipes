@@ -100,7 +100,11 @@ async def identify(
         async with httpx.AsyncClient(timeout=60, proxy=settings.plantnet_proxy or None) as client:
             if images:
                 files = [("images", (f"img{i}.jpg", b, "image/jpeg")) for i, b in enumerate(sources)]
-                data = [("organs", o) for o in organs]
+                # httpx wants form fields as a dict; a list value emits repeated
+                # `organs` parts. Passing a list-of-tuples here makes httpx 0.28
+                # treat `data` as raw content (sync stream) and the AsyncClient
+                # rejects it ("sync request with an AsyncClient instance").
+                data = {"organs": organs}
                 resp = await client.post(url, params=params, files=files, data=data)
             else:
                 # Remote-URL path: images + organs are repeated query params.
