@@ -95,7 +95,9 @@ async def identify(
     params = {"api-key": settings.plantnet_api_key, "nb-results": min(max(limit, 1), 10)}
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        # Route through the configured proxy when set (prod egress to PlantNet's
+        # host is network-blocked; the trusttunnel proxy provides the path).
+        async with httpx.AsyncClient(timeout=60, proxy=settings.plantnet_proxy or None) as client:
             if images:
                 files = [("images", (f"img{i}.jpg", b, "image/jpeg")) for i, b in enumerate(sources)]
                 data = [("organs", o) for o in organs]

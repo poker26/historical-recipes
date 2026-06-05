@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     plantnet_base_url: str = "https://my-api.plantnet.org/v2"
     # Default project/flora list to identify against ("all" = world flora).
     plantnet_project: str = "all"
+    # Optional HTTP(S) proxy for PlantNet calls. Prod server 1 has its egress to
+    # PlantNet's host (CIRAD/RENATER, 193.51.117.x) blocked at the network level,
+    # so the request is routed through the fleet's trusttunnel HTTPS proxy
+    # (tt.begemot26.ru). Empty = direct connection.
+    plantnet_proxy: str = ""
 
     # n8n
     n8n_base_url: str = "http://n8n:5678"
