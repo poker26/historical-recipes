@@ -33,3 +33,10 @@ data/
 
 # Local MCP client config (points at a personal SSH tunnel)
 .mcp.json
+
+# Claude Code local session/config
+.claude/
+
+# Scratch / one-off dumps from admin & dedup runs
+/*.json
+/backend/_test_recipe.txt
