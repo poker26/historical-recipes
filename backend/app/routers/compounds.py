@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.plant import Compound, PlantCompound, Plant
 from app.services.compound_matching import normalize_plant_compounds
+from app.services.vocab_dedup import dedup_compounds
 
 router = APIRouter()
 
@@ -19,6 +20,21 @@ async def normalize_compounds(db: AsyncSession = Depends(get_db)):
     POST /api/plants/relink-recipes)."""
     result = await normalize_plant_compounds(db)
     return {"status": "completed", **result}
+
+
+@router.post("/dedup")
+async def dedup_compound_vocab(apply: bool = False, db: AsyncSession = Depends(get_db)):
+    """Merge near-duplicate COMPOUND concepts (spelling twins, a row whose headword IS
+    another row's Latin name …). The chemistry analog of POST /api/medical/dedup, over
+    the SCALAR compound_id link (a plain UPDATE, not an array rewrite); the secondary
+    canonical name here is name_latin, and there's no archaic bridge. Review-first:
+    ``apply=false`` (default) returns the proposed merges + clusters skipped for
+    hierarchy reasons WITHOUT writing; ``apply=true`` folds each duplicate's surface
+    forms into the canonical concept (recall preserved), repoints every
+    PlantCompound.compound_id + child parent_id, deletes the duplicates, commits.
+    Idempotent."""
+    result = await dedup_compounds(db, apply=apply)
+    return {"status": "applied" if apply else "dry_run", **result}
 
 
 @router.get("")

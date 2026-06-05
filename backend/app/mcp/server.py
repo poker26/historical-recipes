@@ -264,7 +264,8 @@ async def get_compound(compound_id: str) -> dict:
 
 
 @mcp.tool()
-async def find_indication(q: str | None = None, min_facts: int = 0, limit: int = 50) -> list | dict:
+async def find_indication(q: str | None = None, system: str | None = None,
+                           min_facts: int = 0, limit: int = 50) -> list | dict:
     """Browse the controlled INDICATION vocabulary (показания: what a remedy is used
     FOR — symptoms and diseases) with hierarchy, modern/archaic names and how many
     use-facts each concept normalizes. Its headline is the archaic→modern BRIDGE:
@@ -279,6 +280,10 @@ async def find_indication(q: str | None = None, min_facts: int = 0, limit: int =
     Args:
         q: optional substring filter over name / modern name / synonyms / archaic
             names (matches an archaic query like "грудная жаба" too).
+        system: optional body-system filter (substring, case-insensitive) over the
+            concept's `system` tag — e.g. "дыхание", "ЖКТ", "ССС", "ЦНС", "кожа",
+            "мочеполовая". Browse one body system without a keyword: pass system=
+            with no q to list every well-covered condition in that system.
         min_facts: drop concepts normalizing fewer than this many use-facts
             (default 0 = keep all). Set e.g. 5 to see only well-covered conditions
             and hide long-tail singletons.
@@ -299,6 +304,9 @@ async def find_indication(q: str | None = None, min_facts: int = 0, limit: int =
             ])).lower()
             return ql in hay
         rows = [c for c in rows if hit(c)]
+    if system:
+        sl = system.strip().lower()
+        rows = [c for c in rows if sl in (c.get("system") or "").lower()]
     if min_facts > 0:
         rows = [c for c in rows if (c.get("linked_facts") or 0) >= min_facts]
     rows.sort(key=lambda c: c.get("linked_facts") or 0, reverse=True)

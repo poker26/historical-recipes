@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.plant import MedicinalAction, Indication, PlantMedicinalUse, Plant
 from app.services.medical_matching import normalize_medical_uses
-from app.services.medical_dedup import dedup_indications
+from app.services.vocab_dedup import dedup_indications, dedup_actions
 
 router = APIRouter()
 
@@ -78,6 +78,20 @@ async def dedup(apply: bool = False, db: AsyncSession = Depends(get_db)):
     parent_id, deletes the duplicates, commits. Idempotent — a second apply finds
     nothing left to merge."""
     result = await dedup_indications(db, apply=apply)
+    return {"status": "applied" if apply else "dry_run", **result}
+
+
+@router.post("/dedup-actions")
+async def dedup_action_vocab(apply: bool = False, db: AsyncSession = Depends(get_db)):
+    """Merge near-duplicate ACTION concepts (мочегонное/мочегонное действие, ё/е
+    spelling twins …). The action analog of POST /dedup, over the SCALAR action_id
+    link (a plain UPDATE rather than an array rewrite) and with no archaic bridge.
+    Review-first: ``apply=false`` (default) returns the proposed merges + the clusters
+    skipped for hierarchy reasons WITHOUT writing; ``apply=true`` folds each
+    duplicate's surface forms into the canonical concept (recall preserved), repoints
+    every PlantMedicinalUse.action_id + child parent_id, deletes the duplicates,
+    commits. Idempotent."""
+    result = await dedup_actions(db, apply=apply)
     return {"status": "applied" if apply else "dry_run", **result}
 
 
