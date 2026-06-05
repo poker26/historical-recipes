@@ -26,17 +26,25 @@ _LLM_HEARTBEAT_INTERVAL = 30  # seconds
 MAX_CHARS_PER_CALL = 14_000
 
 # Plant-entry header — used to split the book at entry boundaries so a monograph
-# never gets cut in half across LLM calls. Two common field-guide layouts:
+# never gets cut in half across LLM calls. Three common layouts seen in the corpus:
 #   1. inline:   "Ежевика сизая – Rubus caesius L." (Russian name – Latin binomial)
 #   2. numbered: "425 Малина лесная" with the Latin name on the *next* line, no
 #      dash (e.g. Шанцер «Растения средней полосы России»). The leading number +
 #      capitalised Russian word distinguishes a real entry header from a figure
 #      caption ("423 — цветок…", dash after the number) or a measurement line.
-# Without alt #2 such a guide yields NO header matches, the chunker never breaks,
-# and chunks balloon to the hard cap (~50 species per LLM call → poor recall).
+#   3. Latin-keyed: a pharmacopoeia/materia-medica entry that opens with a Latin
+#      term and carries its Russian gloss on the SAME line (e.g. «Полный целебный
+#      травник»: "Cortex simarubae. Завязная кора…", "Extractum cannabis indicae…").
+#      Requiring Cyrillic on the line is what keeps this from firing on a BARE
+#      binomial line ("Rubus idaeus") in a layout-2 guide — which would otherwise
+#      orphan the preceding Russian name across the chunk boundary.
+# Without the matching alternative such a guide yields NO header hits, the chunker
+# never breaks, and chunks balloon to the hard cap (~50 entries per LLM call → poor
+# recall).
 _HEADER_RE = re.compile(
     r"^.{2,70}?\s[–—-]\s[A-Z][a-zà-ÿ]+\b"   # 1. "Russian name – Latin"
     r"|^\d{1,4}[аб]?\s+[А-ЯЁ][а-яё]"          # 2. "NNN Русское название"
+    r"|^[A-Z][a-zæ]{2,}\b.*[А-Яа-яёЁ]"        # 3. "Latin … Cyrillic gloss" (pharmacopoeia)
 )
 
 # Light normalization of the plant part to a small controlled set; unknown
