@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { api, WizardStatus, WizardProgress, WizardSection, WizardRecipe, WizardWorkflow } from "@/lib/api";
+import { api, WizardStatus, WizardProgress, WizardSection, WizardRecipe, WizardWorkflow, stepNamesForDomain } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
 const STEPS = [
@@ -21,21 +21,10 @@ const STEPS = [
 // is folded into the first "Classify" box.
 const CANON_TO_STEPNUM: Record<string, number> = {
   convert: 1, classify: 1, extract: 2, cleanup: 2, translate: 3,
-  analyze: 4, extract_recipes: 5, match_ingredients: 6, index: 7,
+  analyze: 4, extract_plant_entries: 5, extract_recipes: 5,
+  extract_vocabulary: 5, normalize_corpus: 6,
+  match_ingredients: 6, index: 7, enrich_inat: 7,
 };
-
-// Resume-from choices for the durable run (label -> canonical step name).
-const RESUME_CHOICES: { value: string; label: string }[] = [
-  { value: "convert", label: "С начала (Convert/Classify)" },
-  { value: "classify", label: "Classify" },
-  { value: "extract", label: "Extract Text" },
-  { value: "cleanup", label: "Cleanup" },
-  { value: "translate", label: "Translate" },
-  { value: "analyze", label: "Analyze" },
-  { value: "extract_recipes", label: "Extract Recipes" },
-  { value: "match_ingredients", label: "Match Ingredients" },
-  { value: "index", label: "Index" },
-];
 
 const WF_ACTIVE = (s?: string) => s === "RUNNING";
 
@@ -48,10 +37,27 @@ const STEP_LABELS_RU: Record<string, string> = {
   cleanup: "Очистка OCR",
   translate: "Перевод на современный",
   analyze: "Анализ структуры",
+  extract_plant_entries: "Извлечение растений",
   extract_recipes: "Извлечение рецептов",
+  extract_vocabulary: "Извлечение словаря",
+  normalize_corpus: "Нормализация корпуса",
   match_ingredients: "Сопоставление ингредиентов",
   index: "Индексация в Qdrant",
+  enrich_inat: "Фото iNaturalist",
 };
+
+// Resume-from choices for the durable run, derived from the book's domain so a
+// herbalism/fungi book offers extract_plant_entries (and enrich_inat) and a
+// reference book offers extract_vocabulary/normalize_corpus.
+function resumeChoices(domain?: string): { value: string; label: string }[] {
+  const names = stepNamesForDomain(domain);
+  return names.map((name, i) => ({
+    value: name,
+    label: i === 0
+      ? `С начала (${STEP_LABELS_RU[name] || name})`
+      : (STEP_LABELS_RU[name] || name),
+  }));
+}
 
 // Turn a raw processing-log `details` object into a short readable summary,
 // instead of dumping JSON at the user.
@@ -369,6 +375,10 @@ export default function WizardPage() {
 
   const formatElapsed = (s: number) => s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 
+  // Resume-from options follow the book's domain (herbalism/fungi expose
+  // extract_plant_entries + enrich_inat; reference exposes the vocab steps).
+  const resumeOpts = resumeChoices(ws.domain);
+
   return (
     <>
       <div className="page-header">
@@ -403,7 +413,7 @@ export default function WizardPage() {
                   style={{ width: 200 }}
                   disabled={anyBusy}
                 >
-                  {RESUME_CHOICES.map((c) => (
+                  {resumeOpts.map((c) => (
                     <option key={c.value} value={c.value}>{c.label}</option>
                   ))}
                 </select>
@@ -432,7 +442,7 @@ export default function WizardPage() {
               <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14 }}>
                 <span className="spinner" />
                 <span style={{ fontWeight: 500 }}>
-                  {RESUME_CHOICES.find((c) => c.value === wf.current_step)?.label || wf.current_step || "Запуск..."}
+                  {STEP_LABELS_RU[wf.current_step || ""] || wf.current_step || "Запуск..."}
                 </span>
                 {wf.current_detail && (
                   <span style={{ color: "var(--text-muted)", fontFamily: "monospace", fontSize: 12 }}>

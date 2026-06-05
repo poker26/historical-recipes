@@ -291,6 +291,7 @@ export interface WizardProgress {
 export interface WizardStatus {
   book_id: string;
   title: string;
+  domain?: string;
   wizard_step: number;
   status: string;
   pdf_type: string;
@@ -352,10 +353,19 @@ export const PIPELINE_STEP_NAMES = [
 ];
 export const PIPELINE_STEP_NAMES_HERBALISM = [
   "convert", "classify", "extract", "cleanup", "translate",
-  "analyze", "extract_plant_entries", "extract_recipes", "match_ingredients", "index",
+  "analyze", "extract_plant_entries", "extract_recipes", "match_ingredients",
+  "index", "enrich_inat",
 ];
-export const stepNamesForDomain = (domain?: string): string[] =>
-  domain === "herbalism" ? PIPELINE_STEP_NAMES_HERBALISM : PIPELINE_STEP_NAMES;
+export const PIPELINE_STEP_NAMES_REFERENCE = [
+  "convert", "classify", "extract", "cleanup", "translate",
+  "extract_vocabulary", "normalize_corpus", "index",
+];
+export const stepNamesForDomain = (domain?: string): string[] => {
+  const d = (domain || "").toLowerCase();
+  if (d === "herbalism" || d === "fungi") return PIPELINE_STEP_NAMES_HERBALISM;
+  if (d === "reference") return PIPELINE_STEP_NAMES_REFERENCE;
+  return PIPELINE_STEP_NAMES;
+};
 
 // === API functions ===
 

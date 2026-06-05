@@ -1167,6 +1167,7 @@ async def wizard_status(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return {
         "book_id": str(book_id),
         "title": book.title,
+        "domain": book.domain or "recipes",
         "wizard_step": book.wizard_step or 1,
         "status": book.status,
         "pdf_type": book.pdf_type,

@@ -30,3 +30,6 @@ build/
 
 # Docker volumes (local)
 data/
+
+# Local MCP client config (points at a personal SSH tunnel)
+.mcp.json
