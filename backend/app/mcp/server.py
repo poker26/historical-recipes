@@ -168,17 +168,39 @@ async def semantic_search(query: str, collection: str | None = None, limit: int 
 
 
 @mcp.tool()
-async def list_vocabulary(kind: str) -> list | dict:
+async def list_vocabulary(kind: str, limit: int = 50) -> list | dict:
     """List the controlled-vocabulary values available as filters, each with a
-    plant count. Call this BEFORE forming a structured search_plants query so you
-    use real filter values instead of guessing.
+    count. Call this BEFORE forming a structured search_plants query so you use
+    real filter values instead of guessing.
 
     Args:
-        kind: one of "actions" (medicinal actions), "compound_groups" (constituent
+        kind: one of "actions" (medicinal actions), "indications" (показания —
+            symptoms/diseases a remedy is used FOR), "compound_groups" (constituent
             groups), "edibility", "kingdom", or "all".
+        limit: max values for "indications" (the indication vocabulary is large, so
+            only the best-covered concepts are returned). Ignored for other kinds.
 
-    Returns a list of {value, count} (or, for "all", the full facets object)."""
+    Returns a list of {value, count} (for "indications" also name_modern + id so you
+    can pass it to get_indication), or, for "all", the full facets object."""
     _record_usage("list_vocabulary", "discovery")
+    # The indication axis isn't a plant facet — it lives in the medical vocabulary
+    # and is large (thousands of concepts), so surface only the best-covered ones,
+    # ranked by how many use-facts each normalizes (its real corpus weight).
+    if kind == "indications":
+        rows = await _request("GET", "/api/medical/indications")
+        if isinstance(rows, dict):  # error
+            return rows
+        rows = [r for r in rows if (r.get("linked_facts") or 0) > 0]
+        rows.sort(key=lambda r: r.get("linked_facts") or 0, reverse=True)
+        return [
+            {
+                "value": r.get("name"),
+                "name_modern": r.get("name_modern"),
+                "count": r.get("linked_facts") or 0,
+                "id": r.get("id"),
+            }
+            for r in rows[:limit]
+        ]
     facets = await _request("GET", "/api/plants/facets")
     if isinstance(facets, dict) and "error" in facets:
         return facets
@@ -191,7 +213,7 @@ async def list_vocabulary(kind: str) -> list | dict:
         "kingdom": "kingdom",
     }.get(kind)
     if key is None:
-        return {"error": f"unknown kind {kind!r}; use actions|compound_groups|edibility|kingdom|all"}
+        return {"error": f"unknown kind {kind!r}; use actions|indications|compound_groups|edibility|kingdom|all"}
     return facets.get(key, [])
 
 
@@ -242,7 +264,7 @@ async def get_compound(compound_id: str) -> dict:
 
 
 @mcp.tool()
-async def find_indication(q: str | None = None, limit: int = 50) -> list | dict:
+async def find_indication(q: str | None = None, min_facts: int = 0, limit: int = 50) -> list | dict:
     """Browse the controlled INDICATION vocabulary (показания: what a remedy is used
     FOR — symptoms and diseases) with hierarchy, modern/archaic names and how many
     use-facts each concept normalizes. Its headline is the archaic→modern BRIDGE:
@@ -250,13 +272,20 @@ async def find_indication(q: str | None = None, limit: int = 50) -> list | dict:
     one resolve to the same row. Use a returned id with get_indication to list the
     plants that treat it.
 
+    Results are sorted by coverage (linked_facts, descending), so the canonical,
+    well-attested concept floats above thin near-duplicate scraps that a broad query
+    like "водянка" can otherwise surface.
+
     Args:
         q: optional substring filter over name / modern name / synonyms / archaic
             names (matches an archaic query like "грудная жаба" too).
+        min_facts: drop concepts normalizing fewer than this many use-facts
+            (default 0 = keep all). Set e.g. 5 to see only well-covered conditions
+            and hide long-tail singletons.
         limit: max concepts to return (default 50).
 
     Returns vocabulary concepts (id, name, name_modern, synonyms, archaic, system,
-    parent_id, linked_facts)."""
+    parent_id, linked_facts), most-covered first."""
     _record_usage("find_indication", "discovery")
     rows = await _request("GET", "/api/medical/indications")
     if isinstance(rows, dict):  # error
@@ -270,6 +299,9 @@ async def find_indication(q: str | None = None, limit: int = 50) -> list | dict:
             ])).lower()
             return ql in hay
         rows = [c for c in rows if hit(c)]
+    if min_facts > 0:
+        rows = [c for c in rows if (c.get("linked_facts") or 0) >= min_facts]
+    rows.sort(key=lambda c: c.get("linked_facts") or 0, reverse=True)
     return rows[:limit]
 
 
