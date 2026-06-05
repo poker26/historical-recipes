@@ -444,6 +444,7 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
                 "action": u.action.name if u.action else u.action_raw,
                 "action_system": u.action.system if u.action else None,
                 "indications": u.indications,
+                "indication_ids": [str(i) for i in (u.indication_ids or [])],
                 "preparation": u.preparation,
                 "dosage": u.dosage,
                 "contraindications": u.contraindications,
