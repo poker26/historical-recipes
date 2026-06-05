@@ -20,6 +20,7 @@ from app.database import get_db
 from app.models.plant import MedicinalAction, Indication, PlantMedicinalUse, Plant
 from app.services.medical_matching import normalize_medical_uses
 from app.services.vocab_dedup import dedup_indications, dedup_actions
+from app.services.associations import indication_compounds
 
 router = APIRouter()
 
@@ -144,6 +145,21 @@ async def list_indications(db: AsyncSession = Depends(get_db)):
         }
         for i in rows
     ]
+
+
+@router.get("/indications/{indication_id}/compounds")
+async def indication_compound_assoc(
+    indication_id: uuid.UUID,
+    limit: int = 20,
+    min_support: int = 2,
+    db: AsyncSession = Depends(get_db),
+):
+    """Reverse co-occurrence: the COMPOUNDS over-represented among plants used to treat
+    this indication (and its descendant concepts) — "what chemistry underlies treating
+    Y". Ranked by a one-sided hypergeometric p-value, each row carrying lift, support
+    and the supporting plants. An association VIA the bridging plant, hypothesis-
+    generating, never a causal claim."""
+    return await indication_compounds(db, indication_id, limit=limit, min_support=min_support)
 
 
 @router.get("/indications/{indication_id}")

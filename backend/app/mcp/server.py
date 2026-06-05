@@ -36,11 +36,15 @@ mcp = FastMCP(
     instructions=(
         "Structured knowledge base of historical Russian herbalism, mycology, "
         "phytochemistry and recipes, built from digitised books. Plants AND fungi "
-        "live in the same herbarium (filter by `kingdom`). Use the search_/list_/"
-        "find_ tools to discover entities and the controlled vocabulary, then "
-        "get_plant / get_recipe for the full source-grounded monograph or recipe "
-        "(each fact carries its source book + year). find_observations_nearby adds "
-        "live iNaturalist sightings for a plant near a coordinate."
+        "live in the same herbarium (filter by `kingdom`). Discovery-first: use the "
+        "list_vocabulary / find_compound / find_indication tools to resolve real "
+        "controlled-vocabulary values (with the archaic→modern bridge, e.g. водянка→"
+        "отёки), THEN search_plants with those values, THEN get_plant / get_recipe for "
+        "the full source-grounded monograph (every fact carries its source book + "
+        "year). compound_associations mines compound→indication/action co-occurrence "
+        "as a hypothesis lead (association via the plant, NOT a causal claim — read its "
+        "p_value, never say 'X cures Y'). find_observations_nearby adds live "
+        "iNaturalist sightings near a coordinate. See AGENTS.md for the full tool guide."
     ),
     host="0.0.0.0",
     port=8200,
@@ -261,6 +265,47 @@ async def get_compound(compound_id: str) -> dict:
     with get_plant(id)."""
     _record_usage("get_compound", "discovery")
     return await _request("GET", f"/api/compounds/{compound_id}")
+
+
+@mcp.tool()
+async def compound_associations(compound_id: str, axis: str = "indication",
+                                limit: int = 20, min_support: int = 2) -> dict:
+    """Hypothesis generator: given a COMPOUND, which conditions (indications) or
+    medicinal actions do the plants that contain it tend to be used for? Answers the
+    "if a plant has substance X, it probably helps with Y" question — but as a
+    statistical ASSOCIATION through the bridging plant, NOT a causal claim.
+
+    The corpus never says "X treats Y"; it records, separately, that a plant CONTAINS X
+    and that the same plant is USED FOR Y. This tool mines that co-occurrence over the
+    plants having both chemistry and medicinal data, ranking targets by a one-sided
+    hypergeometric p_value (small = unlikely by chance). Read p_value FIRST: with few
+    plants per compound, `lift` inflates on 2-plant coincidences, so a high lift with
+    support=2 and p_value≈0.1 is weak. Each row lists the supporting plants — verify the
+    claim by reading those monographs with get_plant.
+
+    HOW TO PHRASE RESULTS to a user: "plants containing X are often used for Y
+    (co-occurrence across N plants)", never "X cures Y". Compounds come largely from
+    modern phytochemistry sources, indications partly from historical herbals — this is
+    a research lead, not medical advice.
+
+    Args:
+        compound_id: UUID from find_compound. Querying a compound CLASS (e.g.
+            флавоноиды) automatically includes its hierarchy descendants (рутин,
+            кверцетин…), which gives more statistical support.
+        axis: "indication" (specific conditions; sparser, noisier) or "action"
+            (broad medicinal actions like ангиопротекторное; more support per
+            category, closer to mechanism — prefer this for a robust first look).
+        min_support: minimum plants backing an association (default 2). Raise to 3–4 to
+            hide thin coincidences.
+        limit: max ranked targets (default 20).
+
+    Returns {source, axis, n_base, n_source, note, results:[{name, support, lift,
+    p_value, target_plants, plants:[…]}]}, most-significant first."""
+    _record_usage("compound_associations", "discovery")
+    return await _request(
+        "GET", f"/api/compounds/{compound_id}/associations",
+        params={"axis": axis, "limit": limit, "min_support": min_support},
+    )
 
 
 @mcp.tool()

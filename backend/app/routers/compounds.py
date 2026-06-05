@@ -8,6 +8,7 @@ from app.database import get_db
 from app.models.plant import Compound, PlantCompound, Plant
 from app.services.compound_matching import normalize_plant_compounds
 from app.services.vocab_dedup import dedup_compounds
+from app.services.associations import compound_associations
 
 router = APIRouter()
 
@@ -59,6 +60,25 @@ async def list_compounds(db: AsyncSession = Depends(get_db)):
         }
         for c in rows
     ]
+
+
+@router.get("/{compound_id}/associations")
+async def compound_assoc(
+    compound_id: uuid.UUID,
+    axis: str = "indication",
+    limit: int = 20,
+    min_support: int = 2,
+    db: AsyncSession = Depends(get_db),
+):
+    """Hypothesis-generating co-occurrence: the INDICATIONS (``axis=indication``) or
+    ACTIONS (``axis=action``) that plants containing this compound (and its hierarchy
+    descendants) tend to be used for, ranked by a one-sided hypergeometric p-value
+    (NOT raw lift — small compounds inflate lift on coincidences). Each row carries
+    lift, support counts and the supporting plants so the association is auditable.
+    This is an association VIA the bridging plant, never a causal claim that the
+    compound treats the condition. ``axis=action`` is the more robust default-quality
+    view (broader categories → more support per cell)."""
+    return await compound_associations(db, compound_id, axis=axis, limit=limit, min_support=min_support)
 
 
 @router.get("/{compound_id}")
