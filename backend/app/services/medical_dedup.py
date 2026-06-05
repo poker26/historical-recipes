@@ -71,26 +71,26 @@ async def _indication_fact_counts(db: AsyncSession) -> dict[uuid.UUID, int]:
 
 
 def _build_clusters(rows: list[Indication]) -> list[list[Indication]]:
-    """Group rows that denote the same condition via exact-normalized signals:
-    (A) shared modern name, (B) one row's headword == another's modern name,
-    (C) shared headword (ё/е-folded), (D) one row's headword listed in another's
-    ``archaic`` bridge. All four are high-confidence full-string equalities."""
-    by_id = {r.id: r for r in rows}
+    """Group rows that denote the same condition via exact-normalized, SYMMETRIC,
+    canonical-naming signals: (A) shared modern name, (B) one row's headword ==
+    another's modern name, (C) shared headword (ё/е-folded).
+
+    Deliberately does NOT use archaic-list membership as a merge signal: the
+    ``archaic`` bridge is populated loosely (e.g. ``цинга.archaic`` wrongly lists
+    «золотуха» = scrofula, ``анемия.archaic`` wrongly lists «бели» = leucorrhea),
+    so treating it as proof of identity cascades two distinct conditions together.
+    Archaic still drives RETRIEVAL (the resolver matches it); it just isn't trusted
+    for MERGES."""
     name_norm = {r.id: _norm(r.name) for r in rows}
     nmod_norm = {r.id: _norm(r.name_modern) for r in rows}
 
     name_index: dict[str, list[uuid.UUID]] = {}
     nmod_index: dict[str, list[uuid.UUID]] = {}
-    archaic_index: dict[str, list[uuid.UUID]] = {}
     for r in rows:
         if name_norm[r.id]:
             name_index.setdefault(name_norm[r.id], []).append(r.id)
         if nmod_norm[r.id]:
             nmod_index.setdefault(nmod_norm[r.id], []).append(r.id)
-        for a in (r.archaic or []):
-            na = _norm(a)
-            if na:
-                archaic_index.setdefault(na, []).append(r.id)
 
     dsu = _DSU()
     for r in rows:
@@ -99,14 +99,13 @@ def _build_clusters(rows: list[Indication]) -> list[list[Indication]]:
     for group in list(nmod_index.values()) + list(name_index.values()):
         for other in group[1:]:
             dsu.union(group[0], other)
-    # B + D: a row's headword equals another's modern name, or is in its archaic list.
+    # B: a row's headword equals another row's modern name (its modern name IS this
+    # row's headword → same concept).
     for r in rows:
         nm = name_norm[r.id]
         if not nm:
             continue
         for other in nmod_index.get(nm, []):
-            dsu.union(r.id, other)
-        for other in archaic_index.get(nm, []):
             dsu.union(r.id, other)
 
     clusters: dict[uuid.UUID, list[Indication]] = {}
