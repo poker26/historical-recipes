@@ -25,10 +25,19 @@ _LLM_HEARTBEAT_INTERVAL = 30  # seconds
 # 32K-token response budget for token-dense Cyrillic.
 MAX_CHARS_PER_CALL = 14_000
 
-# Plant-entry header, e.g. "Ежевика сизая – Rubus caesius L." — a Russian name,
-# a dash, then a Latin binomial (capitalised genus). Used to split the book at
-# entry boundaries so a monograph never gets cut in half across LLM calls.
-_HEADER_RE = re.compile(r"^.{2,70}?\s[–—-]\s[A-Z][a-zà-ÿ]+\b")
+# Plant-entry header — used to split the book at entry boundaries so a monograph
+# never gets cut in half across LLM calls. Two common field-guide layouts:
+#   1. inline:   "Ежевика сизая – Rubus caesius L." (Russian name – Latin binomial)
+#   2. numbered: "425 Малина лесная" with the Latin name on the *next* line, no
+#      dash (e.g. Шанцер «Растения средней полосы России»). The leading number +
+#      capitalised Russian word distinguishes a real entry header from a figure
+#      caption ("423 — цветок…", dash after the number) or a measurement line.
+# Without alt #2 such a guide yields NO header matches, the chunker never breaks,
+# and chunks balloon to the hard cap (~50 species per LLM call → poor recall).
+_HEADER_RE = re.compile(
+    r"^.{2,70}?\s[–—-]\s[A-Z][a-zà-ÿ]+\b"   # 1. "Russian name – Latin"
+    r"|^\d{1,4}[аб]?\s+[А-ЯЁ][а-яё]"          # 2. "NNN Русское название"
+)
 
 # Light normalization of the plant part to a small controlled set; unknown
 # values pass through unchanged (lowercased).
