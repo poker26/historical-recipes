@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import books, recipes, plants, dictionaries, search, indexing, pipeline, wizard, compounds, medical
+from app.routers import books, recipes, plants, dictionaries, search, indexing, pipeline, wizard, compounds, medical, identify
 
 # Configure logging so our logger.info() calls show up in docker logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -43,6 +43,7 @@ app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
 app.include_router(wizard.router, prefix="/api/wizard", tags=["wizard"])
 app.include_router(compounds.router, prefix="/api/compounds", tags=["compounds"])
 app.include_router(medical.router, prefix="/api/medical", tags=["medical"])
+app.include_router(identify.router, prefix="/api/identify", tags=["identify"])
 
 
 @app.get("/health")

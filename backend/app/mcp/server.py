@@ -359,6 +359,39 @@ async def get_recipe(recipe_id: str) -> dict:
     return await _request("GET", f"/api/recipes/{recipe_id}")
 
 
+# ─────────────────────────── Identification tier (photo → species) ───────────────
+
+
+@mcp.tool()
+async def identify_plant(
+    image_urls: list[str],
+    organs: list[str] | None = None,
+    limit: int = 5,
+) -> dict:
+    """Identify a plant/fungus from one or more PHOTO URLs and link each candidate
+    species to our herbarium. This is the entry point for "what is this plant, and
+    what does our historical corpus say about it": identify → get_plant.
+
+    Args:
+        image_urls: 1–5 publicly fetchable image URLs of the same plant (different
+            organs/angles improve accuracy).
+        organs: optional, one per image — "leaf"|"flower"|"fruit"|"bark"|"auto"
+            (a single value applies to all; omit to auto-detect).
+        limit: max candidate species (default 5).
+
+    Returns ``{engine, candidates:[…], matched_count, remaining_requests}``. Each
+    candidate has ``latin``, ``score`` (0–1 confidence), ``common_names``,
+    ``gbif_id``, and ``plant``: a herbarium card (id, name, name_latin, …) when the
+    species IS in our corpus, else null. For a matched candidate, call
+    get_plant(plant.id) for the full source-grounded monograph; for an unmatched
+    one, the species simply isn't in our books yet. Identification is an external
+    engine (Pl@ntNet); confidence is the engine's, not ours."""
+    _record_usage("identify_plant", "identify")
+    return await _request("POST", "/api/identify/by-url", json={
+        "image_urls": image_urls, "organs": organs, "limit": limit,
+    })
+
+
 # ─────────────────────── Live-enrichment tier (iNaturalist) ──────────────────────
 
 

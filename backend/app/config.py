@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     # Qwen handles Russian well, has a 262K context, and doesn't ToS-filter.
     llm_model_long_context: str = "qwen/qwen3-235b-a22b-2507"
 
+    # Pl@ntNet identification API (photo → species). Free tier = 500 ids/day; the
+    # key is created at my.plantnet.org. Empty key disables the /api/identify route
+    # gracefully (returns a clear error instead of calling the engine).
+    plantnet_api_key: str = ""
+    plantnet_base_url: str = "https://my-api.plantnet.org/v2"
+    # Default project/flora list to identify against ("all" = world flora).
+    plantnet_project: str = "all"
+
     # n8n
     n8n_base_url: str = "http://n8n:5678"
     n8n_webhook_secret: str = ""
