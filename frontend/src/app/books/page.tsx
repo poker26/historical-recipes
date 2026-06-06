@@ -5,11 +5,27 @@ import Link from "next/link";
 import { api, Book } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
+// Columns the table can be sorted by, plus how to read the value off a Book.
+type SortKey = "title" | "author" | "year" | "domain" | "pdf_type" | "language" | "status" | "created_at";
+const SORT_GETTERS: Record<SortKey, (b: Book) => string | number | null> = {
+  title: (b) => b.title,
+  author: (b) => b.author,
+  year: (b) => b.year,
+  domain: (b) => b.domain,
+  pdf_type: (b) => b.pdf_type,
+  language: (b) => b.language,
+  status: (b) => b.status,
+  created_at: (b) => b.created_at,
+};
+
 export default function BooksPage() {
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterDomain, setFilterDomain] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("created_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [showUpload, setShowUpload] = useState(false);
   const [uploading, setUploading] = useState(false);
 
@@ -22,6 +38,48 @@ export default function BooksPage() {
   };
 
   useEffect(fetchBooks, [filterDomain, filterStatus]);
+
+  // Click a column header: same column flips direction, a new one starts asc
+  // (created_at starts desc — newest first is the natural default for a date).
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir(key === "created_at" || key === "year" ? "desc" : "asc");
+    }
+  };
+
+  // Search (title + author) and sort happen client-side over the already-fetched
+  // list — instant, no extra round-trips. Domain/status stay server-side filters.
+  const q = search.trim().toLowerCase();
+  const displayed = books
+    .filter(
+      (b) =>
+        !q ||
+        b.title.toLowerCase().includes(q) ||
+        (b.author || "").toLowerCase().includes(q),
+    )
+    .sort((a, b) => {
+      const av = SORT_GETTERS[sortKey](a);
+      const bv = SORT_GETTERS[sortKey](b);
+      // Nulls/empties always sort last, regardless of direction.
+      const aEmpty = av === null || av === "";
+      const bEmpty = bv === null || bv === "";
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+      let cmp: number;
+      if (typeof av === "number" && typeof bv === "number") {
+        cmp = av - bv;
+      } else {
+        cmp = String(av).localeCompare(String(bv), "ru");
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+
+  const sortArrow = (key: SortKey) =>
+    key === sortKey ? (sortDir === "asc" ? " ▲" : " ▼") : "";
 
   const handleDelete = async (book: Book) => {
     if (!confirm(`Delete "${book.title}"? This removes the book, its files and all indexed vectors. This cannot be undone.`)) {
@@ -56,7 +114,7 @@ export default function BooksPage() {
   return (
     <>
       <div className="page-header">
-        <h1>Library</h1>
+        <h1>Library {!loading && <span style={{ color: "var(--text-muted)", fontWeight: 400, fontSize: 16 }}>({displayed.length}{displayed.length !== books.length ? ` / ${books.length}` : ""})</span>}</h1>
         <button className="btn btn-primary" onClick={() => setShowUpload(!showUpload)}>
           + Upload Book
         </button>
@@ -112,6 +170,12 @@ export default function BooksPage() {
       )}
 
       <div className="search-bar">
+        <input
+          type="search"
+          placeholder="Search by title or author…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
         <select value={filterDomain} onChange={(e) => setFilterDomain(e.target.value)} style={{ width: 160 }}>
           <option value="">All domains</option>
           <option value="recipes">Recipes</option>
@@ -131,25 +195,36 @@ export default function BooksPage() {
       <div className="card">
         {loading ? (
           <div className="empty"><span className="spinner" /></div>
-        ) : books.length === 0 ? (
-          <div className="empty">No books found</div>
+        ) : displayed.length === 0 ? (
+          <div className="empty">{books.length === 0 ? "No books found" : "No books match your search"}</div>
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Title</th>
-                  <th>Author</th>
-                  <th>Year</th>
-                  <th>Domain</th>
-                  <th>PDF Type</th>
-                  <th>Language</th>
-                  <th>Status</th>
+                  {([
+                    ["title", "Title"],
+                    ["author", "Author"],
+                    ["year", "Year"],
+                    ["domain", "Domain"],
+                    ["pdf_type", "PDF Type"],
+                    ["language", "Language"],
+                    ["status", "Status"],
+                  ] as [SortKey, string][]).map(([key, label]) => (
+                    <th
+                      key={key}
+                      onClick={() => toggleSort(key)}
+                      style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
+                      title="Click to sort"
+                    >
+                      {label}{sortArrow(key)}
+                    </th>
+                  ))}
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {books.map((book) => (
+                {displayed.map((book) => (
                   <tr key={book.id}>
                     <td><Link href={`/books/${book.id}`}>{book.title}</Link></td>
                     <td>{book.author || "—"}</td>
