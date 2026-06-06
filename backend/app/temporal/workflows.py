@@ -28,6 +28,8 @@ with workflow.unsafe.imports_passed_through():
         match_ingredients_activity,
         index_activity,
         enrich_inat_activity,
+        klex_list_activity,
+        klex_download_activity,
         ping_activity,
     )
 
@@ -285,6 +287,88 @@ class MedicalNormalizerWorkflow:
                 start_to_close_timeout=_SHORT,
                 retry_policy=_RETRY,
             )
+        return totals
+
+
+@workflow.defn
+class KlexHerbDownloadWorkflow:
+    """Durable, resumable mirror of klex.ru/razdel/herb into a dedicated MinIO bucket.
+
+    The download is long (~585 books, tens of GB), so doing it as a workflow gives
+    us crash-safe resumption that a plain script can't:
+
+    * Each book is its own activity, so a completed book is recorded in workflow
+      history and is NEVER re-fetched after a worker restart — Temporal replays
+      history and continues from the next book.
+    * ``klex_download_activity`` is idempotent (it skips a book whose object already
+      exists in the bucket), so even a from-scratch re-run is cheap.
+    * The book list is fetched once and carried across ``continue_as_new`` segments,
+      so history stays small over the whole sweep and replay is fast. ``start_index``
+      + ``totals`` are threaded through each segment to preserve progress.
+
+    Mid-file worker death is handled by the activity's heartbeat timeout (the
+    download heartbeats every few MB), so that single book is retried, not orphaned.
+    """
+
+    @workflow.run
+    async def run(self, params: dict | None = None) -> dict:
+        params = dict(params or {})
+        bucket = params.get("bucket", "klex-herb")
+        prefix = params.get("prefix", "")
+        formats = params.get("formats", "")
+        delay = float(params.get("delay_seconds", 1.0))
+        segment = int(params.get("segment_size", 100))  # books per continue-as-new
+        start_index = int(params.get("start_index", 0))
+        totals = params.get("totals") or {
+            "ok": 0, "skip": 0, "no_file": 0, "failed": 0, "bytes": 0, "total": 0,
+        }
+
+        # Fetch the catalogue once; carry it forward so later segments don't re-list
+        # (re-listing could shift indices and desync start_index).
+        books = params.get("books")
+        if books is None:
+            books = await workflow.execute_activity(
+                klex_list_activity,
+                start_to_close_timeout=_SHORT,
+                retry_policy=_RETRY,
+            )
+            totals["total"] = len(books)
+
+        i = start_index
+        while i < len(books):
+            code = books[i][0]
+            try:
+                res = await workflow.execute_activity(
+                    klex_download_activity,
+                    args=[code, bucket, prefix, formats],
+                    start_to_close_timeout=_LONG,
+                    heartbeat_timeout=_HEARTBEAT,
+                    retry_policy=_RETRY,
+                )
+                status = res.get("status")
+                if status == "ok":
+                    totals["ok"] += 1
+                    totals["bytes"] += int(res.get("size", 0))
+                elif status == "skip":
+                    totals["skip"] += 1
+                elif status == "no_file":
+                    totals["no_file"] += 1
+            except Exception as e:  # one bad book must not kill the whole sweep
+                totals["failed"] += 1
+                workflow.logger.warning(f"klex book {code} failed: {e}")
+
+            i += 1
+            if delay and i < len(books):
+                await workflow.sleep(timedelta(seconds=delay))
+
+            # Trim history periodically: hand the rest off to a fresh run.
+            if i - start_index >= segment and i < len(books):
+                workflow.continue_as_new(args=[{
+                    "bucket": bucket, "prefix": prefix, "formats": formats,
+                    "delay_seconds": delay, "segment_size": segment,
+                    "start_index": i, "totals": totals, "books": books,
+                }])
+
         return totals
 
 

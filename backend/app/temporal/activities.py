@@ -1848,3 +1848,34 @@ async def normalize_medical_activity() -> dict:
         result = await normalize_medical_uses(db)
     _hb(f"Normalized medical uses: {result}")
     return result
+
+
+# ──────────────────────────────────────────────────────────────────────
+# klex.ru herbalism mirror (corpus acquisition, not a per-book step)
+# ──────────────────────────────────────────────────────────────────────
+
+@activity.defn
+async def klex_list_activity() -> list:
+    """Fetch klex.ru/razdel/herb and return [[code, title], ...] for every book."""
+    from app.services import klex
+
+    books = await klex.list_books()
+    _hb(f"klex listing: {len(books)} books")
+    return books
+
+
+@activity.defn
+async def klex_download_activity(code: str, bucket: str, prefix: str = "",
+                                 formats: str = "") -> dict:
+    """Mirror one klex.ru book into ``bucket``. Idempotent (skips if the object
+    already exists) and heartbeats during the multi-MB streamed download, so a
+    worker restart mid-file just retries this one book."""
+    from app.services import klex
+
+    res = await klex.download_book(
+        code, bucket, prefix=prefix,
+        formats=formats or klex.DEFAULT_FORMATS,
+        heartbeat=_hb,
+    )
+    _hb(f"klex {code}: {res.get('status')} {res.get('key', '')}")
+    return res

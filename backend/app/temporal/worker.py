@@ -20,6 +20,7 @@ from app.temporal.workflows import (
     BookPipelineWorkflow,
     InatEnrichmentWorkflow,
     MedicalNormalizerWorkflow,
+    KlexHerbDownloadWorkflow,
     PingWorkflow,
 )
 
@@ -37,7 +38,8 @@ async def main():
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
-        workflows=[BookPipelineWorkflow, InatEnrichmentWorkflow, MedicalNormalizerWorkflow, PingWorkflow],
+        workflows=[BookPipelineWorkflow, InatEnrichmentWorkflow, MedicalNormalizerWorkflow,
+                   KlexHerbDownloadWorkflow, PingWorkflow],
         activities=[
             activities.convert_activity,
             activities.classify_activity,
@@ -54,6 +56,8 @@ async def main():
             activities.match_ingredients_activity,
             activities.index_activity,
             activities.enrich_inat_activity,
+            activities.klex_list_activity,
+            activities.klex_download_activity,
             activities.ping_activity,
         ],
         # Pipeline steps are few but very long-running; one at a time per book
