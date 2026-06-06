@@ -51,6 +51,18 @@ DEFAULT_FORMATS = "pdf,djvu,zip,fb2,docx,doc,txt"
 _TIMEOUT = httpx.Timeout(60.0, read=600.0)
 
 
+def _proxy() -> str | None:
+    """Optional forward-proxy for ALL klex/phantastike traffic.
+
+    klex.ru IP-throttles bursts of requests (starts returning 503 to the offending
+    egress IP). Routing everything — listing, detail pages AND the file downloads —
+    through the fleet trusttunnel proxy (a clean egress IP on server 6) sidesteps
+    that block. Set KLEX_PROXY to the proxy URL, e.g.
+    https://user:pass@tt.begemot26.ru:4431.
+    """
+    return os.environ.get("KLEX_PROXY") or None
+
+
 def _decode(content: bytes) -> str:
     return content.decode("windows-1251", errors="replace")
 
@@ -83,7 +95,7 @@ def parse_detail(html: str) -> dict[str, tuple[str, str]]:
 async def list_books() -> list[list[str]]:
     """Fetch the listing and return [[code, title], ...] (list, JSON-friendly)."""
     async with httpx.AsyncClient(headers={"User-Agent": UA}, timeout=_TIMEOUT,
-                                 follow_redirects=True) as c:
+                                 follow_redirects=True, proxy=_proxy()) as c:
         r = await c.get(LISTING)
         r.raise_for_status()
         return [[code, title] for code, title in parse_listing(_decode(r.content))]
@@ -127,7 +139,7 @@ async def download_book(
     _ensure_bucket(bucket)
 
     async with httpx.AsyncClient(headers={"User-Agent": UA}, timeout=_TIMEOUT,
-                                 follow_redirects=True) as c:
+                                 follow_redirects=True, proxy=_proxy()) as c:
         r = await c.get(f"{BASE}/{code}")
         r.raise_for_status()
         files = parse_detail(_decode(r.content))
