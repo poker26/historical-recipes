@@ -35,7 +35,6 @@ WF_ID = "klex-herb-download"
 async def _run(args) -> int:
     from temporalio.service import RPCError
 
-    from app.config import settings
     from app.temporal.client import get_temporal_client
     from app.temporal.workflows import KlexHerbDownloadWorkflow
 
@@ -68,10 +67,11 @@ async def _run(args) -> int:
             KlexHerbDownloadWorkflow.run,
             args=[params],
             id=WF_ID,
-            task_queue=settings.temporal_task_queue,
+            task_queue=args.task_queue,
         )
         print(f"Started klex mirror: workflow_id={handle.id} run_id={handle.result_run_id}")
-        print(f"  bucket={args.bucket!r}  formats={args.formats!r}  delay={args.delay}s")
+        print(f"  bucket={args.bucket!r}  formats={args.formats!r}  delay={args.delay}s"
+              f"  queue={args.task_queue!r}")
     else:
         print(f"klex mirror already RUNNING (workflow_id={WF_ID}).")
 
@@ -85,6 +85,8 @@ async def _run(args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Start/inspect the klex.ru MinIO mirror workflow")
     ap.add_argument("--bucket", default="klex-herb", help="target MinIO bucket")
+    ap.add_argument("--task-queue", default="klex-download",
+                    help="Temporal task queue (dedicated klex worker polls 'klex-download')")
     ap.add_argument("--prefix", default="", help="object-key prefix inside the bucket")
     ap.add_argument("--formats", default="pdf,djvu,zip,fb2,docx,doc,txt",
                     help="format preference order; first available per book wins")

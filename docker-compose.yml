@@ -49,6 +49,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # === klex.ru mirror worker ===
+  # Dedicated, isolated worker for the KlexHerbDownloadWorkflow on its own task
+  # queue ("klex-download"). Kept separate from the main `worker` so the long,
+  # I/O-bound download sweep never shares a process with the CPU-heavy OCR/LLM
+  # pipeline activities — otherwise that contention trips Temporal's deadlock
+  # detector and stalls the download. Reuses the backend image.
+  klex-worker:
+    build: ./backend
+    env_file: .env
+    command: python -m app.temporal.klex_worker
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
   # === MCP server (consumer-facing retrieval surface) ===
   # Reuses the backend image (same code + deps), like the worker, but runs the
   # MCP Streamable HTTP server instead of uvicorn/worker.  Tools are thin wrappers
