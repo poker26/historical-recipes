@@ -383,6 +383,27 @@ def _name_in_source(name: str, source_norm: str) -> bool:
     return f" {stem}" in source_norm
 
 
+def _latin_in_source(name_latin: str, source_norm: str) -> bool:
+    """True if a Latin name is traceable to the source page.
+
+    A genuine binomial is copied off the page next to its Russian headword, so its
+    genus (or epithet) word physically reappears in the text. A binomial the model
+    supplied from its own knowledge — the exact failure that paired the mushroom
+    «Паутинник триумфальный» with the orchid ``Ophrys Arachnites`` — shares no token
+    with the page and is rejected. Author/rank fragments ('L.', 'Fr.', 'V.', 'Bull')
+    and digits are dropped before matching; we require ANY remaining word (genus or
+    epithet) to occur, so an OCR-garbled half of the binomial still passes.
+    """
+    words = [w for w in _norm_for_match(name_latin).split() if len(w) >= 4 and not w.isdigit()]
+    if not words:
+        return False
+    for w in words:
+        stem = w[: max(4, len(w) - 2)]  # tolerate a declined/garbled ending
+        if f" {stem}" in source_norm:
+            return True
+    return False
+
+
 def _ground_plant(p: ExtractedPlant, source_norm: str) -> ExtractedPlant | None:
     """Strip fabricated facts; drop the plant entirely if nothing is traceable.
 
@@ -400,6 +421,14 @@ def _ground_plant(p: ExtractedPlant, source_norm: str) -> ExtractedPlant | None:
     p.compounds = [c for c in p.compounds if _is_grounded(c.compound, source_norm)]
     p.culinary_uses = [c for c in p.culinary_uses if _is_grounded(c.original_text, source_norm)]
     p.is_toxic = bool(p.is_toxic) or len(p.toxicities) > 0
+
+    # Identity latin is hallucination-prone (the model "completes" a binomial from
+    # its own knowledge). Keep it only if the page actually shows it; otherwise blank
+    # it so a future iNat sync can't fetch a photo of the wrong species/kingdom.
+    if p.name_latin and not _latin_in_source(p.name_latin, source_norm):
+        p.name_latin = ""
+    if p.family_latin and not _latin_in_source(p.family_latin, source_norm):
+        p.family_latin = ""
 
     anchored = (
         _name_in_source(p.name, source_norm)
