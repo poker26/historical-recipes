@@ -515,18 +515,28 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
             ranked_ind.append(phrase)
             if len(ranked_ind) >= 6:
                 break
-        # One representative source quote (decision #3): prefer an actionable row
-        # (has preparation/dosage), then a cited one, then a moderate length.
-        quote = None
-        if g["_quotes"]:
-            best = sorted(g["_quotes"], key=lambda q: (
-                not q["actionable"],
-                q["source"] is None,
-                abs(len(q["text"]) - 160),
-            ))[0]
+        # All source quotes backing this action, ranked so [0] is the
+        # representative one (decision #3): prefer an actionable row (has
+        # preparation/dosage), then a cited one, then a moderate length. Every
+        # quote is code-stripped + trimmed here so the «читать ещё» expansion
+        # never has to round-trip the (deliberately raw) default endpoint
+        # (RFC-readmore-quotes-codes).
+        quotes: list[dict] = []
+        seen_q: set = set()
+        for cand in sorted(g["_quotes"], key=lambda q: (
+            not q["actionable"],
+            q["source"] is None,
+            abs(len(q["text"]) - 160),
+        )):
             # strip leaked ICD/MKB codes from the quote too (same class as Issue 1)
-            clean_text = _CODE_PARENS.sub(" ", best["text"])
-            quote = {"text": _trim(clean_text, 240), "source": best["source"]}
+            clean_text = _trim(_CODE_PARENS.sub(" ", cand["text"]), 240)
+            if not clean_text:
+                continue
+            dk = clean_text.lower()
+            if dk in seen_q:
+                continue
+            seen_q.add(dk)
+            quotes.append({"text": clean_text, "source": cand["source"]})
         uses.append({
             "action": g["action"],
             "action_id": g["action_id"],
@@ -535,7 +545,10 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
             "indications": ranked_ind,
             "indication_ids": _distinct(g["_indication_ids"]),
             "source_count": g["source_count"],
-            "quote": quote,
+            # `quotes[0]` is the representative quote; the rest power «читать ещё».
+            "quotes": quotes,
+            # back-compat alias for clients still reading the single quote.
+            "quote": quotes[0] if quotes else None,
         })
     uses.sort(key=lambda x: (-x["source_count"], -use_groups[x["action"].lower()]["_max_conf"]))
 
