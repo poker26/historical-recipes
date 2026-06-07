@@ -24,7 +24,17 @@ in your code has to change when the data lands later.
 
 ## What is LIVE now in `GET /api/plants/{id}?view=field`
 
-### `uses[]` gained `action_id`, `action_definition`, `quote`
+### `uses[]` gained `action_id`, `action_definition`, `quotes[]` (+ `quote`)
+
+> **UPDATE 2026-06-08 (commit `3590a0d`, `RFC-readmore-quotes-codes.md`):** the single
+> `quote` is now the head of a full **`quotes[]`** array — ALL rows backing the action,
+> each code-stripped + trimmed + deduped, `quotes[0]` = the representative one. **The
+> «читать ещё» round-trip to the default endpoint is no longer needed** — and was the
+> source of the re-leaked ICD/MKB codes in the expansion. Render `quotes[0]` inline,
+> «читать ещё (len(quotes)−1)» expands `quotes[1..]` from the same already-loaded array.
+> You can **delete `Api.useQuotes()` and the substring-match default-view path entirely.**
+> `quote` is kept as a back-compat alias = `quotes[0]` (or null), so this ships without a
+> lockstep deploy.
 
 ```jsonc
 {
@@ -34,19 +44,28 @@ in your code has to change when the data lands later.
   "parts": ["корневище"],
   "indications": ["…"],
   "indication_ids": ["…"],
-  "source_count": 2,                  // → your «читать ещё (source_count − 1)» label
-  "quote": {
+  "source_count": 2,                  // count of source ROWS; for the label prefer len(quotes)
+  "quotes": [                         // ALL rows for this action, cleaned; [0] = representative
+    { "text": "Отвар из корневищ используют как обволакивающее средство.",
+      "source": "Травник (часть 2) — монографии растений" },
+    { "text": "…", "source": "…" }
+  ],
+  "quote": {                          // back-compat alias === quotes[0] (or null)
     "text": "Отвар из корневищ используют как обволакивающее средство.",
     "source": "Травник (часть 2) — монографии растений"
   }
 }
 ```
 
-**`quote` selection (server):** from the rows backing that action, we prefer one that
-is *actionable* (has preparation/dosage), then one that is cited, then a moderate
-length; trimmed to ~240 chars on a word boundary; **ICD/MKB codes stripped** (same
-cleanup as `RFC-field-view-data-noise.md`). `quote` is `null` if no row had an
-`original_text`.
+**`quotes[]` ordering & cleanup (server):** rows are ranked so `quotes[0]` is
+*actionable* (has preparation/dosage) first, then cited, then a moderate length; **every**
+entry is trimmed to ~240 chars on a word boundary and has **ICD/MKB codes stripped** (same
+cleanup as `RFC-field-view-data-noise.md`, applied to the whole list now), then deduped by
+text. `quotes` is `[]` (and `quote` is `null`) if no row had an `original_text`.
+
+> ℹ️ **`source_count` vs `len(quotes)`:** `source_count` counts the source rows backing the
+> action; `len(quotes)` can be smaller (rows without `original_text`, or deduped duplicates).
+> For the «читать ещё (N)» label use **`len(quotes) − 1`**, not `source_count − 1`.
 
 > ⚠️ **Quote quality is bounded by the source.** Some rows' `original_text` is not
 > prose but the structured indications+dosage text, so the quote can read like
@@ -86,9 +105,14 @@ plant is partial).
 
 ---
 
-## Interop note for «читать ещё (N)» — important
+## Interop note for «читать ещё (N)» — ⚠️ OBSOLETE as of `3590a0d`
 
-Your plan (per the RFC) is to lazily fetch the remaining quotes by reusing the
+> **No longer applies.** Since the full cleaned `quotes[]` is embedded inline (see the
+> UPDATE above), «читать ещё» expands the already-loaded array — there is **no** lazy
+> fetch of the default endpoint anymore, so this substring-match gotcha is moot. Kept
+> below only for historical context / older clients still on the single-`quote` path.
+
+Your old plan (per the RFC) was to lazily fetch the remaining quotes by reusing the
 **default** `GET /api/plants/{id}` and filtering its `medicinal_uses[]` by action.
 One gotcha:
 
