@@ -405,6 +405,15 @@ def _split_actions(action_name: str | None, action_raw: str | None) -> list[str]
     return [a.strip() for a in _ACTION_SPLIT.split(action_raw) if a.strip()]
 
 
+def _trim(text: str, limit: int = 240) -> str:
+    """Trim a quote to ~limit chars on a word boundary, adding an ellipsis."""
+    text = " ".join(text.split())  # collapse internal whitespace/newlines
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(" ,.;:—-")
+    return (cut or text[:limit]) + "…"
+
+
 def _distinct(items) -> list:
     """Order-preserving de-duplication (case-insensitive for strings)."""
     seen: set = set()
@@ -441,7 +450,12 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
     # ── uses: dedup by action key, merge parts/indications, rank by consensus ─
     use_groups: dict[str, dict] = {}
     for u in plant.medicinal_uses:
-        actions = _split_actions(u.action.name if u.action else None, u.action_raw)
+        # A controlled-vocab action is single-valued and carries its concept id;
+        # a free-text blob ("a, b и c") splits into separate (action, no-id) facts.
+        if u.action and u.action.name and u.action.name.strip():
+            row_actions = [(u.action.name.strip(), str(u.action_id) if u.action_id else None)]
+        else:
+            row_actions = [(a, None) for a in _split_actions(None, u.action_raw)]
         # clean ICD/MKB codes out of the indications once per row (shared by every
         # action split out of this row)
         row_indications = [
@@ -449,19 +463,34 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
             if (cl := _clean_indication(ph))
         ]
         row_indication_ids = [str(i) for i in (u.indication_ids or [])]
-        for action in actions:
+        otext = (u.original_text or "").strip()
+        quote_cand = None
+        if otext:
+            quote_cand = {
+                "text": otext,
+                "source": src(u.source_book_id),
+                "actionable": bool(
+                    (u.preparation and u.preparation.strip())
+                    or (u.dosage and u.dosage.strip())
+                ),
+            }
+        for action, aid in row_actions:
             key = action.lower()
             g = use_groups.get(key)
             if g is None:
                 g = {
                     "action": action,
+                    "action_id": None,
                     "_parts": [],
                     "_indications": [],
                     "_indication_ids": [],
+                    "_quotes": [],
                     "source_count": 0,
                     "_max_conf": 0.0,
                 }
                 use_groups[key] = g
+            if aid and not g["action_id"]:
+                g["action_id"] = aid
             g["source_count"] += 1
             if u.confidence is not None and u.confidence > g["_max_conf"]:
                 g["_max_conf"] = u.confidence
@@ -469,6 +498,8 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
                 g["_parts"].append(u.part)
             g["_indications"].extend(row_indications)
             g["_indication_ids"].extend(row_indication_ids)
+            if quote_cand:
+                g["_quotes"].append(quote_cand)
 
     uses: list[dict] = []
     for g in use_groups.values():
@@ -484,12 +515,27 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
             ranked_ind.append(phrase)
             if len(ranked_ind) >= 6:
                 break
+        # One representative source quote (decision #3): prefer an actionable row
+        # (has preparation/dosage), then a cited one, then a moderate length.
+        quote = None
+        if g["_quotes"]:
+            best = sorted(g["_quotes"], key=lambda q: (
+                not q["actionable"],
+                q["source"] is None,
+                abs(len(q["text"]) - 160),
+            ))[0]
+            # strip leaked ICD/MKB codes from the quote too (same class as Issue 1)
+            clean_text = _CODE_PARENS.sub(" ", best["text"])
+            quote = {"text": _trim(clean_text, 240), "source": best["source"]}
         uses.append({
             "action": g["action"],
+            "action_id": g["action_id"],
+            "action_definition": None,   # null until the actions vocabulary (RFC A1) lands
             "parts": _distinct(g["_parts"]),
             "indications": ranked_ind,
             "indication_ids": _distinct(g["_indication_ids"]),
             "source_count": g["source_count"],
+            "quote": quote,
         })
     uses.sort(key=lambda x: (-x["source_count"], -use_groups[x["action"].lower()]["_max_conf"]))
 
@@ -533,10 +579,16 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
             continue
         ex = g["_examples"].get(name.lower())
         cid = str(c.compound_id) if c.compound_id else None
+        defn = None
+        if c.compound_ref and c.compound_ref.definition and c.compound_ref.definition.strip():
+            defn = c.compound_ref.definition.strip()
         if ex is None:
-            g["_examples"][name.lower()] = {"name": name, "compound_id": cid}
-        elif ex["compound_id"] is None and cid:
-            ex["compound_id"] = cid  # prefer the tappable variant
+            g["_examples"][name.lower()] = {"name": name, "compound_id": cid, "definition": defn}
+        else:
+            if ex["compound_id"] is None and cid:
+                ex["compound_id"] = cid  # prefer the tappable variant
+            if ex.get("definition") is None and defn:
+                ex["definition"] = defn
     compound_groups: list[dict] = []
     for g in comp_groups.values():
         named = list(g["_examples"].values())
@@ -622,6 +674,7 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
         "description": plant.description,
         "parts_used": plant.parts_used,
         "roles": roles,
+        "fun_fact": None,            # null until the grounded «Интересное» field (RFC A3) lands
         "uses": uses,
         "cautions": cautions,
         "compound_groups": compound_groups,
@@ -695,19 +748,22 @@ async def get_plant(
     ``?view=field`` returns a compact, deduped + ranked aggregation for the
     low-bandwidth field client (see docs/HANDOFF-monograph-aggregation.md).
     """
-    stmt = (
-        select(Plant)
-        .where(Plant.id == plant_id)
-        .options(
-            selectinload(Plant.medicinal_uses).selectinload(PlantMedicinalUse.action),
-            selectinload(Plant.compounds),
-            selectinload(Plant.harvests),
-            selectinload(Plant.habitats),
-            selectinload(Plant.toxicities),
-            selectinload(Plant.culinary_uses),
-            selectinload(Plant.mentions),
+    load_options = [
+        selectinload(Plant.medicinal_uses).selectinload(PlantMedicinalUse.action),
+        selectinload(Plant.compounds),
+        selectinload(Plant.harvests),
+        selectinload(Plant.habitats),
+        selectinload(Plant.toxicities),
+        selectinload(Plant.culinary_uses),
+        selectinload(Plant.mentions),
+    ]
+    if view == "field":
+        # field view surfaces each compound's vocabulary definition; eager-load
+        # the Compound ref so we don't N+1. Default view never touches it.
+        load_options.append(
+            selectinload(Plant.compounds).selectinload(PlantCompound.compound_ref)
         )
-    )
+    stmt = select(Plant).where(Plant.id == plant_id).options(*load_options)
     plant = (await db.execute(stmt)).scalar_one_or_none()
     if plant is None:
         raise HTTPException(status_code=404, detail="Plant not found")
