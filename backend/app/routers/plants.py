@@ -332,15 +332,77 @@ def _book_title_map(books: list[Book]) -> dict[str, str]:
 # ── Field-view aggregation helpers (docs/HANDOFF-monograph-aggregation.md) ──────
 # Pure, deterministic, no-LLM compaction of one already-loaded plant's relations.
 
-_PHRASE_SPLIT = re.compile(r"[;,/\n]+")
+_PHRASE_SEPARATORS = set(";,/\n")
+
+# A single classifier code: optional leading letter (Latin *or* Cyrillic homoglyph,
+# e.g. ICD-10 "K25" vs Cyrillic "К25"), 1–3 digits, optional ".\d+", optional range.
+_CODE = r"[A-ZА-Я]?\d{1,3}(?:\.\d+)?"
+# A trailing/inline parenthetical whose contents are ONLY codes (and separators):
+# "(K25, K26, K28)", "(К50-К52)", "(J00-J47, J80-J99)" — but NOT "(2-3 раза)".
+_CODE_PARENS = re.compile(
+    rf"\s*\(\s*(?:{_CODE}(?:\s*[–-]\s*{_CODE})?\s*[,;]?\s*)+\)"
+)
+# A token that is nothing but a code / range / punctuation (defence in depth for
+# fragments that escaped paren-aware splitting, e.g. "К26", "К28)").
+_ONLY_CODE = re.compile(
+    rf"^[\s,;()]*(?:{_CODE}(?:\s*[–-]\s*{_CODE})?[\s,;()]*)+$"
+)
+# Action enumeration separators: commas, semicolons, and a standalone Russian "и".
+_ACTION_SPLIT = re.compile(r"\s*[;,]\s*|\s+и\s+")
 
 
 def _split_phrases(text: str | None) -> list[str]:
     """Split a free-text field (indications, contraindications, symptoms) into
-    trimmed phrases. Empty input → empty list."""
+    trimmed phrases. Paren-aware: never splits inside (...) / [...] so a code
+    list like "(K25, K26, K28)" stays glued to its concept instead of being torn
+    into bare-code fragments. Empty input → empty list."""
     if not text:
         return []
-    return [p.strip() for p in _PHRASE_SPLIT.split(text) if p.strip()]
+    out: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch in "([":
+            depth += 1
+            buf.append(ch)
+        elif ch in ")]":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+        elif ch in _PHRASE_SEPARATORS and depth == 0:
+            seg = "".join(buf).strip()
+            if seg:
+                out.append(seg)
+            buf = []
+        else:
+            buf.append(ch)
+    seg = "".join(buf).strip()
+    if seg:
+        out.append(seg)
+    return out
+
+
+def _clean_indication(phrase: str) -> str | None:
+    """Strip leaked classifier codes from an indication label. Removes any
+    parenthetical that is only codes ("язвенная болезнь (К25, К26, К28)" →
+    "язвенная болезнь") and drops a token that is nothing but a code. Returns
+    None when nothing readable remains."""
+    p = _CODE_PARENS.sub(" ", phrase)
+    p = re.sub(r"\s{2,}", " ", p).strip(" ,;()")
+    if not p or _ONLY_CODE.match(p):
+        return None
+    return p
+
+
+def _split_actions(action_name: str | None, action_raw: str | None) -> list[str]:
+    """One medicinal action per fact. A controlled-vocab ``action.name`` is
+    already single-valued — use it as-is. A free-text ``action_raw`` may be a
+    comma/"и"-joined blob ("диуретический, анальгетический, противовоспалительный")
+    — split it so each action ranks and dedups on its own."""
+    if action_name and action_name.strip():
+        return [action_name.strip()]
+    if not action_raw or not action_raw.strip():
+        return []
+    return [a.strip() for a in _ACTION_SPLIT.split(action_raw) if a.strip()]
 
 
 def _distinct(items) -> list:
@@ -379,28 +441,34 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
     # ── uses: dedup by action key, merge parts/indications, rank by consensus ─
     use_groups: dict[str, dict] = {}
     for u in plant.medicinal_uses:
-        action = (u.action.name if u.action else None) or (u.action_raw or "")
-        key = action.strip().lower()
-        if not key:
-            continue
-        g = use_groups.get(key)
-        if g is None:
-            g = {
-                "action": action.strip(),
-                "_parts": [],
-                "_indications": [],       # phrase → count, for frequency capping
-                "_indication_ids": [],
-                "source_count": 0,
-                "_max_conf": 0.0,
-            }
-            use_groups[key] = g
-        g["source_count"] += 1
-        if u.confidence is not None and u.confidence > g["_max_conf"]:
-            g["_max_conf"] = u.confidence
-        if u.part:
-            g["_parts"].append(u.part)
-        g["_indications"].extend(_split_phrases(u.indications))
-        g["_indication_ids"].extend(str(i) for i in (u.indication_ids or []))
+        actions = _split_actions(u.action.name if u.action else None, u.action_raw)
+        # clean ICD/MKB codes out of the indications once per row (shared by every
+        # action split out of this row)
+        row_indications = [
+            cl for ph in _split_phrases(u.indications)
+            if (cl := _clean_indication(ph))
+        ]
+        row_indication_ids = [str(i) for i in (u.indication_ids or [])]
+        for action in actions:
+            key = action.lower()
+            g = use_groups.get(key)
+            if g is None:
+                g = {
+                    "action": action,
+                    "_parts": [],
+                    "_indications": [],
+                    "_indication_ids": [],
+                    "source_count": 0,
+                    "_max_conf": 0.0,
+                }
+                use_groups[key] = g
+            g["source_count"] += 1
+            if u.confidence is not None and u.confidence > g["_max_conf"]:
+                g["_max_conf"] = u.confidence
+            if u.part:
+                g["_parts"].append(u.part)
+            g["_indications"].extend(row_indications)
+            g["_indication_ids"].extend(row_indication_ids)
 
     uses: list[dict] = []
     for g in use_groups.values():
@@ -453,29 +521,42 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
         gname = (c.compound_group or "").strip() or None
         g = comp_groups.get(gname)
         if g is None:
-            g = {"group": gname, "_examples": {}, "count": 0}
+            g = {"group": gname, "_examples": {}, "_rows": 0}
             comp_groups[gname] = g
-        g["count"] += 1
+        g["_rows"] += 1
         name = (c.compound or "").strip()
-        if name:
-            ex = g["_examples"].get(name.lower())
-            cid = str(c.compound_id) if c.compound_id else None
-            if ex is None:
-                g["_examples"][name.lower()] = {"name": name, "compound_id": cid}
-            elif ex["compound_id"] is None and cid:
-                ex["compound_id"] = cid  # prefer the tappable variant
+        if not name:
+            continue
+        # A bare "содержит флавоноиды" yields an example identical to the group
+        # label — redundant. Skip it: the group label alone is the content.
+        if gname and name.lower() == gname.lower():
+            continue
+        ex = g["_examples"].get(name.lower())
+        cid = str(c.compound_id) if c.compound_id else None
+        if ex is None:
+            g["_examples"][name.lower()] = {"name": name, "compound_id": cid}
+        elif ex["compound_id"] is None and cid:
+            ex["compound_id"] = cid  # prefer the tappable variant
     compound_groups: list[dict] = []
     for g in comp_groups.values():
-        examples = list(g["_examples"].values())
+        named = list(g["_examples"].values())
         # prefer examples with a compound_id (stay tappable), then cap ~6
-        examples.sort(key=lambda e: (e["compound_id"] is None,))
-        compound_groups.append({
-            "group": g["group"],
-            "examples": examples[:6],
-            "count": g["count"],
-        })
-    # order by count desc; null ("прочие") group sinks to the end
-    compound_groups.sort(key=lambda x: (x["group"] is None, -x["count"]))
+        named.sort(key=lambda e: (e["compound_id"] is None,))
+        shown = named[:6]
+        obj: dict = {"group": g["group"]}
+        if shown:
+            obj["examples"] = shown
+        # `count` is a "ещё N" hint only — emit it solely when distinct named
+        # compounds exceed what we show, so a 1-compound group never prints a
+        # stray "1" or a label repeated as its own example.
+        if len(named) > len(shown):
+            obj["count"] = len(named)
+        obj["_order"] = g["_rows"]
+        compound_groups.append(obj)
+    # order by group size desc; null ("прочие") group sinks to the end
+    compound_groups.sort(key=lambda x: (x["group"] is None, -x["_order"]))
+    for obj in compound_groups:
+        obj.pop("_order", None)
 
     # ── harvest: distinct merge of harvests + habitat biotopes ──────────────
     harvest = {
