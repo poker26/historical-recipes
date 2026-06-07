@@ -1,6 +1,8 @@
+import re
 import uuid
+from collections import Counter
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -19,6 +21,8 @@ from app.models.plant import (
     PlantToxicity,
     PlantCulinaryUse,
     PlantBookMention,
+    EssentialOil,
+    EssentialOilUse,
 )
 from app.services.plant_matching import relink_recipe_ingredients, merge_plants_by_latin_key
 from app.services.qdrant import delete_points
@@ -130,6 +134,7 @@ def _plant_summary(p: Plant, uses_count: int = 0) -> dict:
 
 @router.get("/")
 async def list_plants(
+    response: Response,
     q: str | None = None,
     compound: str | None = None,
     action: str | None = None,
@@ -139,6 +144,8 @@ async def list_plants(
     edibility: str | None = None,
     edible: bool | None = None,
     kingdom: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
     """List plants, optionally filtered by free text and/or structured facets.
@@ -148,6 +155,10 @@ async def list_plants(
     ``action`` filter matches BOTH the normalized vocabulary (``action_id`` →
     MedicinalAction) and the verbatim ``action_raw``, since only ~44% of uses
     are normalized but ~97% carry a raw action term.
+
+    Pagination: pass ``limit``/``offset`` to fetch one page; the full filtered
+    count is always returned in the ``X-Total-Count`` header. Omitting ``limit``
+    returns every match (the historical behaviour the MCP tools rely on).
     """
     # Count medicinal uses per plant so the herbarium grid can show how rich
     # each card is without a second round-trip.
@@ -254,6 +265,15 @@ async def list_plants(
         )
         stmt = stmt.where(edible_pred if edible else ~edible_pred)
 
+    # Total matching rows (before pagination) → header for the herbarium UI.
+    total = (await db.execute(
+        select(func.count()).select_from(stmt.order_by(None).subquery())
+    )).scalar() or 0
+    response.headers["X-Total-Count"] = str(total)
+
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
+
     rows = (await db.execute(stmt)).all()
     return [_plant_summary(p, n) for p, n in rows]
 
@@ -309,6 +329,239 @@ def _book_title_map(books: list[Book]) -> dict[str, str]:
     return {str(b.id): b.title for b in books}
 
 
+# ── Field-view aggregation helpers (docs/HANDOFF-monograph-aggregation.md) ──────
+# Pure, deterministic, no-LLM compaction of one already-loaded plant's relations.
+
+_PHRASE_SPLIT = re.compile(r"[;,/\n]+")
+
+
+def _split_phrases(text: str | None) -> list[str]:
+    """Split a free-text field (indications, contraindications, symptoms) into
+    trimmed phrases. Empty input → empty list."""
+    if not text:
+        return []
+    return [p.strip() for p in _PHRASE_SPLIT.split(text) if p.strip()]
+
+
+def _distinct(items) -> list:
+    """Order-preserving de-duplication (case-insensitive for strings)."""
+    seen: set = set()
+    out: list = []
+    for it in items:
+        if it is None:
+            continue
+        key = it.strip().lower() if isinstance(it, str) else it
+        if isinstance(it, str) and not it.strip():
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it.strip() if isinstance(it, str) else it)
+    return out
+
+
+def _field_view(plant, src, recipes: list[dict]) -> dict:
+    """Compact, deduped + ranked monograph for the low-bandwidth field client.
+
+    Replaces the raw medicinal_uses / compounds / toxicities / culinary / harvest
+    arrays with bounded, consensus-ranked aggregates. Identity fields mirror the
+    default view. Every block is nullable/optional so the client omits empties."""
+
+    # ── roles (verdict badges) ──────────────────────────────────────────────
+    roles: list[str] = []
+    if plant.medicinal_uses:
+        roles.append("medicinal")
+    if plant.culinary_uses:
+        roles.append("edible")
+    if plant.is_toxic:
+        roles.append("toxic")
+
+    # ── uses: dedup by action key, merge parts/indications, rank by consensus ─
+    use_groups: dict[str, dict] = {}
+    for u in plant.medicinal_uses:
+        action = (u.action.name if u.action else None) or (u.action_raw or "")
+        key = action.strip().lower()
+        if not key:
+            continue
+        g = use_groups.get(key)
+        if g is None:
+            g = {
+                "action": action.strip(),
+                "_parts": [],
+                "_indications": [],       # phrase → count, for frequency capping
+                "_indication_ids": [],
+                "source_count": 0,
+                "_max_conf": 0.0,
+            }
+            use_groups[key] = g
+        g["source_count"] += 1
+        if u.confidence is not None and u.confidence > g["_max_conf"]:
+            g["_max_conf"] = u.confidence
+        if u.part:
+            g["_parts"].append(u.part)
+        g["_indications"].extend(_split_phrases(u.indications))
+        g["_indication_ids"].extend(str(i) for i in (u.indication_ids or []))
+
+    uses: list[dict] = []
+    for g in use_groups.values():
+        ind_counts = Counter(p.lower() for p in g["_indications"])
+        # keep the most-frequent distinct indications, cap ~6, preserve casing
+        seen_ind: set = set()
+        ranked_ind: list[str] = []
+        for phrase in sorted(g["_indications"], key=lambda p: (-ind_counts[p.lower()], p)):
+            lk = phrase.lower()
+            if lk in seen_ind:
+                continue
+            seen_ind.add(lk)
+            ranked_ind.append(phrase)
+            if len(ranked_ind) >= 6:
+                break
+        uses.append({
+            "action": g["action"],
+            "parts": _distinct(g["_parts"]),
+            "indications": ranked_ind,
+            "indication_ids": _distinct(g["_indication_ids"]),
+            "source_count": g["source_count"],
+        })
+    uses.sort(key=lambda x: (-x["source_count"], -use_groups[x["action"].lower()]["_max_conf"]))
+
+    # ── cautions: structured safety, never only in prose ────────────────────
+    contraindications: list[str] = []
+    for u in plant.medicinal_uses:
+        contraindications.extend(_split_phrases(u.contraindications))
+    toxic_parts: list[str] = []
+    tox_symptoms: list[str] = []
+    antidotes: list[str] = []
+    for t in plant.toxicities:
+        toxic_parts.extend(t.toxic_parts or [])
+        tox_symptoms.extend(_split_phrases(t.symptoms))
+        if t.antidote and t.antidote.strip():
+            antidotes.append(t.antidote.strip())
+    cautions = {
+        "contraindications": _distinct(contraindications),
+        "toxic_parts": _distinct(toxic_parts),
+        "symptoms": ", ".join(_distinct(tox_symptoms)) or None,
+        "antidote": "; ".join(_distinct(antidotes)) or None,
+    }
+    if not any([cautions["contraindications"], cautions["toxic_parts"],
+                cautions["symptoms"], cautions["antidote"]]):
+        cautions = None
+
+    # ── compound_groups: group by compound_group, examples capped, ranked ───
+    comp_groups: dict = {}
+    for c in plant.compounds:
+        gname = (c.compound_group or "").strip() or None
+        g = comp_groups.get(gname)
+        if g is None:
+            g = {"group": gname, "_examples": {}, "count": 0}
+            comp_groups[gname] = g
+        g["count"] += 1
+        name = (c.compound or "").strip()
+        if name:
+            ex = g["_examples"].get(name.lower())
+            cid = str(c.compound_id) if c.compound_id else None
+            if ex is None:
+                g["_examples"][name.lower()] = {"name": name, "compound_id": cid}
+            elif ex["compound_id"] is None and cid:
+                ex["compound_id"] = cid  # prefer the tappable variant
+    compound_groups: list[dict] = []
+    for g in comp_groups.values():
+        examples = list(g["_examples"].values())
+        # prefer examples with a compound_id (stay tappable), then cap ~6
+        examples.sort(key=lambda e: (e["compound_id"] is None,))
+        compound_groups.append({
+            "group": g["group"],
+            "examples": examples[:6],
+            "count": g["count"],
+        })
+    # order by count desc; null ("прочие") group sinks to the end
+    compound_groups.sort(key=lambda x: (x["group"] is None, -x["count"]))
+
+    # ── harvest: distinct merge of harvests + habitat biotopes ──────────────
+    harvest = {
+        "parts": _distinct([h.part for h in plant.harvests]),
+        "seasons": _distinct([h.season for h in plant.harvests]),
+        "where": _distinct([h.biotope for h in plant.habitats]),
+    }
+    if not any(harvest.values()):
+        harvest = None
+
+    # ── culinary: compacted edible use ──────────────────────────────────────
+    culinary = [
+        {
+            "use": cu.use,
+            "part": cu.part,
+            "season": cu.season,
+            "caution": cu.caution,
+        }
+        for cu in plant.culinary_uses
+        if cu.use or cu.part
+    ]
+
+    # ── recipes: tiny refs, cap ~20 + total ─────────────────────────────────
+    recipe_refs = [
+        {
+            "id": r["id"],
+            "label": _recipe_label(r),
+        }
+        for r in recipes
+    ]
+    recipes_total = len(recipe_refs)
+    recipe_refs = recipe_refs[:20]
+
+    # ── sources: distinct book citations across all evidence ────────────────
+    source_set: list[str] = []
+    for u in plant.medicinal_uses:
+        source_set.append(src(u.source_book_id))
+    for c in plant.compounds:
+        source_set.append(src(c.source_book_id))
+    for h in plant.harvests:
+        source_set.append(src(h.source_book_id))
+    for h in plant.habitats:
+        source_set.append(src(h.source_book_id))
+    for t in plant.toxicities:
+        source_set.append(src(t.source_book_id))
+    for cu in plant.culinary_uses:
+        source_set.append(src(cu.source_book_id))
+    sources = _distinct([s for s in source_set if s])
+
+    return {
+        "id": str(plant.id),
+        "name": plant.name,
+        "name_modern": plant.name_modern,
+        "name_latin": plant.name_latin,
+        "family": plant.family,
+        "family_latin": plant.family_latin,
+        "kingdom": plant.kingdom,
+        "is_toxic": plant.is_toxic,
+        "photo_url": plant.photo_url,
+        "photo_attribution": plant.photo_attribution,
+        "photo_license": plant.photo_license,
+        "photo_source": plant.photo_source,
+        "description": plant.description,
+        "parts_used": plant.parts_used,
+        "roles": roles,
+        "uses": uses,
+        "cautions": cautions,
+        "compound_groups": compound_groups,
+        "harvest": harvest,
+        "culinary": culinary,
+        "recipes": recipe_refs,
+        "recipes_total": recipes_total,
+        "sources": sources,
+    }
+
+
+def _recipe_label(r: dict) -> str:
+    """Compact "Name — Book Year" label for a recipe ref."""
+    label = r.get("name") or "—"
+    book = r.get("book")
+    year = r.get("year")
+    if book:
+        label = f"{label} — {book}" + (f" {year}" if year else "")
+    return label
+
+
 @router.get("/{plant_id}/observations")
 async def plant_observations(
     plant_id: uuid.UUID,
@@ -349,8 +602,18 @@ async def plant_observations(
 
 
 @router.get("/{plant_id}")
-async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Full plant monograph: identity + all source-layered facts."""
+async def get_plant(
+    plant_id: uuid.UUID,
+    view: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Full plant monograph: identity + all source-layered facts.
+
+    Default response (no ``view``) is the raw, source-layered dump consumed by
+    the MCP ``get_plant`` tool and the web monograph — kept byte-for-byte stable.
+    ``?view=field`` returns a compact, deduped + ranked aggregation for the
+    low-bandwidth field client (see docs/HANDOFF-monograph-aggregation.md).
+    """
     stmt = (
         select(Plant)
         .where(Plant.id == plant_id)
@@ -418,6 +681,35 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
             "year": byear,
         }
         for (rid, rname, rcat, btitle, byear) in recipe_rows
+    ]
+
+    # Opt-in compact aggregation for the field client. Returned BEFORE the
+    # essential-oil query so the default (raw) path is wholly untouched.
+    if view == "field":
+        return _field_view(plant, src, recipes)
+
+    # Cross-pillar link: essential oils distilled/pressed from this plant. The
+    # aroma pillar bridges each oil to its source plant via EssentialOil.plant_id;
+    # surface that reverse edge so the plant card shows "oils made from me".
+    oil_rows = (await db.execute(
+        select(EssentialOil.id, EssentialOil.name, EssentialOil.name_latin,
+               EssentialOil.part, EssentialOil.extraction,
+               func.count(EssentialOilUse.id))
+        .join(EssentialOilUse, EssentialOilUse.oil_id == EssentialOil.id, isouter=True)
+        .where(EssentialOil.plant_id == plant_id)
+        .group_by(EssentialOil.id)
+        .order_by(EssentialOil.name)
+    )).all()
+    essential_oils = [
+        {
+            "id": str(oid),
+            "name": oname,
+            "name_latin": olatin,
+            "part": opart,
+            "extraction": oextr,
+            "uses_count": ucount,
+        }
+        for (oid, oname, olatin, opart, oextr, ucount) in oil_rows
     ]
 
     return {
@@ -525,4 +817,5 @@ async def get_plant(plant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
             for m in plant.mentions
         ],
         "recipes": recipes,
+        "essential_oils": essential_oils,
     }
