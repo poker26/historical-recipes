@@ -15,6 +15,8 @@ from app.models.plant import (
 )
 from app.models.dictionary import DictionaryTerm
 from app.models.ingredient import Ingredient, IngredientSynonym
+from app.models.inat_cache import InatTaxonCache
+from app.models.identification import Identification
 
 __all__ = [
     "Book", "BookPage", "BookChunk", "BookSection", "ProcessingLog",
@@ -24,4 +26,6 @@ __all__ = [
     "PlantHarvest", "PlantHabitat", "PlantToxicity",
     "DictionaryTerm",
     "Ingredient", "IngredientSynonym",
+    "InatTaxonCache",
+    "Identification",
 ]

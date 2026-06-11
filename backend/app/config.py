@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
     minio_bucket: str = "historical-recipes"
+    # Dedicated bucket for field-uploaded identification photos (Android "Что
+    # растёт" client): the original-ish photo + its EXIF/geo/device metadata are
+    # archived here for debugging and future training data, kept apart from the
+    # curated corpus bucket.
+    minio_field_bucket: str = "field-uploads"
     minio_secure: bool = False
 
     # Qdrant (self-hosted)

@@ -29,11 +29,28 @@ def get_client() -> Minio:
     return _client
 
 
-def upload_file(data: bytes, path: str, content_type: str = "application/octet-stream") -> str:
-    """Upload file to MinIO. Returns the object path."""
+def ensure_bucket(bucket: str) -> None:
+    """Create ``bucket`` if it doesn't exist (idempotent). Used for dedicated
+    buckets outside the default app bucket, e.g. the field-upload archive."""
+    client = get_client()
+    try:
+        if not client.bucket_exists(bucket):
+            client.make_bucket(bucket)
+    except S3Error:
+        pass  # already exists or no create permission — put_object will surface real errors
+
+
+def upload_file(
+    data: bytes,
+    path: str,
+    content_type: str = "application/octet-stream",
+    bucket: str | None = None,
+) -> str:
+    """Upload file to MinIO. Returns the object path. ``bucket`` defaults to the
+    app bucket; pass another to write into a dedicated bucket (e.g. field uploads)."""
     client = get_client()
     client.put_object(
-        settings.minio_bucket,
+        bucket or settings.minio_bucket,
         path,
         BytesIO(data),
         length=len(data),
