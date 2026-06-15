@@ -18,6 +18,7 @@ from app.temporal.client import get_temporal_client
 from app.temporal import activities
 from app.temporal.workflows import (
     BookPipelineWorkflow,
+    BookDispatcherWorkflow,
     InatEnrichmentWorkflow,
     MedicalNormalizerWorkflow,
     KlexHerbDownloadWorkflow,
@@ -38,8 +39,8 @@ async def main():
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
-        workflows=[BookPipelineWorkflow, InatEnrichmentWorkflow, MedicalNormalizerWorkflow,
-                   KlexHerbDownloadWorkflow, PingWorkflow],
+        workflows=[BookPipelineWorkflow, BookDispatcherWorkflow, InatEnrichmentWorkflow,
+                   MedicalNormalizerWorkflow, KlexHerbDownloadWorkflow, PingWorkflow],
         activities=[
             activities.convert_activity,
             activities.classify_activity,
@@ -51,6 +52,8 @@ async def main():
             activities.extract_plant_entries_activity,
             activities.extract_vocabulary_activity,
             activities.normalize_corpus_activity,
+            activities.extract_oils_activity,
+            activities.normalize_oils_activity,
             activities.medical_vocab_batch_activity,
             activities.normalize_medical_activity,
             activities.match_ingredients_activity,
@@ -59,10 +62,15 @@ async def main():
             activities.klex_list_activity,
             activities.klex_download_activity,
             activities.ping_activity,
+            activities.maintain_pool_activity,
         ],
-        # Pipeline steps are few but very long-running; one at a time per book
-        # is the natural cadence, but allow a little headroom across books.
-        max_concurrent_activities=4,
+        # Pipeline steps are few but very long-running and I/O-bound (LLM calls).
+        # The host sits near-idle (CPU ~0.5/6 cores, GBs of free RAM), so the cap
+        # is about the OpenRouter rate ceiling, not local resources. Raised 4→8 to
+        # run more book-pipelines in parallel; the per-step inner fan-out
+        # (MAX_CONCURRENT, _RECIPE_SECTION_CONCURRENCY) multiplies on top, so watch
+        # the logs for 429 before pushing this higher.
+        max_concurrent_activities=8,
     )
 
     logger.info("Worker started; polling task queue '%s'", settings.temporal_task_queue)

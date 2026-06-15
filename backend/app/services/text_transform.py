@@ -15,7 +15,7 @@ from app.services.llm import chat_completion
 logger = logging.getLogger(__name__)
 
 CHUNK_CHARS = 12_000        # input chars per call (~output fits in MAX_TOKENS)
-MAX_CONCURRENT = 2          # keep low: free Qwen tier rate-limits when parallel
+MAX_CONCURRENT = 4          # paid OpenRouter tier; raised from 2 (the old free-tier cap). Watch logs for 429 before pushing higher.
 MAX_TOKENS = 16384
 
 

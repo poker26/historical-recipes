@@ -53,6 +53,9 @@ class Plant(Base):
     habitats: Mapped[list["PlantHabitat"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     toxicities: Mapped[list["PlantToxicity"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     culinary_uses: Mapped[list["PlantCulinaryUse"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
+    # Essential oils distilled FROM this plant (aromatherapy bridge). SET NULL on
+    # the oil side, so deleting a plant orphans the oil rather than cascading.
+    essential_oils: Mapped[list["EssentialOil"]] = relationship(back_populates="plant")
 
 
 class MedicinalAction(Base):
@@ -170,6 +173,75 @@ class PlantCompound(Base):
 
     plant: Mapped["Plant"] = relationship(back_populates="compounds")
     compound_ref: Mapped["Compound | None"] = relationship()
+
+
+class EssentialOil(Base):
+    """A NAMED essential oil as a first-class substance (the aromatherapy domain).
+
+    Aromatherapy books are organized BY OIL, not by plant: each chapter is one
+    named oil (лавандовое масло, масло чайного дерева) with its aroma, therapeutic
+    actions, application methods and safety. Modelling the oil as an entity lets
+    that therapeutic layer (``EssentialOilUse``) hang off it, while two bridges
+    fold it back into the existing graph:
+
+    - ``plant_id`` → the source plant in the herbarium, so an oil's facts surface
+      on the plant card (the plant↔oil anchor already exists as a
+      ``PlantCompound`` «эфирное масло» row; this makes the *named* oil explicit);
+    - ``compound_id`` → the oil's node under «эфирные масла» in the chemistry
+      vocabulary, so it lines up with the phytochemistry layer.
+    """
+
+    __tablename__ = "essential_oils"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(Text, unique=True)            # canonical RU, e.g. "лавандовое масло"
+    name_latin: Mapped[str | None] = mapped_column(Text)           # pharmacopoeial Latin, e.g. "Oleum Lavandulae"
+    synonyms: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    plant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("plants.id", ondelete="SET NULL"))
+    source_plant_raw: Mapped[str | None] = mapped_column(Text)     # plant as written, before resolution
+    compound_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("compounds.id", ondelete="SET NULL"))
+    part: Mapped[str | None] = mapped_column(String(50))           # source part: цвет/лист/плод/кора/древесина...
+    extraction: Mapped[str | None] = mapped_column(String(60))     # дистилляция/отжим/экстракция/анфлераж
+    aroma_profile: Mapped[str | None] = mapped_column(Text)        # описание запаха / ноты
+    description: Mapped[str | None] = mapped_column(Text)
+    original_text: Mapped[str | None] = mapped_column(Text)        # verbatim anchor for the oil entry
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    plant: Mapped["Plant | None"] = relationship(back_populates="essential_oils")
+    compound_ref: Mapped["Compound | None"] = relationship()
+    uses: Mapped[list["EssentialOilUse"]] = relationship(back_populates="oil", cascade="all, delete-orphan")
+
+
+class EssentialOilUse(Base):
+    """One aromatherapy fact about an oil — the oil analog of ``PlantMedicinalUse``.
+
+    Crucially it REUSES the existing controlled vocabularies: ``action_id`` →
+    ``medicinal_actions`` and ``indication_ids`` → ``indications``. That puts oil
+    therapeutics on the SAME normalized axis as plant therapeutics, so a "what
+    helps with X" query unifies herbs and oils. ``original_text`` is required —
+    the same anti-fabrication grounding guard as the medicinal/culinary layers,
+    which matters here because aromatherapy evidence is weak and the model is
+    fluent in it.
+    """
+
+    __tablename__ = "essential_oil_uses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    oil_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("essential_oils.id", ondelete="CASCADE"))
+    action_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("medicinal_actions.id", ondelete="SET NULL"))
+    action_raw: Mapped[str | None] = mapped_column(Text)
+    indications: Mapped[str | None] = mapped_column(Text)
+    indication_ids: Mapped[list[uuid.UUID] | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    application: Mapped[str | None] = mapped_column(String(40))    # ингаляция/массаж/ванна/аромалампа/компресс/внутрь
+    dosage: Mapped[str | None] = mapped_column(Text)
+    contraindications: Mapped[str | None] = mapped_column(Text)
+    original_text: Mapped[str | None] = mapped_column(Text)        # verbatim source — REQUIRED for grounding
+    source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
+    confidence: Mapped[float | None] = mapped_column(Float)
+
+    oil: Mapped["EssentialOil"] = relationship(back_populates="uses")
+    action: Mapped["MedicinalAction | None"] = relationship()
 
 
 class PlantHarvest(Base):

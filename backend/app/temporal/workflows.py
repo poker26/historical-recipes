@@ -23,6 +23,8 @@ with workflow.unsafe.imports_passed_through():
         extract_plant_entries_activity,
         extract_vocabulary_activity,
         normalize_corpus_activity,
+        extract_oils_activity,
+        normalize_oils_activity,
         medical_vocab_batch_activity,
         normalize_medical_activity,
         match_ingredients_activity,
@@ -31,7 +33,18 @@ with workflow.unsafe.imports_passed_through():
         klex_list_activity,
         klex_download_activity,
         ping_activity,
+        maintain_pool_activity,
     )
+    from app.temporal.cleanup_activities import (
+        run_enrichment_activity,
+        run_backfill_activity,
+        run_rename_activity,
+    )
+    from app.temporal.quest_activities import (
+        osm_ingest_region_activity,
+        build_place_sets_activity,
+    )
+    from app.temporal.monograph_activities import generate_monographs_activity
 
 # Generous per-step ceilings: the pre-reform 1M-char book took >60 min on a
 # single LLM step, so long steps get up to 3h.  Retries are bounded and skip
@@ -117,6 +130,21 @@ PIPELINE_STEPS_REFERENCE = [
     ("normalize_corpus", normalize_corpus_activity, _SHORT, None),
     ("index", index_activity, _LONG, _HEARTBEAT),
 ]
+# Aromatherapy domain: an oil-first reference (a chapter per named essential oil)
+# whose product is the essential-oil entities + their use-facts, normalized onto
+# the SAME action/indication vocabularies as plants. Shares the text-prep front,
+# then extract_oils builds the oil monographs and normalize_oils maps their uses.
+# No analyze/extract_recipes — there are no recipes in an oils reference.
+PIPELINE_STEPS_AROMATHERAPY = [
+    ("convert", convert_activity, _LONG, None),
+    ("classify", classify_activity, _SHORT, None),
+    ("extract", extract_activity, _LONG, _HEARTBEAT),
+    ("cleanup", cleanup_activity, _LONG, _HEARTBEAT),
+    ("translate", translate_activity, _LONG, _HEARTBEAT),
+    ("extract_oils", extract_oils_activity, _LONG, _HEARTBEAT),
+    ("normalize_oils", normalize_oils_activity, _SHORT, None),
+    ("index", index_activity, _LONG, _HEARTBEAT),
+]
 
 
 def steps_for_domain(domain: str):
@@ -128,6 +156,8 @@ def steps_for_domain(domain: str):
         return PIPELINE_STEPS_HERBALISM
     if d == "reference":
         return PIPELINE_STEPS_REFERENCE
+    if d == "aromatherapy":
+        return PIPELINE_STEPS_AROMATHERAPY
     return PIPELINE_STEPS_RECIPES
 
 
@@ -174,6 +204,52 @@ class BookPipelineWorkflow:
             workflow.logger.info(f"pipeline step done: {name} -> {res}")
 
         return results
+
+
+@workflow.defn
+class BookDispatcherWorkflow:
+    """Server-side corpus dispatcher — keeps the book pipeline pool full.
+
+    Durable replacement for the laptop-bound manual tick loop: it lives on the
+    worker, so it keeps draining the ``uploaded`` queue regardless of whether any
+    human session is awake, and survives worker restarts (Temporal resumes it).
+
+    Each tick calls ``maintain_pool_activity`` which tops the in-flight
+    ``book-pipeline-*`` count back up to ``target`` (≤ ``burst`` new starts per
+    tick to avoid a dispatch-replay CPU spike). It ignores the user's separate
+    ``klex-herb-*`` mirror worker entirely. Terminates when the corpus is fully
+    drained (nothing running, no ``uploaded`` left); ``continue_as_new`` every
+    ``iters_before_renew`` ticks keeps the history bounded.
+    """
+
+    @workflow.run
+    async def run(self, target: int = 8, burst: int = 4, interval_seconds: int = 45,
+                  iters_before_renew: int = 80, dispatched_total: int = 0) -> dict:
+        for _ in range(iters_before_renew):
+            try:
+                r = await workflow.execute_activity(
+                    maintain_pool_activity,
+                    args=[target, burst],
+                    start_to_close_timeout=timedelta(minutes=5),
+                    retry_policy=_RETRY,
+                )
+            except Exception as e:
+                # A single tick can exhaust its retries during a DB/network outage
+                # (e.g. the Supabase pooler dropping the connection for ~minutes).
+                # A long-running dispatcher must NOT die from one bad tick — log it,
+                # wait, and try again on the next tick. This is the difference between
+                # self-healing and silently stalling the whole corpus for days.
+                workflow.logger.warning(f"pool tick failed, retrying next tick: {e}")
+                await workflow.sleep(timedelta(seconds=interval_seconds))
+                continue
+            dispatched_total += len(r.get("started", []))
+            if r.get("done"):
+                return {"finished": True, "dispatched_total": dispatched_total,
+                        "intermediate_left": r.get("intermediate_left", 0)}
+            await workflow.sleep(timedelta(seconds=interval_seconds))
+        # Trim history: carry the running total into a fresh execution.
+        workflow.continue_as_new(
+            args=[target, burst, interval_seconds, iters_before_renew, dispatched_total])
 
 
 @workflow.defn
@@ -337,6 +413,7 @@ class KlexHerbDownloadWorkflow:
         i = start_index
         while i < len(books):
             code = books[i][0]
+            status = None
             try:
                 res = await workflow.execute_activity(
                     klex_download_activity,
@@ -358,6 +435,14 @@ class KlexHerbDownloadWorkflow:
                 workflow.logger.warning(f"klex book {code} failed: {e}")
 
             i += 1
+            # Pace EVERY book, including skips. A skip is NOT free: the activity
+            # still fetches the klex detail page to learn the file slug before it
+            # can check the bucket, so it counts against klex's per-IP rate limit
+            # exactly like a real download. klex throttles bursts hard (~35 rapid
+            # requests trips a 503 ban), so the only safe sweep is a uniform,
+            # generous delay between every request. "Спешить некуда" — slow but
+            # it finishes; a resume just re-walks the done books at the same gentle
+            # pace and skips their bytes.
             if delay and i < len(books):
                 await workflow.sleep(timedelta(seconds=delay))
 
@@ -370,6 +455,74 @@ class KlexHerbDownloadWorkflow:
                 }])
 
         return totals
+
+
+@workflow.defn
+class PlantCleanupWorkflow:
+    """Autonomous, durable plant-cleanup chain (Layer-1 identity). Runs the phases
+    in sequence as resumable heartbeat activities — no open session, no external
+    watcher. Each activity loops internally over batches and is idempotent (skips
+    already-done rows), so a worker restart just retries and resumes from the data.
+
+    Chain: enrichment (iNat modern+photo) → latin backfill (clean-Russian latin-less
+    species) → enrichment again (photos for the freshly-backfilled latins) → rename
+    (garbage name → name_modern, collision-safe). Singleton id 'plant-cleanup'.
+    """
+
+    @workflow.run
+    async def run(self) -> dict:
+        kw = {"start_to_close_timeout": timedelta(hours=24),
+              "heartbeat_timeout": _HEARTBEAT, "retry_policy": _RETRY}
+        out: dict = {}
+        out["enrich_1"] = await workflow.execute_activity(run_enrichment_activity, **kw)
+        out["backfill"] = await workflow.execute_activity(run_backfill_activity, **kw)
+        out["enrich_2"] = await workflow.execute_activity(run_enrichment_activity, **kw)
+        out["rename"] = await workflow.execute_activity(
+            run_rename_activity, start_to_close_timeout=_SHORT, retry_policy=_RETRY)
+        workflow.logger.info(f"PlantCleanupWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class OsmIngestWorkflow:
+    """Autonomous OSM named-place ingest for a region bbox (quests Phase 6).
+    Tiles the bbox + upserts named places into quest_places. Durable + resumable
+    (idempotent osm_id upsert). Overpass-only (no iNat) → safe to run anytime."""
+
+    @workflow.run
+    async def run(self, s: float, w: float, n: float, e: float, tile: float = 0.1) -> dict:
+        return await workflow.execute_activity(
+            osm_ingest_region_activity, args=[s, w, n, e, tile],
+            start_to_close_timeout=timedelta(hours=6), heartbeat_timeout=_HEARTBEAT,
+            retry_policy=_RETRY)
+
+
+@workflow.defn
+class QuestSetBuilderWorkflow:
+    """Autonomous species-set precompute for all places × a half-month window
+    (quests Phase 6). iNat-heavy → run when the cleanup's iNat work is idle."""
+
+    @workflow.run
+    async def run(self, window_label: str) -> dict:
+        return await workflow.execute_activity(
+            build_place_sets_activity, window_label,
+            start_to_close_timeout=timedelta(hours=12), heartbeat_timeout=_HEARTBEAT,
+            retry_policy=_RETRY)
+
+
+@workflow.defn
+class ReaderMonographWorkflow:
+    """Layer-2 batch: precompute reader-monographs for all clean-identity plants
+    (RFC-reader-monograph §7). Idempotent (hash-gate) → re-runnable as the corpus
+    grows. GATE: run only after Layer-1 data cleanup is complete (§10.5) — and
+    mind iNat/LLM contention with the cleanup chain."""
+
+    @workflow.run
+    async def run(self, batch: int = 100) -> dict:
+        return await workflow.execute_activity(
+            generate_monographs_activity, batch,
+            start_to_close_timeout=timedelta(hours=24), heartbeat_timeout=_HEARTBEAT,
+            retry_policy=_RETRY)
 
 
 @workflow.defn

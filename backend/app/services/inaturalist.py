@@ -21,9 +21,12 @@ from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.plant import Plant, PlantBookMention
+from app.models.inat_cache import InatTaxonCache
+from app.services.plant_matching import _latin_key
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +176,65 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
         out["photo_license"] = license_code
     elif photo and license_code:
         logger.info(f"iNat photo for {query!r} skipped: license {license_code!r} not reusable")
+    return out
+
+
+async def resolve_names_ru(db: AsyncSession, latins: list[str]) -> dict[str, dict]:
+    """Map each input Latin name → ``{"name_ru": str|None, "taxon_id": int|None}``.
+
+    Used by the identify flow to give every candidate species a Russian name (so a
+    non-corpus hit shows "Икотник серый" instead of PlantNet's English label). The
+    resolution is cached in ``inat_taxon_cache`` keyed on the genus+species
+    :func:`plant_matching._latin_key`, so repeated identifications don't re-hit
+    iNat. iNat is queried only for cache MISSES, concurrently, reusing
+    :func:`resolve_taxon_photo`'s 429 backoff.
+
+    Cache semantics mirror the resolver's two no-match cases:
+    * DEFINITIVE (``{"taxon_id": …}`` incl. a null name/taxon) → cached, so we stop
+      re-querying a species iNat has no Russian name for.
+    * TRANSIENT (``None``: HTTP error / throttle) → NOT cached, retried next call.
+
+    Unusable Latins (abbreviated genus, genus-only) resolve to all-None without an
+    iNat call. Never raises."""
+    # Map each input latin to its dedup key; unusable latins get an immediate null.
+    keys: dict[str, str | None] = {lat: _latin_key(lat) for lat in latins}
+    wanted = {k for k in keys.values() if k}
+    if not wanted:
+        return {lat: {"name_ru": None, "taxon_id": None} for lat in latins}
+
+    # 1) Read whatever is already cached.
+    rows = (await db.execute(
+        select(InatTaxonCache).where(InatTaxonCache.latin_key.in_(wanted))
+    )).scalars().all()
+    cache: dict[str, dict] = {r.latin_key: {"name_ru": r.name_ru, "taxon_id": r.taxon_id} for r in rows}
+
+    # 2) Resolve the misses against iNat, concurrently, and persist definitive ones.
+    misses = [k for k in wanted if k not in cache]
+    if misses:
+        async with httpx.AsyncClient(timeout=30) as client:
+            results = await asyncio.gather(*(resolve_taxon_photo(client, k) for k in misses))
+        to_insert: list[dict] = []
+        for key, res in zip(misses, results):
+            if res is None:
+                continue  # transient — leave uncached, retry next time
+            entry = {"name_ru": res.get("common_name"), "taxon_id": res.get("taxon_id")}
+            cache[key] = entry
+            to_insert.append({"latin_key": key, **entry})
+        if to_insert:
+            # ON CONFLICT DO NOTHING: a concurrent identify may have cached the same
+            # key meanwhile — first writer wins, both see a consistent answer.
+            stmt = pg_insert(InatTaxonCache).values(to_insert).on_conflict_do_nothing(
+                index_elements=["latin_key"]
+            )
+            await db.execute(stmt)
+            await db.commit()
+
+    # 3) Project back onto the original input latins.
+    out: dict[str, dict] = {}
+    for lat, key in keys.items():
+        out[lat] = cache.get(key) if key else None
+        if out[lat] is None:
+            out[lat] = {"name_ru": None, "taxon_id": None}
     return out
 
 

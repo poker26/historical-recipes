@@ -43,7 +43,11 @@ mcp = FastMCP(
         "the full source-grounded monograph (every fact carries its source book + "
         "year). compound_associations mines compound→indication/action co-occurrence "
         "as a hypothesis lead (association via the plant, NOT a causal claim — read its "
-        "p_value, never say 'X cures Y'). find_observations_nearby adds live "
+        "p_value, never say 'X cures Y'). Essential oils (эфирные масла) are a "
+        "SEPARATE pillar from the herbarium — use search_oils / oils_for_condition to "
+        "discover them and get_oil for the full aromatherapy monograph (each oil is "
+        "bridged to its source plant; aromatherapy evidence is weak — relay as "
+        "attested usage, not medical advice). find_observations_nearby adds live "
         "iNaturalist sightings near a coordinate. See AGENTS.md for the full tool guide."
     ),
     host="0.0.0.0",
@@ -415,7 +419,72 @@ async def plants_for_condition(
     return {"condition": condition, "count": len(plants), "plants": plants}
 
 
+# ──────────────────────── Essential-oils pillar (aromatherapy) ───────────────────
+
+
+@mcp.tool()
+async def search_oils(q: str | None = None, limit: int = 50) -> dict:
+    """Search the ESSENTIAL-OIL (эфирные масла) monographs — a separate pillar from
+    the plant herbarium, extracted from aromatherapy references. Each oil is bridged
+    to its source plant and carries grounded aromatherapy use-facts (action,
+    indications, application — ингаляция/массаж/ванна/аромалампа/компресс — dosage,
+    contraindications). Use this for "what essential oils are there / oil of X", then
+    get_oil(id) for the full monograph, or oils_for_condition for a symptom-first
+    lookup.
+
+    Args:
+        q: free text over oil name / Latin name / source-plant name (e.g.
+            "лаванда", "чайное дерево", "масло мяты"). Omit to browse.
+        limit: max oils to return (default 50).
+
+    Returns {items:[{id, name, name_latin, plant_id, plant_name, plant_name_latin,
+    part, extraction, aroma_profile, uses_count}], total}. Read a full oil with
+    get_oil(id)."""
+    _record_usage("search_oils", "discovery")
+    return await _request("GET", "/api/oils", params={"q": q, "limit": limit})
+
+
+@mcp.tool()
+async def oils_for_condition(condition: str, limit: int = 50) -> dict:
+    """Find essential oils used FOR a medical CONDITION — the oil analog of
+    plants_for_condition. Resolves the term across BOTH medical axes (the indication
+    vocabulary with the archaic→modern bridge, e.g. "водянка"→"отёки", AND the
+    medicinal-action axis, e.g. "успокаивающее") and unions the oils whose
+    aromatherapy use-facts match on either axis.
+
+    Aromatherapy evidence is weak and the corpus is small — treat results as
+    historically/textually attested usage, NOT medical advice, and always read the
+    grounded original_text via get_oil before relaying a claim.
+
+    Args:
+        condition: a symptom, disease, archaic disease name, or medicinal action
+            ("бессонница", "головная боль", "антисептическое").
+        limit: max oils to return (default 50).
+
+    Returns {condition, count, oils:[…]} where each oil card adds ``matched_uses``
+    (how many of that oil's use-facts hit the condition — match strength), most-
+    relevant first. Read a full grounded monograph with get_oil(id)."""
+    _record_usage("oils_for_condition", "discovery")
+    return await _request("GET", "/api/oils/for-condition",
+                          params={"condition": condition, "limit": limit})
+
+
 # ────────────────────────────── Full tier (product) ─────────────────────────────
+
+
+@mcp.tool()
+async def get_oil(oil_id: str) -> dict:
+    """Full essential-oil monograph: identity (name, Latin, synonyms), the source
+    plant (herbarium bridge — read it with get_plant), its node in the chemistry
+    vocabulary, descriptive fields (part, extraction, aroma_profile, description) and
+    ALL aromatherapy use-facts — each with normalized action + indication concepts,
+    application, dosage, contraindications and its verbatim ``original_text``. This
+    grounded source text is the product.
+
+    Args:
+        oil_id: UUID from search_oils / oils_for_condition."""
+    _record_usage("get_oil", "full")
+    return await _request("GET", f"/api/oils/{oil_id}")
 
 
 @mcp.tool()
@@ -424,7 +493,8 @@ async def get_plant(plant_id: str) -> dict:
     kingdom, toxicity, iNat photo+attribution) and ALL source-layered facts —
     medicinal uses, compounds, harvests, habitats, toxicities, culinary uses — each
     with its verbatim `original_text` and the source book + year, plus cross-linked
-    recipes that use it. This grounded source text is the product.
+    recipes that use it and any essential oils distilled/pressed from it (the aroma
+    pillar; read one with get_oil). This grounded source text is the product.
 
     Args:
         plant_id: UUID from search_plants / semantic_search / get_compound."""

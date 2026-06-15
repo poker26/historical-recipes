@@ -5,11 +5,34 @@ Tesseract fails on yellowed paper, skewed pages, and noisy backgrounds.
 """
 
 import io
+import re
 
 import cv2
 import numpy as np
 from PIL import Image
 import fitz  # PyMuPDF
+
+# Trusted high-DPI book scans can exceed PIL's decompression-bomb cap (~178M px)
+# → DecompressionBombError wedges the book. Our own scans, not attacks → lift it.
+Image.MAX_IMAGE_PIXELS = None
+
+
+# A PyMuPDF text layer can *exist* yet be corrupt: a scanned book whose baked-in
+# OCR dropped almost all letters, leaving punctuation/digits noise. Such a layer
+# clears the raw length gate but is unusable downstream (Николаевский 1987 «Биол.
+# активность эфирных масел»: ~257 chars/page, ~90% punctuation, Cyrillic stripped
+# → 0 oils extracted). Require that a real fraction of the non-space characters
+# are actual Cyrillic/Latin letters; otherwise the page is re-OCR'd from its image.
+_LETTER_RE = re.compile(r"[А-Яа-яЁёA-Za-z]")
+_MIN_LETTER_RATIO = 0.5
+
+
+def _text_layer_is_readable(text: str) -> bool:
+    stripped = "".join(text.split())
+    if not stripped:
+        return False
+    letters = len(_LETTER_RE.findall(stripped))
+    return letters / len(stripped) >= _MIN_LETTER_RATIO
 
 
 TARGET_DPI = 300
@@ -59,7 +82,7 @@ def split_pdf_smart(pdf_bytes: bytes) -> list[dict]:
         page = doc[page_num]
         text = page.get_text().strip()
 
-        if len(text) >= MIN_TEXT_LENGTH:
+        if len(text) >= MIN_TEXT_LENGTH and _text_layer_is_readable(text):
             # Text page — extract text directly, no need for OCR
             pages.append({
                 "page_number": page_num + 1,

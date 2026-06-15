@@ -103,6 +103,57 @@ async def delete_by_filter(collection: str, field: str, value: str) -> None:
     })
 
 
+async def scroll_point_ids(collection: str, field: str, value: str) -> set[str]:
+    """Return the IDs of all points matching a payload filter.
+
+    Used by the indexer to resume after a transient failure: on a retried
+    activity attempt we skip re-embedding points already written by the prior
+    attempt. Pages through the scroll API; payload/vectors are excluded so this
+    stays cheap even for a 1000+ point book.
+    """
+    ids: set[str] = set()
+    offset = None
+    while True:
+        body: dict = {
+            "filter": {"must": [{"key": field, "match": {"value": value}}]},
+            "limit": 1000,
+            "with_payload": False,
+            "with_vector": False,
+        }
+        if offset is not None:
+            body["offset"] = offset
+        result = (await _request(
+            "POST", f"/collections/{collection}/points/scroll", json=body
+        )).get("result", {})
+        for p in result.get("points", []):
+            ids.add(str(p["id"]))
+        offset = result.get("next_page_offset")
+        if offset is None:
+            break
+    return ids
+
+
+async def scroll_all_point_ids(collection: str) -> set[str]:
+    """Return EVERY point id in a collection (no filter). Used by the data-quality
+    linter to diff Postgres↔Qdrant for orphan/missing points. Payload/vectors
+    excluded → cheap id-only paging even for tens of thousands of points."""
+    ids: set[str] = set()
+    offset = None
+    while True:
+        body: dict = {"limit": 1000, "with_payload": False, "with_vector": False}
+        if offset is not None:
+            body["offset"] = offset
+        result = (await _request(
+            "POST", f"/collections/{collection}/points/scroll", json=body
+        )).get("result", {})
+        for p in result.get("points", []):
+            ids.add(str(p["id"]))
+        offset = result.get("next_page_offset")
+        if offset is None:
+            break
+    return ids
+
+
 # === Search ===
 
 async def hybrid_search(

@@ -35,6 +35,11 @@ temporalio>=1.7.0
 # MCP server (remote Streamable HTTP consumer-facing retrieval surface)
 mcp>=1.9.0
 
+# Quests geo: OSM named-place ingest → PostGIS (osm2geojson assembles multipolygon
+# relation rings; shapely ships GEOS in its manylinux wheel — no system libgeos).
+osm2geojson>=0.2.4
+shapely>=2.0.0
+
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

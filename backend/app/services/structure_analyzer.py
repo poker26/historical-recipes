@@ -12,24 +12,41 @@ from app.services.llm import chat_completion_json
 
 logger = logging.getLogger(__name__)
 
-# Single-call budget. structure_analysis runs on qwen3-235b (262 144-token
-# context window), NOT Gemini. The whole line-numbered book PLUS the reserved
-# output tokens must fit. Cyrillic tokenizes densely (~1 token/char worst case),
+# Single-call and per-chunk budgets. structure_analysis runs on qwen3-235b, NOT
+# Gemini. The whole line-numbered text PLUS the reserved output tokens must fit
+# in the model's context. Cyrillic tokenizes densely (~1 token/char worst case),
 # so the old 400 000-char threshold (calibrated for Gemini's 1M context + Latin
-# text) overflowed on large Russian books (e.g. a 333K-char book became ~256K
-# input tokens → HTTP 400 → non-retryable ValueError → workflow failure).
-# Derive the char budget from the real token budget with conservative headroom.
-_MODEL_CONTEXT_TOKENS = 262_144
-_OUTPUT_TOKEN_RESERVE = 16_384       # must match max_tokens in _analyze_single
+# text) overflowed on large Russian books.
+#
+# CRITICAL: the OpenRouter-routed provider for qwen3-235b-2507 caps context at
+# 192 000 tokens (the nominal model spec is 262K, but the served provider returns
+# HTTP 400 above 192000). The max INPUT is therefore context - max_tokens(output),
+# so every budget below subtracts the *step's own* output reserve. The single-call
+# path requests 16 384 output tokens, the chunked path requests 32 768 — they MUST
+# use different reserves. (Bug history: a 120 000-char chunk + 32 768 output
+# reserve landed at 159 233 input tokens, 1 over the 159 232 max → HTTP 400 → one
+# chunk's structure silently dropped on book ff0d734d.)
+_MODEL_CONTEXT_TOKENS = 192_000      # OpenRouter-routed cap, NOT the nominal 262K
+_SINGLE_OUTPUT_RESERVE = 16_384      # must match max_tokens in _analyze_single
+_CHUNK_OUTPUT_RESERVE = 32_768       # must match max_tokens in _process_chunk
 _PROMPT_OVERHEAD_TOKENS = 2_000      # system prompt + user wrapper
+_SAFETY_MARGIN_TOKENS = 1_000        # headroom so we never land exactly on the limit
 _CHARS_PER_TOKEN = 0.85              # conservative for dense Cyrillic
-MAX_CHARS_SINGLE_CALL = int(
-    (_MODEL_CONTEXT_TOKENS - _OUTPUT_TOKEN_RESERVE - _PROMPT_OVERHEAD_TOKENS)
-    * _CHARS_PER_TOKEN
-)  # ≈ 207 000 chars of line-numbered text; larger books go chunked
-CHUNK_SIZE = 120_000  # chars of book text per chunk (~120K tokens worst case, safe under 262K)
+_LINE_NUMBER_OVERHEAD_CHARS = 8      # "<lineno>: " prefix added by _number_lines*
+
+
+def _char_budget(output_reserve: int) -> int:
+    """Max chars of line-numbered text that fits given this step's output reserve."""
+    return int(
+        (_MODEL_CONTEXT_TOKENS - output_reserve - _PROMPT_OVERHEAD_TOKENS - _SAFETY_MARGIN_TOKENS)
+        * _CHARS_PER_TOKEN
+    )
+
+
+MAX_CHARS_SINGLE_CALL = _char_budget(_SINGLE_OUTPUT_RESERVE)  # ≈ 147 000 chars of line-numbered text; larger books go chunked
+CHUNK_SIZE = _char_budget(_CHUNK_OUTPUT_RESERVE)  # ≈ 133 000 chars of line-numbered text per chunk
 CHUNK_OVERLAP = 6_000  # chars of overlap between consecutive chunks
-MAX_CONCURRENT_CHUNKS = 2  # parallel LLM calls (kept low: free Qwen tier rate-limits at 4)
+MAX_CONCURRENT_CHUNKS = 4  # parallel LLM calls; raised from 2 (old free-tier cap). Paid OpenRouter tier — watch logs for 429 before pushing higher.
 
 
 @dataclass
@@ -99,7 +116,10 @@ def _build_char_chunks(lines: list[str], chunk_chars: int, overlap_chars: int) -
     """Split lines into overlapping windows sized by ACTUAL character count.
 
     Returns a list of (start_idx, end_idx) line-index pairs (end exclusive).
-    Avoids the old "~80 chars per line" guess that made chunks 3x too small.
+    `chunk_chars` is a budget on the LINE-NUMBERED text that gets sent (what the
+    token limit applies to), so each line is counted with its number-prefix
+    overhead — not just its raw length. Avoids the old "~80 chars per line" guess
+    that made chunks 3x too small.
     """
     n = len(lines)
     chunks: list[tuple[int, int]] = []
@@ -108,7 +128,7 @@ def _build_char_chunks(lines: list[str], chunk_chars: int, overlap_chars: int) -
         size = 0
         end = start
         while end < n and size < chunk_chars:
-            size += len(lines[end]) + 1  # +1 for the newline
+            size += len(lines[end]) + 1 + _LINE_NUMBER_OVERHEAD_CHARS  # +1 newline, + "<n>: " prefix
             end += 1
         chunks.append((start, end))
         if end >= n:

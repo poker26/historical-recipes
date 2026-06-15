@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import books, recipes, plants, dictionaries, search, indexing, pipeline, wizard, compounds, medical, identify
+from app.routers import books, recipes, plants, dictionaries, search, indexing, pipeline, wizard, compounds, medical, identify, oils, quality, devices, places, quests, monographs
 
 # Configure logging so our logger.info() calls show up in docker logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -31,6 +31,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # X-Total-Count carries the full filtered row count for paginated list
+    # endpoints; it must be whitelisted or cross-origin JS can't read it.
+    expose_headers=["X-Total-Count"],
 )
 
 app.include_router(books.router, prefix="/api/books", tags=["books"])
@@ -44,6 +47,12 @@ app.include_router(wizard.router, prefix="/api/wizard", tags=["wizard"])
 app.include_router(compounds.router, prefix="/api/compounds", tags=["compounds"])
 app.include_router(medical.router, prefix="/api/medical", tags=["medical"])
 app.include_router(identify.router, prefix="/api/identify", tags=["identify"])
+app.include_router(oils.router, prefix="/api/oils", tags=["oils"])
+app.include_router(quality.router, prefix="/api/quality", tags=["quality"])
+app.include_router(devices.router, prefix="/api/devices", tags=["devices"])
+app.include_router(places.router, prefix="/api/places", tags=["places"])
+app.include_router(quests.router, prefix="/api/quests", tags=["quests"])
+app.include_router(monographs.router, prefix="/api/monographs", tags=["monographs"])
 
 
 @app.get("/health")

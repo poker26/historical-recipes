@@ -13,6 +13,11 @@ import logging
 import pytesseract
 from PIL import Image
 
+# Trusted high-DPI book scans can exceed PIL's decompression-bomb limit (~178M px)
+# and crash extract with DecompressionBombError, wedging the book in retries.
+# These are our own scans, not attacks → lift the cap.
+Image.MAX_IMAGE_PIXELS = None
+
 from app.config import settings
 from app.services.llm import chat_completion
 

@@ -1,8 +1,8 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -16,10 +16,13 @@ router = APIRouter()
 
 @router.get("/")
 async def list_recipes(
+    response: Response,
     category: str | None = None,
     book_id: uuid.UUID | None = None,
     domain: str | None = None,
     q: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
     """List recipes with search and filters.
@@ -28,6 +31,10 @@ async def list_recipes(
     culinary recipes (``recipes``) from medicinal preparations harvested out of
     herbalism/fungi books (отвары/настои/сборы). Recipes carry no domain of their
     own — it is the book's — so this is the only way to split the two corpora.
+
+    Pagination: pass ``limit``/``offset`` to fetch one page; the full filtered
+    count is always returned in the ``X-Total-Count`` header. Omitting ``limit``
+    returns every match (the historical behaviour the MCP tools rely on).
     """
     stmt = select(Recipe, Book.title, Book.author, Book.year).join(
         Book, Recipe.book_id == Book.id
@@ -45,7 +52,16 @@ async def list_recipes(
             or_(Recipe.name.ilike(pattern), Recipe.original_text.ilike(pattern))
         )
 
+    # Total matching rows (before pagination) → header, so the UI can render
+    # "Page X of Y" without a second request.
+    total = (await db.execute(
+        select(func.count()).select_from(stmt.order_by(None).subquery())
+    )).scalar() or 0
+    response.headers["X-Total-Count"] = str(total)
+
     stmt = stmt.order_by(Recipe.created_at.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     result = await db.execute(stmt)
     rows = result.all()
 

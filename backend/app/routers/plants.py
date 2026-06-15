@@ -24,6 +24,7 @@ from app.models.plant import (
     EssentialOil,
     EssentialOilUse,
 )
+from app.models.reader_monograph import PlantReaderMonograph
 from app.services.plant_matching import relink_recipe_ingredients, merge_plants_by_latin_key
 from app.services.qdrant import delete_points
 from app.services.inaturalist import enrich_plants_inat, find_observations
@@ -752,6 +753,7 @@ async def plant_observations(
 async def get_plant(
     plant_id: uuid.UUID,
     view: str | None = None,
+    fresh: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
     """Full plant monograph: identity + all source-layered facts.
@@ -780,6 +782,18 @@ async def get_plant(
     plant = (await db.execute(stmt)).scalar_one_or_none()
     if plant is None:
         raise HTTPException(status_code=404, detail="Plant not found")
+
+    # Layer 2: if a vetted reader-monograph exists, serve it (humans get the
+    # precomputed prose; recipes/sources are baked in at generation time). Falls
+    # through to the deterministic aggregation when none is published yet.
+    # `?fresh=1` bypasses this so the generator/regen always reads raw aggregation.
+    if view == "field" and not fresh:
+        stored = (await db.execute(
+            select(PlantReaderMonograph).where(
+                PlantReaderMonograph.plant_id == plant_id,
+                PlantReaderMonograph.reviewed.is_(True)))).scalar_one_or_none()
+        if stored is not None:
+            return stored.monograph
 
     # Collect every source_book_id referenced across the child rows, then resolve
     # titles in one query for human-readable source attribution.
