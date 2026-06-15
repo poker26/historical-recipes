@@ -1,0 +1,695 @@
+diff --git a/backend/alembic/versions/012_inat_taxon_cache.py b/backend/alembic/versions/012_inat_taxon_cache.py
+new file mode 100644
+index 0000000..a01ae95
+--- /dev/null
++++ b/backend/alembic/versions/012_inat_taxon_cache.py
+@@ -0,0 +1,36 @@
++"""inat_taxon_cache: cache Latin → iNat Russian common name + taxon_id
++
++Creates the ``inat_taxon_cache`` table backing the identify flow's Russian-name
++enrichment. The identify path resolves every candidate species' Russian name from
++iNaturalist (``preferred_common_name`` @ ``locale=ru``); this table caches that
++resolution keyed on the genus+species latin key so repeated identifications don't
++re-hit iNat (≤60 req/min budget) and the answer survives restarts.
++
++Nullable ``name_ru`` / ``taxon_id`` deliberately store a DEFINITIVE "no Russian
++name / no taxon" so we stop re-querying; only transient failures stay uncached.
++
++Revision ID: 012_inat_taxon_cache
++Revises: 011_essential_oils
++Create Date: 2026-06-06
++"""
++from alembic import op
++import sqlalchemy as sa
++
++revision = "012_inat_taxon_cache"
++down_revision = "011_essential_oils"
++branch_labels = None
++depends_on = None
++
++
++def upgrade() -> None:
++    op.create_table(
++        "inat_taxon_cache",
++        sa.Column("latin_key", sa.String(length=120), primary_key=True),
++        sa.Column("name_ru", sa.Text(), nullable=True),
++        sa.Column("taxon_id", sa.Integer(), nullable=True),
++        sa.Column("resolved_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
++    )
++
++
++def downgrade() -> None:
++    op.drop_table("inat_taxon_cache")
+diff --git a/backend/alembic/versions/013_identifications.py b/backend/alembic/versions/013_identifications.py
+new file mode 100644
+index 0000000..7b3311d
+--- /dev/null
++++ b/backend/alembic/versions/013_identifications.py
+@@ -0,0 +1,55 @@
++"""identifications: archive field photo-identification events
++
++Creates the ``identifications`` table backing the field-data capture feature. Each
++row records one photo identification from the Android client: the MinIO key of the
++uploaded photo (bucket ``field-uploads``), the photo's EXIF, the user-granted
++geolocation, the phone/OS, and the engine outcome (top candidate + full list).
++
++Internal debugging/training capture — not exposed over MCP. All metadata columns
++are nullable (geolocation/EXIF/device may be absent depending on permissions and
++the source image).
++
++Revision ID: 013_identifications
++Revises: 012_inat_taxon_cache
++Create Date: 2026-06-06
++"""
++from alembic import op
++import sqlalchemy as sa
++from sqlalchemy.dialects.postgresql import UUID, JSONB
++
++revision = "013_identifications"
++down_revision = "012_inat_taxon_cache"
++branch_labels = None
++depends_on = None
++
++
++def upgrade() -> None:
++    op.create_table(
++        "identifications",
++        sa.Column("id", UUID(as_uuid=True), primary_key=True),
++        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
++        sa.Column("photo_key", sa.Text(), nullable=True),
++        sa.Column("engine", sa.String(length=30), nullable=True),
++        sa.Column("organ", sa.String(length=20), nullable=True),
++        sa.Column("lat", sa.Float(), nullable=True),
++        sa.Column("lng", sa.Float(), nullable=True),
++        sa.Column("geo_accuracy", sa.Float(), nullable=True),
++        sa.Column("captured_at", sa.DateTime(timezone=True), nullable=True),
++        sa.Column("exif", JSONB(), nullable=True),
++        sa.Column("device_model", sa.String(length=120), nullable=True),
++        sa.Column("device_manufacturer", sa.String(length=120), nullable=True),
++        sa.Column("os_version", sa.String(length=40), nullable=True),
++        sa.Column("os_sdk", sa.Integer(), nullable=True),
++        sa.Column("app_version", sa.String(length=40), nullable=True),
++        sa.Column("top_latin", sa.Text(), nullable=True),
++        sa.Column("top_score", sa.Float(), nullable=True),
++        sa.Column("matched_plant_id", UUID(as_uuid=True),
++                  sa.ForeignKey("plants.id", ondelete="SET NULL"), nullable=True),
++        sa.Column("matched_count", sa.Integer(), nullable=True),
++        sa.Column("remaining_requests", sa.Integer(), nullable=True),
++        sa.Column("candidates", JSONB(), nullable=True),
++    )
++
++
++def downgrade() -> None:
++    op.drop_table("identifications")
+diff --git a/backend/app/config.py b/backend/app/config.py
+index 4652afb..7978e9e 100644
+--- a/backend/app/config.py
++++ b/backend/app/config.py
+@@ -10,6 +10,11 @@ class Settings(BaseSettings):
+     minio_access_key: str = "minioadmin"
+     minio_secret_key: str = "minioadmin"
+     minio_bucket: str = "historical-recipes"
++    # Dedicated bucket for field-uploaded identification photos (Android "Что
++    # растёт" client): the original-ish photo + its EXIF/geo/device metadata are
++    # archived here for debugging and future training data, kept apart from the
++    # curated corpus bucket.
++    minio_field_bucket: str = "field-uploads"
+     minio_secure: bool = False
+ 
+     # Qdrant (self-hosted)
+diff --git a/backend/app/models/__init__.py b/backend/app/models/__init__.py
+index 8ce049f..2177503 100644
+--- a/backend/app/models/__init__.py
++++ b/backend/app/models/__init__.py
+@@ -15,6 +15,8 @@ from app.models.plant import (
+ )
+ from app.models.dictionary import DictionaryTerm
+ from app.models.ingredient import Ingredient, IngredientSynonym
++from app.models.inat_cache import InatTaxonCache
++from app.models.identification import Identification
+ 
+ __all__ = [
+     "Book", "BookPage", "BookChunk", "BookSection", "ProcessingLog",
+@@ -24,4 +26,6 @@ __all__ = [
+     "PlantHarvest", "PlantHabitat", "PlantToxicity",
+     "DictionaryTerm",
+     "Ingredient", "IngredientSynonym",
++    "InatTaxonCache",
++    "Identification",
+ ]
+diff --git a/backend/app/models/identification.py b/backend/app/models/identification.py
+new file mode 100644
+index 0000000..3dbedf8
+--- /dev/null
++++ b/backend/app/models/identification.py
+@@ -0,0 +1,54 @@
++import uuid
++from datetime import datetime
++
++from sqlalchemy import String, Integer, Float, Text, DateTime, ForeignKey, func
++from sqlalchemy.dialects.postgresql import UUID, JSONB
++from sqlalchemy.orm import Mapped, mapped_column
++
++from app.database import Base
++
++
++class Identification(Base):
++    """One photo-identification event from the field client, archived for
++    debugging and future training data.
++
++    Each row points at the uploaded photo in the ``field-uploads`` MinIO bucket
++    (``photo_key``) and captures the context an LLM-only consumer can't see: the
++    photo's own EXIF, the user-granted geolocation, and the phone/OS the shot came
++    from. The engine result is stored too (``top_*`` + full ``candidates``) so a
++    bad identification can be replayed against the exact inputs.
++
++    This is internal capture — NOT exposed over MCP and NOT the per-device "my
++    history" list (that lives client-side). Geolocation is only present when the
++    user granted the permission; all metadata fields are nullable by design."""
++
++    __tablename__ = "identifications"
++
++    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
++    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
++
++    photo_key: Mapped[str | None] = mapped_column(Text)          # MinIO object key in the field bucket
++    engine: Mapped[str | None] = mapped_column(String(30))       # identification engine, e.g. "plantnet"
++    organ: Mapped[str | None] = mapped_column(String(20))        # leaf/flower/fruit/bark/auto (first organ)
++
++    # Geolocation (only when the user granted the permission).
++    lat: Mapped[float | None] = mapped_column(Float)
++    lng: Mapped[float | None] = mapped_column(Float)
++    geo_accuracy: Mapped[float | None] = mapped_column(Float)    # metres
++    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # EXIF/client capture time
++
++    # Photo's own attributes (EXIF) + device/OS, for debugging.
++    exif: Mapped[dict | None] = mapped_column(JSONB)
++    device_model: Mapped[str | None] = mapped_column(String(120))
++    device_manufacturer: Mapped[str | None] = mapped_column(String(120))
++    os_version: Mapped[str | None] = mapped_column(String(40))
++    os_sdk: Mapped[int | None] = mapped_column(Integer)
++    app_version: Mapped[str | None] = mapped_column(String(40))
++
++    # Engine outcome.
++    top_latin: Mapped[str | None] = mapped_column(Text)
++    top_score: Mapped[float | None] = mapped_column(Float)
++    matched_plant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("plants.id", ondelete="SET NULL"))
++    matched_count: Mapped[int | None] = mapped_column(Integer)
++    remaining_requests: Mapped[int | None] = mapped_column(Integer)
++    candidates: Mapped[list | None] = mapped_column(JSONB)       # full candidate list as returned
+diff --git a/backend/app/models/inat_cache.py b/backend/app/models/inat_cache.py
+new file mode 100644
+index 0000000..e2ab64e
+--- /dev/null
++++ b/backend/app/models/inat_cache.py
+@@ -0,0 +1,33 @@
++from datetime import datetime
++
++from sqlalchemy import String, Integer, Text, DateTime, func
++from sqlalchemy.orm import Mapped, mapped_column
++
++from app.database import Base
++
++
++class InatTaxonCache(Base):
++    """Latin name → iNaturalist Russian common name + taxon_id, cached.
++
++    The identify flow needs a Russian name for EVERY candidate species, including
++    ones not in our corpus (whose name would otherwise show as the English
++    PlantNet common name — confusing next to corpus rows that are Russian). iNat's
++    ``preferred_common_name`` at ``locale=ru`` is the canonical source, but it is
++    a live external call under a ≤60 req/min budget, so we cache the resolution
++    keyed on the genus+species :func:`plant_matching._latin_key` (the SAME key the
++    herbarium dedups on — "Gratiola officinalis L." and "gratiola officinalis"
++    collapse to one row).
++
++    A row is written only for a DEFINITIVE iNat answer (a taxon match, or a
++    confirmed no-match). Transient failures (HTTP error / 429) are never cached,
++    so the next identify retries. ``name_ru`` / ``taxon_id`` are nullable: a
++    cached null means "iNat has no Russian name / no taxon for this Latin" — a
++    real answer we should not keep re-querying.
++    """
++
++    __tablename__ = "inat_taxon_cache"
++
++    latin_key: Mapped[str] = mapped_column(String(120), primary_key=True)  # genus+species, lowercased, author-stripped
++    name_ru: Mapped[str | None] = mapped_column(Text)                       # iNat preferred_common_name @ locale=ru (None = none exists)
++    taxon_id: Mapped[int | None] = mapped_column(Integer)                   # iNat taxon id (None = no taxon matched)
++    resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+diff --git a/backend/app/routers/identify.py b/backend/app/routers/identify.py
+index acb0b92..5e4750c 100644
+--- a/backend/app/routers/identify.py
++++ b/backend/app/routers/identify.py
+@@ -13,15 +13,25 @@ The engine is the only swappable part; everything below the candidate list is
+ engine-neutral.
+ """
+ 
++import json
++import logging
++import uuid
++from datetime import datetime, timezone
++
+ from fastapi import APIRouter, Depends, File, Form, UploadFile
+ from pydantic import BaseModel
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
++from app.config import settings
+ from app.database import get_db
++from app.models.identification import Identification
+ from app.models.plant import Plant
++from app.services import minio as minio_svc
+ from app.services import plant_id
++from app.services.inaturalist import resolve_names_ru
+ from app.services.plant_matching import resolve_latin_to_plants
+ 
++logger = logging.getLogger(__name__)
+ router = APIRouter()
+ 
+ 
+@@ -52,20 +62,123 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
+         return result
+     by_latin = await resolve_latin_to_plants(db, [c["latin"] for c in candidates])
+     matched = 0
++    unmatched_latins: list[str] = []
+     for c in candidates:
+         p = by_latin.get(c["latin"])
+         c["plant"] = _plant_card(p) if p is not None else None
+         if p is not None:
+             matched += 1
++        else:
++            unmatched_latins.append(c["latin"])
++    # A candidate NOT in our corpus would otherwise display PlantNet's English
++    # common name; resolve a Russian name (and iNat taxon_id) from iNaturalist so
++    # corpus and non-corpus hits read consistently in Russian. Corpus candidates
++    # already carry a Russian name (plant.name / name_modern), so skip those.
++    if unmatched_latins:
++        names_ru = await resolve_names_ru(db, unmatched_latins)
++        for c in candidates:
++            info = names_ru.get(c["latin"]) if c["plant"] is None else None
++            if info:
++                c["name_ru"] = info.get("name_ru")
++                c["inat_taxon_id"] = info.get("taxon_id")
+     result["matched_count"] = matched
+     return result
+ 
+ 
++def _parse_captured_at(raw: str | None) -> datetime | None:
++    """Parse the client's capture timestamp leniently — ISO 8601 or epoch
++    seconds/millis. Returns None on anything unparseable (the field is optional)."""
++    if not raw:
++        return None
++    raw = raw.strip()
++    try:
++        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
++        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
++    except ValueError:
++        pass
++    try:
++        v = float(raw)
++        if v > 1e12:  # milliseconds
++            v /= 1000.0
++        return datetime.fromtimestamp(v, tz=timezone.utc)
++    except (ValueError, OverflowError, OSError):
++        return None
++
++
++async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
++                   organs: list[str] | None, lat, lng, geo_accuracy, captured_at,
++                   exif_json, device_model, device_manufacturer, os_version,
++                   os_sdk, app_version) -> None:
++    """Archive the photo (→ field-uploads bucket) + its metadata + the engine
++    outcome to the ``identifications`` table. Best-effort: any failure is logged
++    and swallowed so archival never breaks the user's identification."""
++    try:
++        photo_key = None
++        if photo:
++            key = f"uploads/{datetime.now(timezone.utc):%Y/%m}/{uuid.uuid4().hex}.jpg"
++            minio_svc.ensure_bucket(settings.minio_field_bucket)
++            minio_svc.upload_file(photo, key, content_type="image/jpeg",
++                                  bucket=settings.minio_field_bucket)
++            photo_key = key
++
++        candidates = result.get("candidates") or []
++        top = candidates[0] if candidates else {}
++        matched_plant_id = next(
++            (c["plant"]["id"] for c in candidates if c.get("plant")), None
++        )
++        exif = None
++        if exif_json:
++            try:
++                exif = json.loads(exif_json)
++            except (ValueError, TypeError):
++                exif = {"_raw": exif_json[:2000]}
++
++        db.add(Identification(
++            photo_key=photo_key,
++            engine=result.get("engine"),
++            organ=(organs[0] if organs else None),
++            lat=lat, lng=lng, geo_accuracy=geo_accuracy,
++            captured_at=_parse_captured_at(captured_at),
++            exif=exif,
++            device_model=device_model,
++            device_manufacturer=device_manufacturer,
++            os_version=os_version,
++            os_sdk=os_sdk,
++            app_version=app_version,
++            top_latin=top.get("latin"),
++            top_score=top.get("score"),
++            matched_plant_id=uuid.UUID(matched_plant_id) if matched_plant_id else None,
++            matched_count=result.get("matched_count"),
++            remaining_requests=result.get("remaining_requests"),
++            candidates=candidates or None,
++        ))
++        await db.commit()
++    except Exception as e:
++        logger.warning(f"identification archive failed: {type(e).__name__}: {e}")
++        try:
++            await db.rollback()
++        except Exception:
++            pass
++
++
+ @router.post("/")
+ async def identify_plant(
+     images: list[UploadFile] = File(...),
+     organs: list[str] | None = Form(None),
+     limit: int = Form(5),
++    # Field-capture metadata (all optional). Geolocation is only sent when the
++    # user granted the permission; EXIF is read by the client from the ORIGINAL
++    # photo (the uploaded frame is recompressed and loses it).
++    lat: float | None = Form(None),
++    lng: float | None = Form(None),
++    geo_accuracy: float | None = Form(None),
++    captured_at: str | None = Form(None),
++    exif_json: str | None = Form(None),
++    device_model: str | None = Form(None),
++    device_manufacturer: str | None = Form(None),
++    os_version: str | None = Form(None),
++    os_sdk: int | None = Form(None),
++    app_version: str | None = Form(None),
+     db: AsyncSession = Depends(get_db),
+ ):
+     """Identify a plant from one or more uploaded photos and link each candidate
+@@ -73,14 +186,25 @@ async def identify_plant(
+ 
+     Form fields: ``images`` (1–5 JPG/PNG files), optional ``organs`` (one per
+     image: leaf/flower/fruit/bark/auto; a single value applies to all), ``limit``
+-    (max candidates, default 5).
++    (max candidates, default 5). Optional field-capture metadata
++    (``lat``/``lng``/``geo_accuracy``, ``captured_at``, ``exif_json``,
++    ``device_model``/``device_manufacturer``/``os_version``/``os_sdk``/
++    ``app_version``) is archived alongside the photo for debugging.
+ 
+     Returns ``{engine, candidates:[{latin, score, common_names, gbif_id, …,
+     plant: card|null}], matched_count, remaining_requests}``. Each matched
+     ``plant.id`` is the key for GET /api/plants/{id}."""
+     blobs = [await f.read() for f in images]
+     result = await plant_id.identify(blobs, organs=organs, limit=limit)
+-    return await _bridge(result, db)
++    result = await _bridge(result, db)
++    await _archive(
++        db, photo=(blobs[0] if blobs else None), result=result, organs=organs,
++        lat=lat, lng=lng, geo_accuracy=geo_accuracy, captured_at=captured_at,
++        exif_json=exif_json, device_model=device_model,
++        device_manufacturer=device_manufacturer, os_version=os_version,
++        os_sdk=os_sdk, app_version=app_version,
++    )
++    return result
+ 
+ 
+ class IdentifyByUrlRequest(BaseModel):
+diff --git a/backend/app/services/inaturalist.py b/backend/app/services/inaturalist.py
+index 4580a05..144c7d2 100644
+--- a/backend/app/services/inaturalist.py
++++ b/backend/app/services/inaturalist.py
+@@ -21,9 +21,12 @@ from datetime import datetime, timezone
+ 
+ import httpx
+ from sqlalchemy import select, func
++from sqlalchemy.dialects.postgresql import insert as pg_insert
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
+ from app.models.plant import Plant, PlantBookMention
++from app.models.inat_cache import InatTaxonCache
++from app.services.plant_matching import _latin_key
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -176,6 +179,65 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
+     return out
+ 
+ 
++async def resolve_names_ru(db: AsyncSession, latins: list[str]) -> dict[str, dict]:
++    """Map each input Latin name → ``{"name_ru": str|None, "taxon_id": int|None}``.
++
++    Used by the identify flow to give every candidate species a Russian name (so a
++    non-corpus hit shows "Икотник серый" instead of PlantNet's English label). The
++    resolution is cached in ``inat_taxon_cache`` keyed on the genus+species
++    :func:`plant_matching._latin_key`, so repeated identifications don't re-hit
++    iNat. iNat is queried only for cache MISSES, concurrently, reusing
++    :func:`resolve_taxon_photo`'s 429 backoff.
++
++    Cache semantics mirror the resolver's two no-match cases:
++    * DEFINITIVE (``{"taxon_id": …}`` incl. a null name/taxon) → cached, so we stop
++      re-querying a species iNat has no Russian name for.
++    * TRANSIENT (``None``: HTTP error / throttle) → NOT cached, retried next call.
++
++    Unusable Latins (abbreviated genus, genus-only) resolve to all-None without an
++    iNat call. Never raises."""
++    # Map each input latin to its dedup key; unusable latins get an immediate null.
++    keys: dict[str, str | None] = {lat: _latin_key(lat) for lat in latins}
++    wanted = {k for k in keys.values() if k}
++    if not wanted:
++        return {lat: {"name_ru": None, "taxon_id": None} for lat in latins}
++
++    # 1) Read whatever is already cached.
++    rows = (await db.execute(
++        select(InatTaxonCache).where(InatTaxonCache.latin_key.in_(wanted))
++    )).scalars().all()
++    cache: dict[str, dict] = {r.latin_key: {"name_ru": r.name_ru, "taxon_id": r.taxon_id} for r in rows}
++
++    # 2) Resolve the misses against iNat, concurrently, and persist definitive ones.
++    misses = [k for k in wanted if k not in cache]
++    if misses:
++        async with httpx.AsyncClient(timeout=30) as client:
++            results = await asyncio.gather(*(resolve_taxon_photo(client, k) for k in misses))
++        to_insert: list[dict] = []
++        for key, res in zip(misses, results):
++            if res is None:
++                continue  # transient — leave uncached, retry next time
++            entry = {"name_ru": res.get("common_name"), "taxon_id": res.get("taxon_id")}
++            cache[key] = entry
++            to_insert.append({"latin_key": key, **entry})
++        if to_insert:
++            # ON CONFLICT DO NOTHING: a concurrent identify may have cached the same
++            # key meanwhile — first writer wins, both see a consistent answer.
++            stmt = pg_insert(InatTaxonCache).values(to_insert).on_conflict_do_nothing(
++                index_elements=["latin_key"]
++            )
++            await db.execute(stmt)
++            await db.commit()
++
++    # 3) Project back onto the original input latins.
++    out: dict[str, dict] = {}
++    for lat, key in keys.items():
++        out[lat] = cache.get(key) if key else None
++        if out[lat] is None:
++            out[lat] = {"name_ru": None, "taxon_id": None}
++    return out
++
++
+ # iNat-RU atlas "grid cell" community places, e.g. "Квадрат В-01 (Владимирская
+ # область)". Pure tiling artifacts that flood autocomplete and hijack a bare
+ # oblast query — never a meaningful answer to "where can I find this plant".
+diff --git a/backend/app/services/minio.py b/backend/app/services/minio.py
+index 12ec6d6..d54e929 100644
+--- a/backend/app/services/minio.py
++++ b/backend/app/services/minio.py
+@@ -29,11 +29,28 @@ def get_client() -> Minio:
+     return _client
+ 
+ 
+-def upload_file(data: bytes, path: str, content_type: str = "application/octet-stream") -> str:
+-    """Upload file to MinIO. Returns the object path."""
++def ensure_bucket(bucket: str) -> None:
++    """Create ``bucket`` if it doesn't exist (idempotent). Used for dedicated
++    buckets outside the default app bucket, e.g. the field-upload archive."""
++    client = get_client()
++    try:
++        if not client.bucket_exists(bucket):
++            client.make_bucket(bucket)
++    except S3Error:
++        pass  # already exists or no create permission — put_object will surface real errors
++
++
++def upload_file(
++    data: bytes,
++    path: str,
++    content_type: str = "application/octet-stream",
++    bucket: str | None = None,
++) -> str:
++    """Upload file to MinIO. Returns the object path. ``bucket`` defaults to the
++    app bucket; pass another to write into a dedicated bucket (e.g. field uploads)."""
+     client = get_client()
+     client.put_object(
+-        settings.minio_bucket,
++        bucket or settings.minio_bucket,
+         path,
+         BytesIO(data),
+         length=len(data),
+diff --git a/docs/RFC-mcp-tools-v2.md b/docs/RFC-mcp-tools-v2.md
+new file mode 100644
+index 0000000..e6113c0
+--- /dev/null
++++ b/docs/RFC-mcp-tools-v2.md
+@@ -0,0 +1,150 @@
++# RFC: MCP toolset v2 — identification ergonomics & field data
++
++Status: **Draft** (2026-06-06) · Author: design notes · Created: 2026-06-06
++Supersedes nothing; **extends** `RFC-mcp-tools.md` (the 9-tool baseline that is now
++built and live).
++
++> The original RFC fixed a read-only retrieval surface over the corpus. Building
++> the Android field client ("Что растёт") surfaced four concrete gaps in the
++> *identification* path that the baseline did not anticipate: the photo tool only
++> accepts URLs, its candidate names are English, observations are corpus-only, and
++> there is no Latin→Russian name resolver. This RFC closes those gaps. All four
++> are thin wrappers / shared-service fixes — no new retrieval pillar.
++
++## Context: what changed since v1
++
++The baseline toolset (`backend/app/mcp/server.py`) is live. Two new things drive
++this RFC:
++
++1. **A field client** (Android, sideloaded) that takes a photo, calls
++   `POST /api/identify/`, and renders candidates with cross-links into the
++   corpus. It exposed UX consequences of the API shape that an LLM-only consumer
++   would hit too.
++2. **A field-data capture feature** (separate work item, see the field-upload
++   plan): every identification's photo + EXIF + geolocation + device/OS is
++   archived to a dedicated MinIO bucket (`field-uploads`) and an `identification`
++   log table, for debugging and future training data.
++
++## The four gaps
++
++### Gap 1 — `identify_plant` accepts only image URLs
++
++Today `mcp__historical-recipes__identify_plant(image_urls, organs, limit)` wraps
++`POST /api/identify/by-url` (`backend/app/routers/identify.py:92`). An MCP
++consumer with a **local** image file has nowhere to put it — it must first host
++the image at a public URL, which most agents cannot do. The REST multipart path
++(`POST /api/identify/`) exists but is not exposed over MCP.
++
++**Proposal:** accept inline image bytes over MCP.
++- Add `images_base64: list[str]` (optional, mutually exclusive with `image_urls`)
++  to the `identify_plant` tool.
++- Server decodes and forwards as multipart to the existing
++  `plant_id.identify()` service — same code path as the REST upload, no new
++  identification logic.
++- Size guard: reject > ~4 MB/image decoded (PlantNet caps at 5 images anyway);
++  recommend clients downscale (the Android client already does — long side 1024,
++  JPEG q80, ~200 KB).
++- **Decision needed:** base64-over-MCP vs. exposing a presigned-PUT to the new
++  `field-uploads` bucket and then identify-by-key. Lean **base64** for v2 (one
++  round-trip, no bucket exposure to consumers); revisit presigned-PUT if payload
++  size becomes a problem.
++
++### Gap 2 — candidate `common_names` are English
++
++`plant_id.py` normalizes PlantNet's `species.commonNames` straight through
++(`backend/app/services/plant_id.py:52`); these are English. In the field client a
++**non-corpus** candidate therefore shows an English name while a corpus candidate
++shows Russian (`Plant.name` / `name_modern`) — confusing side by side. The MCP
++`identify_plant` output has the same flaw.
++
++**Proposal (shared-service fix, benefits REST + MCP equally):** enrich each
++candidate with a Russian name from iNaturalist by Latin name.
++- Reuse `inaturalist.resolve_taxon_photo()` /
++  `GET /v1/taxa?q={latin}&locale=ru` (`backend/app/services/inaturalist.py:109`),
++  which already returns a Russian `common_name`.
++- Add `name_ru` to each candidate. Resolution order for display:
++  corpus `name`/`name_modern` → iNat `name_ru` → English `common_names[0]` →
++  Latin. (Corpus candidates already carry Russian, so iNat is only hit for
++  non-corpus latins.)
++- Resolve candidates **concurrently** (`asyncio.gather`) reusing the existing 429
++  backoff; cap at the displayed `limit`.
++- **Cache** Latin→Russian in a new `inat_taxon_cache` table keyed on
++  `_latin_key` (`backend/app/services/plant_matching.py:140`) so repeated
++  identifications don't re-hit iNat (≤60 req/min budget) and survive restarts.
++
++### Gap 3 — `find_observations_nearby` is corpus-only
++
++The tool requires a `plant_id` and routes to
++`GET /api/plants/{plant_id}/observations`
++(`backend/app/mcp/server.py:484`, router `plants.py:328`), which reads
++`Plant.inat_taxon_id`. A species that was **identified but is not in our corpus**
++has no `plant_id`, so its live observations are unreachable — exactly the
++common case for a field photo of something we haven't catalogued. The v1 RFC's
++open question ("accept plant_id vs taxon_id vs both — lean both") was built
++plant_id-only; this closes it.
++
++**Proposal:** accept `taxon_id` **or** `latin` in addition to `plant_id`.
++- `plant_id` → resolve to `inat_taxon_id` (today's path).
++- `taxon_id` → pass straight to `inaturalist.find_observations()`.
++- `latin` → resolve via `resolve_taxon_photo()` (cached per Gap 2) to a
++  `taxon_id`, then observations.
++- The identify candidate payload already exposes the Latin; with Gap 2's cache
++  the taxon_id is effectively free. Wire a `taxon_id` into the candidate payload
++  when known, so the agent can chain identify → observations without a corpus
++  hit.
++
++### Gap 4 — no standalone Latin→Russian name resolver
++
++Considered (`resolve_name(latin)`), **rejected for v2**. Once Gap 2 returns
++`name_ru` on identify candidates and Gap 3 accepts a Latin, a separate resolver
++buys nothing. Revisit only if a consumer needs Russian names outside the
++identify/observations flow.
++
++## Tier → tool map (metering)
++
++No new tier. All four changes stay within the existing `identify` and `live`
++tiers recorded by `_record_usage()` (`backend/app/mcp/server.py:77`); the dormant
++metering seam is unchanged.
++
++| Tier | Affected tool | Change |
++|---|---|---|
++| identify | `identify_plant` | +`images_base64` input, +`name_ru`/`taxon_id` in output |
++| live | `find_observations_nearby` | +`taxon_id` / `latin` inputs |
++
++## What is deliberately NOT in scope
++
++- The `field-uploads` bucket and `identification` log table are **not** exposed
++  over MCP. They are an internal debugging/training capture (server + Android
++  client), not a consumer retrieval surface. No "read my identification history"
++  tool — history is a per-device client concern.
++- No write/ingest/admin tools (unchanged from v1).
++- No LLM hosting/proxy (unchanged from v1).
++
++## Work items
++
++1. **Gap 2 first** (highest value, unblocks the field client + fixes MCP output):
++   `name_ru` enrichment in `plant_id.identify()` via cached iNat taxon lookup;
++   add `inat_taxon_cache` table (migration).
++2. **Gap 3:** widen `find_observations_nearby` + the `/observations` router to
++   accept `taxon_id` / `latin`; thread `taxon_id` into identify candidates.
++3. **Gap 1:** add `images_base64` to the `identify_plant` MCP tool, forwarding to
++   the multipart service path.
++4. Update `AGENTS.md` tool descriptions: identify accepts inline images and
++   returns Russian names; observations accept a bare taxon/latin.
++
++## Dependencies / blockers
++
++- iNat rate limit (≤60 req/min, ~1 req/1.6 s pacing used by the enrichment pass).
++  The `inat_taxon_cache` is the mitigation; identify resolves ≤`limit` latins per
++  call, concurrently, so worst case is small and warms the cache.
++- PlantNet free tier 500 IDs/day — unchanged; this RFC adds no PlantNet calls.
++
++## Open questions
++
++- Gap 1 transport: base64 inline (leaning) vs. presigned-PUT to `field-uploads`.
++  Decide if/when payload size bites.
++- Cache invalidation: iNat Russian common names are stable; a TTL is likely
++  unnecessary, but consider a periodic refresh aligned with `enrich_plants_inat`.
++- Should `name_ru` resolution also backfill the corpus (promote to `name_modern`
++  for matched plants whose `name_modern` is null)? Lean no — keep identify
++  read-only; corpus promotion stays in the enrichment pass.
