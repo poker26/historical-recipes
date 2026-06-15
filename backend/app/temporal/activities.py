@@ -27,7 +27,7 @@ from app.models.ingredient import Ingredient, IngredientSynonym
 from app.models.plant import (
     Plant, MedicinalAction, PlantMedicinalUse, PlantCompound,
     PlantHarvest, PlantHabitat, PlantToxicity, PlantBookMention, Compound,
-    PlantCulinaryUse,
+    PlantCulinaryUse, EssentialOil, EssentialOilUse,
 )
 from app.services import minio as minio_svc
 from app.services.ingest import BORN_TEXT_FORMATS, extract_text_from_document
@@ -60,6 +60,13 @@ from app.services.compound_extractor import (
     _with_heartbeat as _compound_with_heartbeat,
 )
 from app.services.compound_matching import normalize_plant_compounds
+from app.services.aroma_extractor import (
+    extract_oils_from_text,
+    _split_into_chunks as _split_oil_chunks,
+    _extract_single as _extract_oil_single,
+    _with_heartbeat as _oil_with_heartbeat,
+)
+from app.services.aroma_matching import normalize_oil_uses
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +304,11 @@ async def _save_page(bid: uuid.UUID, page_num: int, image_path: str | None,
     async with async_session() as db:
         db.add(BookPage(
             book_id=bid, page_number=page_num, image_path=image_path,
-            raw_text=raw_text, dpi=dpi, ocr_confidence=confidence,
+            # Postgres text/varchar rejects NUL (0x00); some PDF text layers carry
+            # it and would fail the INSERT, wedging the page (and the book) in an
+            # infinite retry. Strip it — it's never meaningful content.
+            raw_text=(raw_text.replace("\x00", "") if raw_text else raw_text),
+            dpi=dpi, ocr_confidence=confidence,
             needs_review=confidence is not None and confidence < 60.0, status=status,
         ))
         await db.commit()
@@ -319,6 +330,7 @@ async def extract_activity(book_id: str) -> dict:
         _hb(f"Reading born-text document ({source_format})")
         data = minio_svc.download_file(file_path)
         full_text = extract_text_from_document(data, source_format)
+        full_text = full_text.replace("\x00", "") if full_text else full_text  # NUL → Postgres rejects it
         async with async_session() as db:
             existing = await db.execute(select(BookPage).where(BookPage.book_id == bid))
             for p in existing.scalars().all():
@@ -617,6 +629,14 @@ async def analyze_activity(book_id: str) -> dict:
 # extraction — the recipe counterpart of _PLANT_CHUNK_STEP.
 _RECIPE_SECTION_STEP = "extract_recipes:section"
 
+# How many recipe sections to extract concurrently within a single book. The
+# work is I/O-bound (long OpenRouter calls), so fanning sections out instead of
+# processing them one-by-one is the dominant wall-time win on recipe-heavy books
+# (e.g. 300+ recipes across ~95 sections). Kept modest so the *product* with the
+# worker's max_concurrent_activities stays under the OpenRouter rate ceiling —
+# raise after observing 0×429 headroom in the logs.
+_RECIPE_SECTION_CONCURRENCY = 4
+
 
 async def _save_recipe_section(bid: uuid.UUID, section_index: int, extracted: list) -> int:
     """Persist one recipe section's recipes + ingredients + its completion marker,
@@ -699,7 +719,25 @@ async def extract_recipes_activity(book_id: str) -> dict:
         )
         sections = result.scalars().all()
         if not sections:
-            raise ValueError("No recipe sections found. Run analyze first.")
+            # analyze tagged NO recipe_block sections. This is LEGITIMATE for a
+            # pure plant-monograph / atlas herbalism book (species descriptions,
+            # phytochemistry — no разделы с рецептами). Previously this raised a
+            # ValueError and dead-ended the whole pipeline (book stuck FAILED,
+            # never indexed). Instead finalize cleanly as a zero-recipe book so it
+            # proceeds to match_ingredients/index with its plant data intact. Drop
+            # any prior recipes on a fresh run for idempotency.
+            if attempt == 1:
+                await db.execute(delete(Recipe).where(Recipe.book_id == bid))
+            book.wizard_step = 6
+            book.status = "recipes_extracted"
+            db.add(ProcessingLog(
+                book_id=bid, step="extract_recipes", status="completed",
+                details={"recipes_count": 0, "sections_processed": 0,
+                         "sections_failed": 0, "no_recipe_sections": True}))
+            await db.commit()
+            _hb("No recipe sections found — finalized as a zero-recipe book")
+            return {"recipes_count": 0, "sections_processed": 0,
+                    "sections_failed": 0}
 
         lines = full_text.split("\n")
         section_data = []
@@ -743,42 +781,58 @@ async def extract_recipes_activity(book_id: str) -> dict:
     if done_sections:
         _hb(f"Resuming recipe extraction: {len(done_sections)}/{n} section(s) already committed")
 
-    failed = 0
-    for i, sd in enumerate(section_data):
+    # Sections are processed concurrently (bounded by a semaphore) rather than
+    # one-by-one: each section is an independent, immediately-committed unit, so
+    # fanning them out cuts wall-time on recipe-heavy books without weakening the
+    # resume guarantee. The per-section commit + completion/failed markers are
+    # unchanged; only the iteration is parallel. CancelledError still propagates
+    # (worker shutdown / timeout) so Temporal resumes from the committed sections.
+    sem = asyncio.Semaphore(_RECIPE_SECTION_CONCURRENCY)
+
+    async def _process_section(i: int, sd: dict) -> int:
+        """Extract + save one section. Returns 1 if it failed (skipped), else 0.
+        Mirrors the previous sequential body exactly, just guarded by the sem."""
         if i in done_sections:
-            continue
-        _hb(f"Section {i+1}/{n}: {sd['title']} ({len(sd['text'])} chars)")
-        try:
-            extracted = await _with_heartbeat(
-                extract_recipes_from_section(
-                    sd["text"], book_title=book_title,
-                    recipe_pattern=sd["recipe_pattern"], progress_callback=_hb,
-                ),
-                _hb, f"Section {i+1}/{n}",
-            )
-        except asyncio.CancelledError:
-            # Temporal is tearing the activity down (timeout / worker shutdown).
-            # Committed sections are safe; let it propagate so the retry resumes.
-            raise
-        except Exception as e:
-            failed += 1
-            logger.exception(f"Section {i+1} extraction failed")
-            _hb(f"Section {i+1}: ERROR - {e} (skipped)")
-            await _mark_recipe_section_failed(bid, i, str(e))
-            continue
-        try:
-            rc = await _save_recipe_section(bid, i, extracted)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            # A save failure (e.g. an over-long value or constraint violation) must
-            # not doom the whole book: skip this section, mark it failed, keep going.
-            failed += 1
-            logger.exception(f"Section {i+1} save failed")
-            _hb(f"Section {i+1}: SAVE ERROR - {e} (skipped)")
-            await _mark_recipe_section_failed(bid, i, str(e))
-            continue
-        _hb(f"Section {i+1}/{n}: saved {rc} recipes")
+            return 0
+        async with sem:
+            _hb(f"Section {i+1}/{n}: {sd['title']} ({len(sd['text'])} chars)")
+            try:
+                extracted = await _with_heartbeat(
+                    extract_recipes_from_section(
+                        sd["text"], book_title=book_title,
+                        recipe_pattern=sd["recipe_pattern"], progress_callback=_hb,
+                    ),
+                    _hb, f"Section {i+1}/{n}",
+                )
+            except asyncio.CancelledError:
+                # Temporal is tearing the activity down (timeout / worker shutdown).
+                # Committed sections are safe; let it propagate so the retry resumes.
+                raise
+            except Exception as e:
+                logger.exception(f"Section {i+1} extraction failed")
+                _hb(f"Section {i+1}: ERROR - {e} (skipped)")
+                await _mark_recipe_section_failed(bid, i, str(e))
+                return 1
+            try:
+                rc = await _save_recipe_section(bid, i, extracted)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # A save failure (e.g. an over-long value or constraint violation) must
+                # not doom the whole book: skip this section, mark it failed, keep going.
+                logger.exception(f"Section {i+1} save failed")
+                _hb(f"Section {i+1}: SAVE ERROR - {e} (skipped)")
+                await _mark_recipe_section_failed(bid, i, str(e))
+                return 1
+            _hb(f"Section {i+1}/{n}: saved {rc} recipes")
+            return 0
+
+    # return_exceptions=False: a stray CancelledError propagates (and cancels the
+    # siblings) so a worker shutdown cleanly hands off to the resuming retry.
+    section_failures = await asyncio.gather(
+        *[_process_section(i, sd) for i, sd in enumerate(section_data)]
+    )
+    failed = sum(section_failures)
 
     # Finalize: count this book's committed recipes across fresh + resumed sections.
     async with async_session() as db:
@@ -1164,10 +1218,11 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
                                       "failed_chunks": failed}))
         await db.commit()
 
-    # Genuine zero (no failures) — the book has no plant monographs at all. That's
-    # a real input problem worth surfacing as non-retryable.
-    if plants_count == 0:
-        raise ValueError("No plants extracted")
+    # Genuine zero (no failures) — the book has no plant monographs at all. This is
+    # NOT an error: народные/домашние лечебники are organised by disease and carry
+    # only recipes, not plant entries. Don't fail the workflow — let it fall through
+    # to extract_recipes so the book's remedy content is still captured. The 0-plant
+    # signal is preserved in the ProcessingLog committed just above for operator review.
     return {"plants_count": plants_count, "uses_count": uses_count, "failed_chunks": failed}
 
 
@@ -1383,6 +1438,262 @@ async def normalize_corpus_activity(book_id: str) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Aromatherapy domain: essential oils as substance-entities
+# ──────────────────────────────────────────────────────────────────────
+
+_OIL_CHUNK_STEP = "extract_oils:chunk"
+# How many oil chunks to *extract* (the slow LLM call) concurrently. Saves are
+# serialized separately (see the save-lock in extract_oils_activity) because
+# chunks write into a shared unique namespace (EssentialOil.name is UNIQUE + the
+# compound vocab), so concurrent upserts of the same oil name would race.
+_OIL_CHUNK_CONCURRENCY = 4
+# Canonical class node every named oil hangs under in the chemistry vocabulary,
+# so a named oil ("лавандовое масло") joins the compound graph beneath «эфирные
+# масла» and the plant↔oil anchor lines up with existing PlantCompound rows.
+_OIL_COMPOUND_CLASS = "эфирные масла"
+
+
+async def _upsert_essential_oil(db, o, bid: uuid.UUID, compound_id) -> "EssentialOil | None":
+    """Insert a named oil or enrich an existing one (dedup by lower(name)).
+
+    The oil ENTITY is cumulative across books (like the compound vocabulary): a
+    named oil is never duplicated and existing fields are never clobbered — only
+    empty fields are filled, synonyms unioned, and the plant/compound bridges set
+    once. Returns the (new or existing) ``EssentialOil``.
+    """
+    name = (o.name or "").strip()
+    if not name:
+        return None
+    existing = (await db.execute(
+        select(EssentialOil).where(func.lower(EssentialOil.name) == name.lower())
+    )).scalars().first()
+
+    # Resolve the source plant (bridge into the herbarium) if the oil names one.
+    plant_id = None
+    if o.source_plant:
+        shim = SimpleNamespace(
+            name=o.source_plant, name_latin=o.source_plant_latin or "", family="",
+            family_latin="", description="", is_toxic=False,
+            parts_used=[], names_historical=[])
+        plant = await _resolve_plant(db, shim)
+        plant_id = plant.id
+
+    if existing is None:
+        oil = EssentialOil(
+            name=name, name_latin=(o.name_latin or None),
+            synonyms=(o.synonyms or None), plant_id=plant_id,
+            source_plant_raw=(o.source_plant or None), compound_id=compound_id,
+            part=_clip(o.part, 50), extraction=_clip(o.extraction, 60),
+            aroma_profile=(o.aroma_profile or None), description=(o.description or None),
+            original_text=(o.original_text or None), source_book_id=bid,
+            created_at=datetime.utcnow())
+        db.add(oil)
+        await db.flush()
+        return oil
+    # enrich (never clobber)
+    if not existing.name_latin and o.name_latin:
+        existing.name_latin = o.name_latin
+    if existing.plant_id is None and plant_id is not None:
+        existing.plant_id = plant_id
+    if not existing.source_plant_raw and o.source_plant:
+        existing.source_plant_raw = o.source_plant
+    if existing.compound_id is None and compound_id is not None:
+        existing.compound_id = compound_id
+    if not existing.part and o.part:
+        existing.part = _clip(o.part, 50)
+    if not existing.extraction and o.extraction:
+        existing.extraction = _clip(o.extraction, 60)
+    if not existing.aroma_profile and o.aroma_profile:
+        existing.aroma_profile = o.aroma_profile
+    if not existing.description and o.description:
+        existing.description = o.description
+    if not existing.original_text and o.original_text:
+        existing.original_text = o.original_text
+    if o.synonyms:
+        merged = list(existing.synonyms or [])
+        for s in o.synonyms:
+            if s and s not in merged:
+                merged.append(s)
+        existing.synonyms = merged
+    return existing
+
+
+async def _save_oil_chunk(bid: uuid.UUID, chunk_index: int, oils: list) -> tuple[int, int]:
+    """Persist one chunk's oils + uses + completion marker, atomically.
+
+    Each named oil is upserted as a global entity, registered under «эфирные
+    масла» in the compound vocabulary, bridged to its source plant, and its
+    aromatherapy use-facts stored as ``EssentialOilUse`` rows (action/indication
+    normalization happens corpus-wide in ``normalize_oils``).
+    """
+    oil_count = 0
+    use_count = 0
+    async with async_session() as db:
+        # The class node every oil hangs under (upserted once, cumulative).
+        oil_class = await _upsert_compound(
+            db, name=_OIL_COMPOUND_CLASS, compound_class=_OIL_COMPOUND_CLASS,
+            source_book_id=bid)
+        for o in oils:
+            # Register the named oil in the compound vocabulary too, beneath the
+            # «эфирные масла» class, so it joins the chemistry graph.
+            comp = await _upsert_compound(
+                db, name=o.name, name_latin=o.name_latin,
+                compound_class=_OIL_COMPOUND_CLASS, definition=o.description,
+                synonyms=o.synonyms, original_text=o.original_text,
+                source_book_id=bid, parent_id=(oil_class.id if oil_class else None))
+            oil = await _upsert_essential_oil(db, o, bid, comp.id if comp else None)
+            if oil is None:
+                continue
+            oil_count += 1
+            for u in o.uses:
+                db.add(EssentialOilUse(
+                    oil_id=oil.id, action_raw=(u.action or None),
+                    indications=(u.indications or None),
+                    application=_clip(u.application, 40), dosage=(u.dosage or None),
+                    contraindications=(u.contraindications or None),
+                    original_text=(u.original_text or None), source_book_id=bid))
+                use_count += 1
+        db.add(ProcessingLog(
+            book_id=bid, step=_OIL_CHUNK_STEP, status="completed",
+            details={"chunk": chunk_index, "oils": oil_count, "uses": use_count}))
+        await db.commit()
+    return oil_count, use_count
+
+
+async def _mark_oil_chunk_failed(bid: uuid.UUID, chunk_index: int, error: str):
+    async with async_session() as db:
+        db.add(ProcessingLog(
+            book_id=bid, step=_OIL_CHUNK_STEP, status="failed",
+            details={"chunk": chunk_index, "error": (error or "")[:500]}))
+        await db.commit()
+
+
+@activity.defn
+async def extract_oils_activity(book_id: str) -> dict:
+    """Aromatherapy-domain counterpart of extract_vocabulary: build essential-oil
+    monographs from an aromatherapy reference and create their use-facts.
+    Resumable per-chunk, same discipline as compound extraction."""
+    bid = uuid.UUID(book_id)
+    attempt = activity.info().attempt
+
+    async with async_session() as db:
+        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
+        if not book.full_text:
+            raise ValueError("No text available")
+        book_title = book.title
+        full_text = book.full_text
+
+    chunks = _split_oil_chunks(full_text)
+    n = len(chunks)
+    _hb(f"Oil extraction: {n} chunk(s) from {len(full_text)} chars (attempt {attempt})")
+
+    async with async_session() as db:
+        if attempt == 1:
+            # Fresh run: drop only THIS book's oil rows + use rows + stale markers.
+            # Named oils registered in the compound vocab are cumulative and stay.
+            await db.execute(delete(EssentialOilUse).where(EssentialOilUse.source_book_id == bid))
+            await db.execute(delete(EssentialOil).where(EssentialOil.source_book_id == bid))
+            await db.execute(delete(ProcessingLog).where(
+                ProcessingLog.book_id == bid, ProcessingLog.step == _OIL_CHUNK_STEP))
+            await db.commit()
+            done_chunks: set[int] = set()
+        else:
+            logs = (await db.execute(select(ProcessingLog).where(
+                ProcessingLog.book_id == bid,
+                ProcessingLog.step == _OIL_CHUNK_STEP,
+            ))).scalars().all()
+            done_chunks = {
+                lg.details["chunk"] for lg in logs
+                if lg.status == "completed" and lg.details
+                and lg.details.get("chunk") is not None
+            }
+
+    if done_chunks:
+        _hb(f"Resuming oil extraction: {len(done_chunks)}/{n} chunk(s) already committed")
+
+    # Extract chunks concurrently (the slow LLM call), but serialize the DB save:
+    # oils share a unique namespace (EssentialOil.name + the compound vocab), so
+    # two chunks naming the same oil must not upsert at once. The save-lock makes
+    # the upsert critical section mutually exclusive while extractions overlap.
+    # Per-chunk completion/failed markers and resume semantics are unchanged.
+    sem = asyncio.Semaphore(_OIL_CHUNK_CONCURRENCY)
+    save_lock = asyncio.Lock()
+
+    async def _process_oil_chunk(i: int, chunk: str) -> int:
+        """Extract + save one oil chunk. Returns 1 if it failed (skipped), else 0."""
+        if i in done_chunks:
+            return 0
+        async with sem:
+            _hb(f"Oil chunk {i+1}/{n}: {len(chunk)} chars")
+            try:
+                oils = await _oil_with_heartbeat(
+                    _extract_oil_single(chunk, book_title), _hb, f"Oil chunk {i+1}/{n}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                activity.logger.warning(f"Oil chunk {i+1}/{n} extraction failed, skipping: {e}")
+                await _mark_oil_chunk_failed(bid, i, str(e))
+                return 1
+        # Serialize the upsert: shared unique namespace across chunks.
+        async with save_lock:
+            try:
+                oc, uc = await _save_oil_chunk(bid, i, oils)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                activity.logger.exception(f"Oil chunk {i+1}/{n} save failed, skipping")
+                await _mark_oil_chunk_failed(bid, i, str(e))
+                return 1
+        _hb(f"Oil chunk {i+1}/{n}: saved {oc} oils ({uc} uses)")
+        return 0
+
+    chunk_failures = await asyncio.gather(
+        *[_process_oil_chunk(i, chunk) for i, chunk in enumerate(chunks)]
+    )
+    failed = sum(chunk_failures)
+
+    async with async_session() as db:
+        oil_count = (await db.execute(
+            select(func.count()).select_from(EssentialOil)
+            .where(EssentialOil.source_book_id == bid))).scalar() or 0
+        use_count = (await db.execute(
+            select(func.count()).select_from(EssentialOilUse)
+            .where(EssentialOilUse.source_book_id == bid))).scalar() or 0
+
+    if oil_count == 0 and failed > 0:
+        raise RuntimeError(
+            f"All {failed} oil chunk(s) failed and no oils were extracted; "
+            "retrying so a transient failure does not finalize the book empty")
+
+    async with async_session() as db:
+        book = (await db.execute(select(Book).where(Book.id == bid))).scalar_one()
+        book.status = "oils_extracted"
+        db.add(ProcessingLog(book_id=bid, step="extract_oils", status="completed",
+                             details={"oils_count": oil_count,
+                                      "uses_count": use_count, "failed_chunks": failed}))
+        await db.commit()
+
+    if oil_count == 0:
+        raise ValueError("No oils extracted")
+    return {"oils_count": oil_count, "uses_count": use_count, "failed_chunks": failed}
+
+
+@activity.defn
+async def normalize_oils_activity(book_id: str) -> dict:
+    """Corpus-wide, idempotent normalize of every ``EssentialOilUse`` action /
+    indication against the shared medical vocabularies (oil analog of
+    normalize_corpus). Puts oils on the same query axis as plant uses."""
+    bid = uuid.UUID(book_id)
+    _hb("Normalizing essential-oil uses against the medical vocabularies")
+    async with async_session() as db:
+        result = await normalize_oil_uses(db, commit=False)
+        db.add(ProcessingLog(book_id=bid, step="normalize_oils", status="completed", details=result))
+        await db.commit()
+    _hb(f"Normalized oil uses: {result}")
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Step 6: Match Ingredients
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1510,11 +1821,32 @@ async def _index_sections(db, book) -> int:
 
     _hb("Ensuring sections Qdrant collection exists")
     await qdrant_svc.ensure_collection(QDRANT_SECTIONS_COLLECTION)
-    await qdrant_svc.delete_by_filter(QDRANT_SECTIONS_COLLECTION, "book_id", str(bid))
+    # Resumable index: only wipe this book's points on the FIRST attempt. A retry
+    # (e.g. after a transient embed-service timeout) keeps what the prior attempt
+    # already wrote and skips re-embedding those IDs, so attempt N never redoes
+    # attempt N-1's completed work.
+    existing_ids: set[str] = set()
+    if activity.info().attempt > 1:
+        existing_ids = await qdrant_svc.scroll_point_ids(
+            QDRANT_SECTIONS_COLLECTION, "book_id", str(bid))
+        _hb(f"Resuming section index: {len(existing_ids)} points already present")
+    else:
+        await qdrant_svc.delete_by_filter(QDRANT_SECTIONS_COLLECTION, "book_id", str(bid))
 
     lines = book.full_text.split("\n")
     domain = book.domain or "recipes"
-    points = []
+    book_title, book_author = book.title, book.author or ""
+    book_year, book_language = book.year, book.language or "modern_ru"
+
+    # Materialize every chunk's data into plain locals BEFORE the embed loop, then
+    # commit to END the read transaction. The embed loop below does NO DB queries
+    # (it only touches these locals + qdrant/embedder over HTTP), so once the
+    # transaction is released the session sits plainly idle — NOT idle-in-transaction
+    # — while we wait on create_embedding, and Postgres won't kill it on
+    # idle_in_transaction_session_timeout. Keeping the DB phase (read sections) and
+    # the embed phase cleanly separated is what avoids holding a tx across the loop.
+    # Each item: (point_id, section_type, title, chunk_index, n_chunks, embed_text, content)
+    work: list[tuple] = []
     for s in sections:
         section_text = "\n".join(
             lines[max(0, (s.start_line or 1) - 1):min(s.end_line or 0, len(lines))]
@@ -1522,41 +1854,59 @@ async def _index_sections(db, book) -> int:
         if not section_text:
             continue
         chunks = _split_into_chunks(section_text)
+        s_type, s_title = s.section_type, s.title or ""
         for ci, chunk in enumerate(chunks):
             chunk = chunk.strip()
             if not chunk:
                 continue
-            embed_text = f"{s.title}\n\n{chunk}" if s.title else chunk
-            _hb(f"Embedding section '{s.section_type}' chunk {ci+1}/{len(chunks)}")
-            embedding = await create_embedding(embed_text)
-            point = {
-                "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{s.id}:{ci}")),
-                "dense": embedding["dense"],
-                "payload": {
-                    "book_id": str(bid),
-                    "book_title": book.title,
-                    "author": book.author or "",
-                    "year": book.year,
-                    "section_type": s.section_type,
-                    "title": s.title or "",
-                    "content": chunk,
-                    "chunk_index": ci,
-                    "domain": domain,
-                    "language": book.language or "modern_ru",
-                },
-            }
-            if "sparse" in embedding and embedding["sparse"]:
-                point["sparse"] = embedding["sparse"]
-            points.append(point)
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{s.id}:{ci}"))
+            embed_text = f"{s_title}\n\n{chunk}" if s_title else chunk
+            work.append((point_id, s_type, s_title, ci, len(chunks), embed_text, chunk))
+    await db.commit()
 
-    if not points:
-        return 0
+    indexed = 0
+    skipped = 0
+    buffer: list[dict] = []
 
-    _hb(f"Upserting {len(points)} section points to Qdrant")
-    for i in range(0, len(points), 50):
-        await qdrant_svc.upsert_points(QDRANT_SECTIONS_COLLECTION, points[i:i + 50])
-        _hb(f"Upserted section batch {i//50 + 1}")
-    return len(points)
+    async def _flush():
+        if buffer:
+            await qdrant_svc.upsert_points(QDRANT_SECTIONS_COLLECTION, buffer)
+            _hb(f"Upserted section batch (+{len(buffer)}, total {indexed})")
+            buffer.clear()
+
+    for (point_id, s_type, s_title, ci, n_chunks, embed_text, chunk) in work:
+        indexed += 1
+        if point_id in existing_ids:
+            skipped += 1
+            continue
+        _hb(f"Embedding section '{s_type}' chunk {ci+1}/{n_chunks}")
+        embedding = await create_embedding(embed_text)
+        point = {
+            "id": point_id,
+            "dense": embedding["dense"],
+            "payload": {
+                "book_id": str(bid),
+                "book_title": book_title,
+                "author": book_author,
+                "year": book_year,
+                "section_type": s_type,
+                "title": s_title,
+                "content": chunk,
+                "chunk_index": ci,
+                "domain": domain,
+                "language": book_language,
+            },
+        }
+        if "sparse" in embedding and embedding["sparse"]:
+            point["sparse"] = embedding["sparse"]
+        buffer.append(point)
+        if len(buffer) >= 50:
+            await _flush()
+
+    await _flush()
+    if skipped:
+        _hb(f"Section index done: {indexed} points ({skipped} reused from prior attempt)")
+    return indexed
 
 
 async def _index_recipes(db, book) -> int:
@@ -1574,52 +1924,97 @@ async def _index_recipes(db, book) -> int:
     bid = book.id
     _hb("Ensuring recipes Qdrant collection exists")
     await qdrant_svc.ensure_collection(QDRANT_COLLECTION)
-    await qdrant_svc.delete_by_filter(QDRANT_COLLECTION, "book_id", str(bid))
 
     recipes = (await db.execute(select(Recipe).where(Recipe.book_id == bid))).scalars().all()
     if not recipes:
+        # Delete on a fresh attempt only — a no-recipe book still clears stale points.
+        if activity.info().attempt == 1:
+            await qdrant_svc.delete_by_filter(QDRANT_COLLECTION, "book_id", str(bid))
         return 0
 
+    # Resumable index: wipe this book's points only on the first attempt; a retry
+    # keeps prior-attempt points and skips re-embedding them (see _index_sections).
+    existing_ids: set[str] = set()
+    if activity.info().attempt > 1:
+        existing_ids = await qdrant_svc.scroll_point_ids(
+            QDRANT_COLLECTION, "book_id", str(bid))
+        _hb(f"Resuming recipe index: {len(existing_ids)} points already present")
+    else:
+        await qdrant_svc.delete_by_filter(QDRANT_COLLECTION, "book_id", str(bid))
+
     _hb(f"Indexing {len(recipes)} recipes")
-    points = []
+    # Capture book fields into locals before the per-recipe commits below — the
+    # commit expires every ORM object in the session, so reading book.title after
+    # a commit would trigger a lazy refresh (extra query, re-opens a tx).
+    book_title, book_author = book.title, book.author or ""
+    book_year, book_language = book.year, book.language or "modern_ru"
+    indexed = 0
+    skipped = 0
+    buffer: list[dict] = []
+
+    async def _flush():
+        if buffer:
+            await qdrant_svc.upsert_points(QDRANT_COLLECTION, buffer)
+            _hb(f"Upserted recipe batch (+{len(buffer)}, total {indexed})")
+            buffer.clear()
+
     for i, recipe in enumerate(recipes):
+        # Always persist the link metadata — the prior attempt's ORM changes were
+        # rolled back with its session, even for points that survive in Qdrant.
+        recipe.qdrant_point_id = str(recipe.id)
+        recipe.qdrant_collection = QDRANT_COLLECTION
+        recipe.indexed_at = datetime.now(timezone.utc)
+        indexed += 1
+        if str(recipe.id) in existing_ids:
+            skipped += 1
+            continue
+
         ingredients = [ri.name for ri in (await db.execute(
             select(RecipeIngredient).where(RecipeIngredient.recipe_id == recipe.id)
         )).scalars().all()]
 
-        embed_text = f"Рецепт: {recipe.name}\n\nСодержание: {recipe.original_text or ''}"
-        _hb(f"Embedding recipe {i+1}/{len(recipes)}: {recipe.name}")
+        # Capture every field the embed_text/payload needs into LOCALS now, so the
+        # post-commit code below doesn't touch the ORM/session at all while the long
+        # embedding HTTP call is in flight (defensive; matches _index_plants).
+        r_id, r_name = str(recipe.id), recipe.name
+        r_category, r_text = recipe.category or "", recipe.original_text or ""
+        # CRITICAL: commit (persist qdrant_point_id + END the transaction) BEFORE the
+        # long embedding HTTP call. Holding a transaction open across create_embedding
+        # leaves the session idle-in-transaction for the whole loop; on a large book
+        # the idle_in_transaction_session_timeout then kills the connection and a later
+        # query/commit dies with «connection is closed». Committing first holds NO
+        # transaction while we wait on the embedding service. (Same fix as _index_plants.)
+        await db.commit()
+
+        embed_text = f"Рецепт: {r_name}\n\nСодержание: {r_text}"
+        _hb(f"Embedding recipe {i+1}/{len(recipes)}: {r_name}")
         embedding = await create_embedding(embed_text)
 
         point = {
-            "id": str(recipe.id),
+            "id": r_id,
             "dense": embedding["dense"],
             "payload": {
-                "recipe_name": recipe.name,
-                "category": recipe.category or "",
-                "source_book": book.title,
+                "recipe_name": r_name,
+                "category": r_category,
+                "source_book": book_title,
                 "book_id": str(bid),
-                "author": book.author or "",
-                "year": book.year,
+                "author": book_author,
+                "year": book_year,
                 "ingredients": ingredients,
-                "content": recipe.original_text or "",
-                "language": book.language or "modern_ru",
+                "content": r_text,
+                "language": book_language,
             },
         }
         if "sparse" in embedding and embedding["sparse"]:
             point["sparse"] = embedding["sparse"]
-        points.append(point)
+        buffer.append(point)
+        if len(buffer) >= 50:
+            await _flush()
 
-        recipe.qdrant_point_id = str(recipe.id)
-        recipe.qdrant_collection = QDRANT_COLLECTION
-        recipe.indexed_at = datetime.now(timezone.utc)
-
-    _hb("Upserting recipe points to Qdrant")
-    for i in range(0, len(points), 50):
-        await qdrant_svc.upsert_points(QDRANT_COLLECTION, points[i:i + 50])
-        _hb(f"Upserted recipe batch {i//50 + 1}")
-
-    return len(points)
+    await _flush()
+    if skipped:
+        _hb(f"Recipe index done: {indexed} points ({skipped} reused from prior attempt)")
+    return indexed
 
 
 async def _index_plants(db, book) -> dict:
@@ -1631,18 +2026,42 @@ async def _index_plants(db, book) -> dict:
     bid = book.id
     _hb("Ensuring plants Qdrant collection exists")
     await qdrant_svc.ensure_collection(QDRANT_PLANTS_COLLECTION)
-    await qdrant_svc.delete_by_filter(QDRANT_PLANTS_COLLECTION, "book_id", str(bid))
-
     plant_ids = [m.plant_id for m in (await db.execute(
         select(PlantBookMention).where(PlantBookMention.book_id == bid)
     )).scalars().all()]
     plant_ids = list(dict.fromkeys(plant_ids))  # dedupe, keep order
-    if not plant_ids:
-        raise ValueError("No plants to index")
+    # A herbalism/fungi book may legitimately have 0 plant monographs but still
+    # carry medicinal recipes (народный лечебник organised by disease, not plant).
+    # Don't hard-fail: skip plant embedding and fall through to index recipes +
+    # sections + finalise status, so the book's recipe content stays searchable.
 
-    _hb(f"Indexing {len(plant_ids)} plants")
-    points = []
+    # RESUMABLE index — the whole reason this runs on Temporal. Wipe this book's
+    # points ONLY on the FIRST attempt (clean re-index); a RETRY keeps the points the
+    # previous attempt already wrote and skips re-embedding them. Each plant is
+    # upserted to Qdrant immediately (incremental flush below), so progress survives
+    # a crash mid-loop: embed → save → resume.
+    # (The old code called delete_by_filter UNCONDITIONALLY at the top of EVERY
+    #  attempt — so every retry wiped the 900+ plants the prior attempt had embedded
+    #  and restarted from zero. A big atlas could loop for days and never finish.)
+    already: set[str] = set()
+    if activity.info().attempt > 1:
+        already = await qdrant_svc.scroll_point_ids(QDRANT_PLANTS_COLLECTION, "book_id", str(bid))
+        _hb(f"Resuming plant index: {len(already)} already embedded — skipping them")
+    else:
+        await qdrant_svc.delete_by_filter(QDRANT_PLANTS_COLLECTION, "book_id", str(bid))
+
+    _hb(f"Indexing {len(plant_ids)} plants ({len(already)} done)")
+    book_title = book.title  # capture before per-plant commits expire `book`
+    buffer: list[dict] = []
+
+    async def _flush_plants():
+        if buffer:
+            await qdrant_svc.upsert_points(QDRANT_PLANTS_COLLECTION, buffer)
+            buffer.clear()
+
     for i, pid in enumerate(plant_ids):
+        if str(pid) in already:
+            continue
         plant = (await db.execute(select(Plant).where(Plant.id == pid))).scalar_one()
         uses = (await db.execute(
             select(PlantMedicinalUse).where(PlantMedicinalUse.plant_id == pid)
@@ -1670,45 +2089,62 @@ async def _index_plants(db, book) -> dict:
             culinary_line = "\nСъедобность: " + ". ".join(bits)
 
         kind_label = "Гриб" if (plant.kingdom or "").lower() == "гриб" else "Растение"
+        # Capture every field the embed_text/payload needs into LOCALS now, because
+        # we commit (expiring the ORM objects) before the embedding call below.
+        p_name, p_latin = plant.name, plant.name_latin or ""
+        p_family, p_parts = plant.family or "", plant.parts_used or []
+        p_toxic, p_kingdom, p_desc = plant.is_toxic, plant.kingdom or "растение", plant.description
         embed_text = (
-            f"{kind_label}: {plant.name}"
-            + (f" ({plant.name_latin})" if plant.name_latin else "")
+            f"{kind_label}: {p_name}"
+            + (f" ({p_latin})" if p_latin else "")
             + (f"\nДействие: {', '.join(actions)}" if actions else "")
             + (f"\nПрименяется при: {'; '.join(indications)}" if indications else "")
             + culinary_line
-            + (f"\nОписание: {plant.description}" if plant.description else "")
+            + (f"\nОписание: {p_desc}" if p_desc else "")
         )
-        _hb(f"Embedding {i+1}/{len(plant_ids)}: {plant.name}")
+
+        plant.qdrant_point_id = str(pid)
+        plant.qdrant_collection = QDRANT_PLANTS_COLLECTION
+        # CRITICAL: commit (persist qdrant_point_id + END the transaction) BEFORE the
+        # long embedding HTTP call. Holding a transaction open across create_embedding
+        # means a single slow/hung embed leaves the session idle-in-transaction; the
+        # idle_in_transaction_session_timeout (10 min) then kills the connection and a
+        # later query/commit dies with «connection is closed» → a big atlas retries
+        # from scratch forever (the 931-plant loop). Committing first holds NO
+        # transaction while we wait on the embedding service. Per-plant heartbeat
+        # keeps the activity alive.
+        await db.commit()
+
+        _hb(f"Embedding {i+1}/{len(plant_ids)}: {p_name}")
         embedding = await create_embedding(embed_text)
         point = {
-            "id": str(plant.id),
+            "id": str(pid),
             "dense": embedding["dense"],
             "payload": {
-                "name": plant.name,
-                "name_latin": plant.name_latin or "",
-                "family": plant.family or "",
+                "name": p_name,
+                "name_latin": p_latin,
+                "family": p_family,
                 "actions": actions,
                 "indications": indications,
-                "parts_used": plant.parts_used or [],
-                "is_toxic": plant.is_toxic,
-                "kingdom": plant.kingdom or "растение",
+                "parts_used": p_parts,
+                "is_toxic": p_toxic,
+                "kingdom": p_kingdom,
                 "edibility": edibility,
                 "edible_parts": edible_parts,
-                "source_book": book.title,
+                "source_book": book_title,
                 "book_id": str(bid),
             },
         }
         if "sparse" in embedding and embedding["sparse"]:
             point["sparse"] = embedding["sparse"]
-        points.append(point)
-
-        plant.qdrant_point_id = str(plant.id)
-        plant.qdrant_collection = QDRANT_PLANTS_COLLECTION
-
-    _hb("Upserting points to Qdrant")
-    for i in range(0, len(points), 50):
-        await qdrant_svc.upsert_points(QDRANT_PLANTS_COLLECTION, points[i:i + 50])
-        _hb(f"Upserted batch {i//50 + 1}")
+        buffer.append(point)
+        # Incremental save: flush every 50 so embedded plants land in Qdrant AS WE GO
+        # (they are the resume marker). A crash now loses at most the last <50, never
+        # the whole book.
+        if len(buffer) >= 50:
+            await _flush_plants()
+            _hb(f"Saved {i + 1}/{len(plant_ids)} plants to Qdrant")
+    await _flush_plants()
 
     # Herbalism books also yield medicinal recipes (decoctions/teas/collections).
     # Index them into the recipes collection so they're searchable alongside
@@ -1726,7 +2162,7 @@ async def _index_plants(db, book) -> dict:
     book.wizard_step = 8
     book.status = "indexed"
     db.add(ProcessingLog(book_id=bid, step="index", status="completed",
-                         details={"points_indexed": len(points),
+                         details={"points_indexed": len(plant_ids),
                                   "collection": QDRANT_PLANTS_COLLECTION,
                                   "recipe_points": recipe_points,
                                   "section_points": section_points}))
@@ -1738,7 +2174,7 @@ async def _index_plants(db, book) -> dict:
     _hb("Relinking recipe ingredients to plants")
     relink = await relink_recipe_ingredients(db)
     _hb(f"Relinked recipes↔plants: {relink}")
-    return {"points_indexed": len(points), "collection": QDRANT_PLANTS_COLLECTION, "relink": relink}
+    return {"points_indexed": len(plant_ids), "collection": QDRANT_PLANTS_COLLECTION, "relink": relink}
 
 
 @activity.defn
@@ -1750,24 +2186,33 @@ async def index_activity(book_id: str) -> dict:
         if (book.domain or "").lower() in ("herbalism", "fungi"):
             return await _index_plants(db, book)
 
-        if (book.domain or "").lower() == "reference":
-            # A reference (phytochemistry) book yields no recipes/plants of its
-            # own — its product is the compound vocabulary + the corpus-wide
-            # normalize, both already persisted in Postgres by the earlier steps.
-            # The only thing left to index is the book's prose, so agents can
-            # retrieve passages ("что Георгиевский пишет про алкалоиды").
+        if (book.domain or "").lower() in ("reference", "aromatherapy"):
+            # A reference (phytochemistry) or aromatherapy book yields no
+            # recipes/plants of its own — its product (compound vocabulary /
+            # essential-oil entities + their uses) is already persisted in
+            # Postgres by the earlier steps. The only thing left to index is the
+            # book's prose, so agents can retrieve passages ("что пишут про
+            # лавандовое масло").
+            domain = (book.domain or "").lower()
             section_points = await _index_sections(db, book)
             book.wizard_step = 8
             book.status = "indexed"
             db.add(ProcessingLog(book_id=bid, step="index", status="completed",
                                  details={"section_points": section_points,
-                                          "collection": "sections_v1", "domain": "reference"}))
+                                          "collection": "sections_v1", "domain": domain}))
             await db.commit()
             return {"section_points": section_points, "collection": "sections_v1"}
 
         recipe_points = await _index_recipes(db, book)
         if recipe_points == 0:
-            raise ValueError("No recipes to index")
+            # A book routed to the recipe path that yielded no recipes (a recipe-less
+            # source loosely classified, or one whose recipes didn't survive
+            # extraction). Do NOT hard-fail — a raised error jams the pool with a
+            # pipeline that retries forever and never reaches `indexed` (the 38-book
+            # tail stalled on exactly this). Complete gracefully like the reference
+            # path: still index the prose sections so the book is searchable, mark it
+            # indexed, and log the zero count for visibility.
+            _hb("No recipes to index — completing as prose-only (section) index")
 
         # Also embed the book's free-text sections so agents can retrieve prose
         # passages (intro/appendix/other + recipe-block connective text).
@@ -1879,3 +2324,143 @@ async def klex_download_activity(code: str, bucket: str, prefix: str = "",
     )
     _hb(f"klex {code}: {res.get('status')} {res.get('key', '')}")
     return res
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Corpus dispatcher: keep N book-pipelines in flight, draining `uploaded`
+# ──────────────────────────────────────────────────────────────────────
+
+# Mid-pipeline statuses a stalled (FAILED / aged-out) book can sit at, and the
+# step to RESUME from (= the step AFTER the one that set the status). Used by the
+# dispatcher's variant-A auto-resume so the corpus finishes without a stuck tail.
+_RESUME_INTERMEDIATE = ["recipes_extracted", "plants_extracted", "compounds_extracted",
+                        "analyzed", "extracted", "classified"]
+
+
+def _resume_step(status: str, domain: str) -> str | None:
+    d = (domain or "recipes").lower()
+    return {
+        "classified": "extract",
+        "extracted": "cleanup",
+        "analyzed": "extract_plant_entries" if d in ("herbalism", "fungi") else "extract_recipes",
+        "plants_extracted": "extract_recipes",
+        "recipes_extracted": "match_ingredients",
+        "compounds_extracted": "normalize_corpus",
+    }.get(status)
+
+
+@activity.defn
+async def maintain_pool_activity(target: int = 8, burst: int = 4) -> dict:
+    """One pool-maintenance tick (server-side replacement for the manual loop).
+
+    Counts how many ``book-pipeline-*`` workflows are RUNNING (klex-herb-* are the
+    user's separate manual mirror worker — never counted or touched), and if the
+    pool is below ``target`` starts up to ``burst`` more pipelines from the oldest
+    ``uploaded`` books. Dispatch is deduped against the live running set, so a book
+    still showing ``uploaded`` because its (long) convert step hasn't finished is
+    never double-started. New books get the full run from ``convert`` (their
+    ``domain`` selects the step order). Returns counts so the driving workflow can
+    decide when the corpus is fully drained.
+    """
+    from app.temporal.client import get_temporal_client
+    from app.config import settings
+    from app.temporal.workflows import BookPipelineWorkflow, step_names_for_domain
+
+    client = await get_temporal_client()
+
+    running_ids: set[str] = set()
+    async for wf in client.list_workflows(
+        "WorkflowType='BookPipelineWorkflow' and ExecutionStatus='Running'"
+    ):
+        if wf.id.startswith("book-pipeline-"):
+            running_ids.add(wf.id)
+    running = len(running_ids)
+    to_start = max(0, min(target - running, burst))
+
+    started: list[str] = []
+    async with async_session() as db:
+        uploaded_left = (await db.execute(
+            select(func.count()).select_from(Book).where(Book.status == "uploaded")
+        )).scalar() or 0
+
+        if to_start > 0 and uploaded_left > 0:
+            rows = (await db.execute(
+                select(Book.id, Book.domain)
+                .where(Book.status == "uploaded")
+                .order_by(Book.id)
+                .limit(to_start + running + 25)
+            )).all()
+            for bid, domain in rows:
+                if len(started) >= to_start:
+                    break
+                wf_id = f"book-pipeline-{bid}"
+                if wf_id in running_ids:
+                    continue  # already in flight (convert not done yet) — skip
+                dom = domain or "recipes"
+                start_step = step_names_for_domain(dom)[0]
+                try:
+                    await client.start_workflow(
+                        BookPipelineWorkflow.run,
+                        args=[str(bid), start_step, dom],
+                        id=wf_id,
+                        task_queue=settings.temporal_task_queue,
+                    )
+                    started.append(str(bid))
+                    running_ids.add(wf_id)
+                except Exception as e:  # already-started race etc. — log + move on
+                    activity.logger.warning(f"dispatch {bid} failed: {e}")
+
+        # Variant A: if slots remain after the uploaded fill, RESUME stalled
+        # mid-pipeline books (FAILED / aged-out workflow, not currently running) from
+        # the step AFTER their status — so the corpus finishes autonomously instead of
+        # leaving a stuck tail. Step is validated against the domain's step order so a
+        # bad mapping never restarts a book from convert (= wasted re-OCR).
+        resumed: list[str] = []
+        if len(started) < to_start:
+            rows = (await db.execute(
+                select(Book.id, Book.status, Book.domain)
+                .where(Book.status.in_(_RESUME_INTERMEDIATE))
+                .limit(to_start + running + 80)
+            )).all()
+            for bid, status, domain in rows:
+                if len(started) >= to_start:
+                    break
+                wf_id = f"book-pipeline-{bid}"
+                if wf_id in running_ids:
+                    continue  # actively running — not stalled
+                dom = domain or "recipes"
+                step = _resume_step(status, dom)
+                if not step or step not in step_names_for_domain(dom):
+                    continue  # unknown/invalid step — never risk a re-convert
+                try:
+                    await client.start_workflow(
+                        BookPipelineWorkflow.run,
+                        args=[str(bid), step, dom],
+                        id=wf_id,
+                        task_queue=settings.temporal_task_queue,
+                    )
+                    started.append(str(bid))
+                    resumed.append(str(bid))
+                    running_ids.add(wf_id)
+                except Exception as e:
+                    activity.logger.warning(f"resume {bid} ({status}) failed: {e}")
+
+        # non-terminal books that are neither queued nor indexed (in-flight or, briefly,
+        # not-yet-picked-up stalled) — for the done check + visibility.
+        intermediate_left = (await db.execute(
+            select(func.count()).select_from(Book).where(
+                Book.status.notin_(["uploaded", "indexed"]))
+        )).scalar() or 0
+
+    running_after = len(running_ids)
+    uploaded_after = max(0, uploaded_left - len(started))
+    # Fully drained iff nothing is in flight AND the uploaded queue is empty.
+    done = running_after == 0 and uploaded_after == 0
+    activity.logger.info(
+        f"pool tick: running={running_after} started={len(started)} "
+        f"resumed={len(resumed)} uploaded_left={uploaded_after} "
+        f"intermediate={intermediate_left} done={done}"
+    )
+    return {"running": running_after, "started": started, "resumed": resumed,
+            "uploaded_left": uploaded_after, "intermediate_left": intermediate_left,
+            "done": done}
