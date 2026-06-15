@@ -40,3 +40,8 @@ data/
 # Scratch / one-off dumps from admin & dedup runs
 /*.json
 /backend/_test_recipe.txt
+/cnt.txt
+
+# Android/KMP client lives in its own repo (chto-rastet-android) — never vendor it
+# here (158MB + signing keystore). It landed in the working tree by accident.
+android/

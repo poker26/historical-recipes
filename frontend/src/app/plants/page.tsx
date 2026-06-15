@@ -1,16 +1,34 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, Plant, PlantFacets } from "@/lib/api";
+import Pagination from "@/components/Pagination";
+
+const PAGE_SIZE = 48;
+
+// Read/write list state (search, filters, page) in the URL query string so that
+// opening a plant card and pressing Back restores the exact list view — same page
+// and filters — instead of resetting to the first page. Uses window.history
+// directly (no useSearchParams → no Suspense boundary requirement at build time).
+function readParam(key: string): string {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get(key) || "";
+}
+function readPageParam(): number {
+  const v = parseInt(readParam("page"), 10);
+  return Number.isNaN(v) || v < 0 ? 0 : v;
+}
 
 export default function PlantsPage() {
   const [plants, setPlants] = useState<Plant[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(readPageParam);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [compound, setCompound] = useState("");
-  const [action, setAction] = useState("");
-  const [toxicOnly, setToxicOnly] = useState(false);
+  const [search, setSearch] = useState(() => readParam("q"));
+  const [compound, setCompound] = useState(() => readParam("compound"));
+  const [action, setAction] = useState(() => readParam("action"));
+  const [toxicOnly, setToxicOnly] = useState(() => readParam("toxic") === "1");
   const [facets, setFacets] = useState<PlantFacets | null>(null);
   const [enrichMsg, setEnrichMsg] = useState<string | null>(null);
 
@@ -29,6 +47,29 @@ export default function PlantsPage() {
     api.getPlantFacets().then(setFacets).catch(console.error);
   }, []);
 
+  // New search/filter → jump back to the first page. Skipped on the initial
+  // mount so a page restored from the URL (Back from a card) isn't clobbered.
+  const didMount = useRef(false);
+  useEffect(() => {
+    if (!didMount.current) { didMount.current = true; return; }
+    setPage(0);
+  }, [search, compound, action, toxicOnly]);
+
+  // Reflect the current view in the URL (replaceState = no new history entry per
+  // click), so navigating into a card and pressing Back returns to this exact page.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams();
+    if (search) params.set("q", search);
+    if (compound) params.set("compound", compound);
+    if (action) params.set("action", action);
+    if (toxicOnly) params.set("toxic", "1");
+    if (page > 0) params.set("page", String(page));
+    const qs = params.toString();
+    const url = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+    window.history.replaceState(window.history.state, "", url);
+  }, [search, compound, action, toxicOnly, page]);
+
   useEffect(() => {
     setLoading(true);
     api.listPlants({
@@ -36,8 +77,13 @@ export default function PlantsPage() {
       compound: compound || undefined,
       action: action || undefined,
       is_toxic: toxicOnly || undefined,
-    }).then(setPlants).catch(console.error).finally(() => setLoading(false));
-  }, [search, compound, action, toxicOnly]);
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+    })
+      .then(({ items, total }) => { setPlants(items); setTotal(total); })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [search, compound, action, toxicOnly, page]);
 
   const hasFilters = !!(search || compound || action || toxicOnly);
 
@@ -47,7 +93,7 @@ export default function PlantsPage() {
         <h1>Herbarium</h1>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
           {enrichMsg && <span style={{ color: "var(--text-muted)", fontSize: 13 }}>{enrichMsg}</span>}
-          <span style={{ color: "var(--text-muted)" }}>{plants.length} plants</span>
+          <span style={{ color: "var(--text-muted)" }}>{total} plants</span>
           <button
             className="btn btn-outline btn-sm"
             onClick={startEnrichment}
@@ -140,6 +186,10 @@ export default function PlantsPage() {
           </div>
         )}
       </div>
+
+      {!loading && (
+        <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPageChange={setPage} />
+      )}
     </>
   );
 }

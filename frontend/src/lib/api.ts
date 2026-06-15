@@ -11,6 +11,27 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
   return res.json();
 }
 
+// Like apiFetch but also surfaces the X-Total-Count header so callers can
+// paginate. Falls back to the page length when the header is absent.
+export interface Paginated<T> {
+  items: T[];
+  total: number;
+}
+
+export async function apiFetchList<T>(path: string, options?: RequestInit): Promise<Paginated<T>> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    ...options,
+  });
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status} ${res.statusText}`);
+  }
+  const items = (await res.json()) as T[];
+  const header = res.headers.get("X-Total-Count");
+  const total = header != null ? Number(header) : items.length;
+  return { items, total };
+}
+
 export async function apiUpload<T>(path: string, formData: FormData): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
@@ -205,6 +226,15 @@ export interface PlantRecipeRef {
   year: number | null;
 }
 
+export interface PlantOilRef {
+  id: string;
+  name: string;
+  name_latin: string | null;
+  part: string | null;
+  extraction: string | null;
+  uses_count: number;
+}
+
 export interface PlantDetail extends Plant {
   description: string | null;
   photo_license: string | null;
@@ -217,6 +247,7 @@ export interface PlantDetail extends Plant {
   toxicities: PlantToxicity[];
   mentions: PlantMention[];
   recipes: PlantRecipeRef[];
+  essential_oils: PlantOilRef[];
 }
 
 export interface Compound {
@@ -251,6 +282,47 @@ export interface CompoundDetail {
   children: { id: string; name: string }[];
   plants: CompoundPlantRef[];
   linked_facts: number;
+}
+
+export interface Oil {
+  id: string;
+  name: string;
+  name_latin: string | null;
+  plant_id: string | null;
+  plant_name: string | null;
+  plant_name_latin: string | null;
+  part: string | null;
+  extraction: string | null;
+  aroma_profile: string | null;
+  uses_count: number;
+}
+
+export interface OilUse {
+  id: string;
+  action: string | null;
+  action_raw: string | null;
+  indications: string | null;
+  indication_concepts: string[];
+  application: string | null;
+  dosage: string | null;
+  contraindications: string | null;
+  original_text: string | null;
+}
+
+export interface OilDetail {
+  id: string;
+  name: string;
+  name_latin: string | null;
+  synonyms: string[];
+  plant: { id: string; name: string; name_latin: string | null; photo_url: string | null } | null;
+  source_plant_raw: string | null;
+  compound_id: string | null;
+  part: string | null;
+  extraction: string | null;
+  aroma_profile: string | null;
+  description: string | null;
+  original_text: string | null;
+  uses: OilUse[];
 }
 
 export interface DictionaryTerm {
@@ -392,18 +464,20 @@ export const api = {
   getLogs: (bookId: string) => apiFetch<ProcessingLog[]>(`/api/books/${bookId}/logs`),
 
   // Recipes
-  listRecipes: (params?: { category?: string; book_id?: string; q?: string }) => {
+  listRecipes: (params?: { category?: string; book_id?: string; q?: string; limit?: number; offset?: number }) => {
     const qs = new URLSearchParams();
     if (params?.category) qs.set("category", params.category);
     if (params?.book_id) qs.set("book_id", params.book_id);
     if (params?.q) qs.set("q", params.q);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    if (params?.offset != null) qs.set("offset", String(params.offset));
     const s = qs.toString();
-    return apiFetch<Recipe[]>(`/api/recipes/${s ? `?${s}` : ""}`);
+    return apiFetchList<Recipe>(`/api/recipes/${s ? `?${s}` : ""}`);
   },
   getRecipe: (id: string) => apiFetch<RecipeDetail>(`/api/recipes/${id}`),
 
   // Plants
-  listPlants: (params?: PlantFilters) => {
+  listPlants: (params?: PlantFilters & { limit?: number; offset?: number }) => {
     const qs = new URLSearchParams();
     if (params?.q) qs.set("q", params.q);
     if (params?.compound) qs.set("compound", params.compound);
@@ -411,8 +485,10 @@ export const api = {
     if (params?.indication) qs.set("indication", params.indication);
     if (params?.family) qs.set("family", params.family);
     if (params?.is_toxic != null) qs.set("is_toxic", String(params.is_toxic));
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    if (params?.offset != null) qs.set("offset", String(params.offset));
     const s = qs.toString();
-    return apiFetch<Plant[]>(`/api/plants/${s ? `?${s}` : ""}`);
+    return apiFetchList<Plant>(`/api/plants/${s ? `?${s}` : ""}`);
   },
   getPlantFacets: () => apiFetch<PlantFacets>("/api/plants/facets"),
   getPlant: (id: string) => apiFetch<PlantDetail>(`/api/plants/${id}`),
@@ -426,6 +502,22 @@ export const api = {
   getCompound: (id: string) => apiFetch<CompoundDetail>(`/api/compounds/${id}`),
   normalizeCompounds: () =>
     apiFetch<{ status: string } & Record<string, unknown>>("/api/compounds/normalize", { method: "POST" }),
+
+  // Essential oils (aromatherapy pillar)
+  listOils: (params?: { q?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set("q", params.q);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    if (params?.offset != null) qs.set("offset", String(params.offset));
+    const s = qs.toString();
+    return apiFetch<{ items: Oil[]; total: number }>(`/api/oils${s ? `?${s}` : ""}`);
+  },
+  getOil: (id: string) => apiFetch<OilDetail>(`/api/oils/${id}`),
+  oilsForCondition: (condition: string, limit = 50) =>
+    apiFetch<{ condition: string; count: number; oils: (Oil & { matched_uses: number })[] }>(
+      `/api/oils/for-condition?condition=${encodeURIComponent(condition)}&limit=${limit}`),
+  normalizeOils: () =>
+    apiFetch<{ status: string } & Record<string, unknown>>("/api/oils/normalize", { method: "POST" }),
 
   // Dictionaries
   listTerms: (category?: string) =>
@@ -490,4 +582,55 @@ export const api = {
   activeWorkflows: () => apiFetch<ActiveWorkflow[]>("/api/wizard/active"),
   wizardWorkflowCancel: (bookId: string) =>
     apiFetch<{ status: string }>(`/api/wizard/${bookId}/workflow/cancel`, { method: "POST" }),
+
+  // Data-quality «линтер гербария»
+  qualitySummary: () => apiFetch<QualitySummaryRow[]>("/api/quality/summary"),
+  qualityChecks: () => apiFetch<Record<string, QualityCheckMeta>>("/api/quality/checks"),
+  qualityFindings: (params: { check_id?: string; severity?: string; status?: string; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams();
+    if (params.check_id) q.set("check_id", params.check_id);
+    if (params.severity) q.set("severity", params.severity);
+    if (params.status) q.set("status", params.status);
+    q.set("limit", String(params.limit ?? 50));
+    q.set("offset", String(params.offset ?? 0));
+    return apiFetch<QualityFinding[]>(`/api/quality/findings?${q.toString()}`);
+  },
+  qualitySweep: () => apiFetch<{ results: { check_id: string; found?: number; new?: number; updated?: number; staled?: number; error?: string }[] }>("/api/quality/sweep", { method: "POST", body: "null" }),
+  qualityResolveTaxonomy: (limit = 1000) =>
+    apiFetch<{ resolved: number; remaining: number; total_distinct: number; cached_total: number }>(`/api/quality/resolve-taxonomy?limit=${limit}`, { method: "POST" }),
+  qualityTriage: (id: string, status: string, note?: string) =>
+    apiFetch<{ id: string; status: string }>(`/api/quality/findings/${id}`, { method: "PATCH", body: JSON.stringify({ status, note }) }),
+  qualityApply: (id: string) =>
+    apiFetch<{ id: string; status: string; applied: string }>(`/api/quality/findings/${id}/apply`, { method: "POST" }),
+  qualityDeleteEntity: (id: string) =>
+    apiFetch<{ deleted: Record<string, string>; finding: string }>(`/api/quality/findings/${id}/delete-entity`, { method: "POST" }),
 };
+
+export interface QualitySummaryRow {
+  check_id: string;
+  severity: string;
+  status: string;
+  count: number;
+}
+
+export interface QualityCheckMeta {
+  severity: string;
+  auto_fixable: boolean;
+  description: string;
+}
+
+export interface QualityFinding {
+  id: string;
+  check_id: string;
+  severity: string;
+  entity_type: string;
+  entity_id: string;
+  title: string;
+  evidence: Record<string, unknown> | null;
+  suggested_fix: Record<string, unknown> | null;
+  auto_fixable: boolean;
+  status: string;
+  first_seen: string;
+  last_seen: string;
+  note: string | null;
+}

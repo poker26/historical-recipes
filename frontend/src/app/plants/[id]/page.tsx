@@ -128,6 +128,27 @@ export default function PlantDetailPage() {
         </Section>
       )}
 
+      {/* Cross-pillar link: essential oils derived from this plant */}
+      {plant.essential_oils && plant.essential_oils.length > 0 && (
+        <Section title="Essential oils from this plant" count={plant.essential_oils.length}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {plant.essential_oils.map((o) => (
+              <div key={o.id} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 14 }}>
+                <Link href={`/oils/${o.id}`} style={{ fontWeight: 500 }}>{o.name}</Link>
+                {o.name_latin && (
+                  <span style={{ fontStyle: "italic", color: "var(--text-muted)", fontSize: 13 }}>{o.name_latin}</span>
+                )}
+                {o.part && <span className="badge badge-green">{o.part}</span>}
+                {o.extraction && <span className="badge badge-green">{o.extraction}</span>}
+                {o.uses_count > 0 && (
+                  <span className="badge badge-blue" title="Aromatherapy use-facts">{o.uses_count}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
       {/* Toxicity — surfaced first when present */}
       {plant.toxicities.length > 0 && (
         <Section title="⚠ Toxicity" count={plant.toxicities.length}>

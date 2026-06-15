@@ -1,27 +1,73 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, Recipe } from "@/lib/api";
+import Pagination from "@/components/Pagination";
 
 const CATEGORIES = ["", "водка", "ликёр", "настойка", "бальзам", "масло", "вода", "эссенция", "тинктура", "ратафия", "розолия", "отвар", "настой", "чай", "сбор", "мазь", "сироп", "порошок", "припарка", "капли", "примочка", "другое"];
+const PAGE_SIZE = 50;
+
+// Read/write list state (search, filters, page) in the URL query string so that
+// opening a card and pressing Back restores the exact list view — same page and
+// filters — instead of resetting to the first page. Uses window.history directly
+// (no useSearchParams → no Suspense boundary requirement at build time).
+function readParam(key: string): string {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get(key) || "";
+}
+function readPageParam(): number {
+  const v = parseInt(readParam("page"), 10);
+  return Number.isNaN(v) || v < 0 ? 0 : v;
+}
 
 export default function RecipesPage() {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("");
+  const [search, setSearch] = useState(() => readParam("q"));
+  const [category, setCategory] = useState(() => readParam("category"));
+  const [page, setPage] = useState(readPageParam);
+
+  // New search/filter → jump back to the first page. Skipped on the initial
+  // mount so a page restored from the URL (Back from a card) isn't clobbered.
+  const didMount = useRef(false);
+  useEffect(() => {
+    if (!didMount.current) { didMount.current = true; return; }
+    setPage(0);
+  }, [category, search]);
+
+  // Reflect the current view in the URL (replaceState = no new history entry per
+  // click), so navigating into a card and pressing Back returns to this exact page.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams();
+    if (search) params.set("q", search);
+    if (category) params.set("category", category);
+    if (page > 0) params.set("page", String(page));
+    const qs = params.toString();
+    const url = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+    window.history.replaceState(window.history.state, "", url);
+  }, [search, category, page]);
 
   useEffect(() => {
-    api.listRecipes({ category: category || undefined, q: search || undefined })
-      .then(setRecipes).catch(console.error).finally(() => setLoading(false));
-  }, [category, search]);
+    setLoading(true);
+    api.listRecipes({
+      category: category || undefined,
+      q: search || undefined,
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+    })
+      .then(({ items, total }) => { setRecipes(items); setTotal(total); })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [category, search, page]);
 
   return (
     <>
       <div className="page-header">
         <h1>Recipes</h1>
-        <span style={{ color: "var(--text-muted)" }}>{recipes.length} total</span>
+        <span style={{ color: "var(--text-muted)" }}>{total} total</span>
       </div>
 
       <div className="search-bar">
@@ -69,6 +115,10 @@ export default function RecipesPage() {
           </div>
         )}
       </div>
+
+      {!loading && (
+        <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPageChange={setPage} />
+      )}
     </>
   );
 }

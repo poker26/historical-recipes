@@ -59,6 +59,8 @@ it via a `get_*` call rather than answering from a search card alone.
 | `find_indication(q, system, min_facts, limit)` | Browse indications, incl. the **archaic→modern bridge**. `system=` filters by body system (дыхание, ЖКТ, ССС, ЦНС, кожа, мочеполовая…) — pass it alone to list a whole system. `min_facts` hides long-tail scraps. Sorted by coverage. | `get_indication`, `plants_for_condition` |
 | `search_plants(q, compound, action, indication, family, toxic, edibility, kingdom)` | Cross-vocabulary structured search over plants+fungi (all facets AND). E.g. non-toxic Lamiaceae with sedative action. | `get_plant` |
 | `plants_for_condition(condition, kingdom, toxic, limit)` | **The medical entry point.** Give a symptom / disease / archaic name / action as a user would say it; it resolves across BOTH the indication and action axes and unions the plants. | `get_plant`, `find_indication` |
+| `search_oils(q, limit)` | Search the **essential-oils pillar** (эфирные масла) — separate from the herbarium. Free text over oil/Latin/source-plant name. Each oil is bridged to its source plant. | `get_oil`, `get_plant` |
+| `oils_for_condition(condition, limit)` | **Aromatherapy medical entry point** — the oil analog of `plants_for_condition`. Resolves across BOTH indication (archaic→modern bridge) and action axes; cards add `matched_uses`. Aromatherapy evidence is weak — relay as attested usage, not advice. | `get_oil` |
 | `search_recipes(q, category, domain, book_id)` | Find recipes. `domain=recipes` (culinary) vs `domain=herbalism` (medicinal preparations) is the only culinary/medicinal split. | `get_recipe` |
 | `semantic_search(query, collection, limit)` | Natural-language questions whose answer is in prose, not a field ("чем лечили лихорадку в банях"). Collections: recipes_v2 \| plants_v2 \| sections_v1. | `get_plant`, `get_recipe` |
 
@@ -69,6 +71,7 @@ it via a `get_*` call rather than answering from a search card alone.
 | `get_recipe(recipe_id)` | Verbatim + normalized text, ingredient list linked to herbarium plants, source author/year. |
 | `get_indication(indication_id)` | One concept (modern + archaic names, hierarchy) + the plants that treat it (concept + descendants). |
 | `get_compound(compound_id)` | One compound (class, synonyms, hierarchy) + the plants that contain it. |
+| `get_oil(oil_id)` | Full essential-oil monograph: identity (name/Latin/synonyms), source-plant bridge, part/extraction/aroma_profile/description, and ALL aromatherapy use-facts (normalized action + indication concepts, application, dosage, contraindications) each with verbatim `original_text`. |
 
 ### Analysis — chemistry ↔ medicine association  (§4)
 | Tool | Use it to… |

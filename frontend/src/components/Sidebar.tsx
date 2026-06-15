@@ -9,7 +9,9 @@ const NAV_ITEMS = [
   { href: "/recipes", label: "Recipes", icon: "\u2606" },
   { href: "/plants", label: "Herbarium", icon: "\u2698" },
   { href: "/compounds", label: "Compounds", icon: "\u269B" },
+  { href: "/oils", label: "Essential Oils", icon: "\u2697" },
   { href: "/search", label: "Search", icon: "\u2315" },
+  { href: "/quality", label: "\u041a\u0430\u0447\u0435\u0441\u0442\u0432\u043e \u0434\u0430\u043d\u043d\u044b\u0445", icon: "\u2713" },
 ];
 
 export default function Sidebar() {
