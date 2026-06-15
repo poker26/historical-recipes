@@ -35,9 +35,13 @@ nginx flora пробрасывал только `plants|recipes|compounds|medica
 ## Что подключено на клиенте
 - `Api.walkNearby()` + `Api.registerDevice()`; `Quest.kt` (модели + `QuestsScreen`):
   гео → walk → 5 карточек; тап карточки в корпусе → монограф; не в корпусе → «нет в
-  базе». Раздел «Прогулки» на Home (Android-шелл).
-- **Дальше у меня:** iOS-шелл (раздел + verify на Маке), регистрация device_key на
-  старте, слой бейджей (progress/claim/badges + полка).
+  базе». Раздел «Прогулки» на Home — **на Android И на iOS** (общий `QuestsScreen`).
+- `registerDevice(deviceKey())` зовётся в общем `LaunchedEffect` экрана прогулок —
+  срабатывает на обеих платформах при первом входе в раздел.
+- **iOS verified на Маке:** `compileKotlinIosSimulatorArm64` ✓, `BUILD SUCCEEDED`,
+  приложение стартует в симуляторе, кнопка «Прогулки» рендерится.
+- **Дальше у меня:** слой бейджей (progress/claim/badges + полка) — ждёт предрасчёт
+  наборов (§4); iOS device_key из NSUserDefaults → Keychain (переживать переустановку).
 
 ## Что осталось/прошу подтвердить у бэкенда (для бейджей)
 1. **Предрасчёт наборов мест×окон** — `set/compute` помечен admin/backfill, в коде
