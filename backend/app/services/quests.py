@@ -24,7 +24,32 @@ from app.models.device import Device
 logger = logging.getLogger(__name__)
 
 _MIN_OBS = 50          # density threshold: below this a place gives only walks, no badge
-POINTS_PER_BADGE = 10  # v1 leaderboard: fixed points per badge (PLAN-quests-progression)
+POINTS_PER_BADGE = 10  # legacy v1 constant (superseded by tier points below)
+
+# Soft progression: each place×window badge has up to 3 TIERS — a low entry rung so
+# a newcomer earns a badge in one short walk, then steps up (HANDOFF-gamification-
+# tiers / PLAN-quests-progression). новичок=3 species, любитель≈mid, мастер=target.
+_TIER_NAMES = {1: "новичок", 2: "любитель", 3: "мастер"}
+_TIER_POINTS = {1: 5, 2: 15, 3: 30}
+
+
+def tier_thresholds(target, set_size: int) -> list[dict]:
+    """The tier ladder for one badge: need = [3, round((3+target)/2), target],
+    clamped 1 ≤ t1 < t2 < t3 ≤ set_size. For a tiny set that can't fit 3 strictly
+    increasing rungs the ladder COLLAPSES to the lower tiers (drop the rungs that
+    won't fit) rather than emitting equal/over-size thresholds — points/names stay
+    pinned to the tier number."""
+    tgt = target or max(1, set_size)
+    raw = [3, round((3 + tgt) / 2), tgt]
+    needs: list[int] = []
+    for n in raw:
+        n = max(1, min(int(n), set_size))                 # into [1, set_size]
+        n = max(n, (needs[-1] + 1) if needs else 1)       # strictly increasing
+        if n > set_size:                                  # no room left → drop this + higher
+            break
+        needs.append(n)
+    return [{"tier": i + 1, "name": _TIER_NAMES[i + 1], "need": n, "points": _TIER_POINTS[i + 1]}
+            for i, n in enumerate(needs)]
 
 # Deterministic anonymous nickname from a device_key (silent identity — no PII,
 # no prompt). Stable across calls, so it needn't be stored.
@@ -186,9 +211,21 @@ async def _set_for(db, place_id, label):
         QuestPlaceSet.place_id == place_id, QuestPlaceSet.window_label == label))).scalar_one_or_none()
 
 
+async def _issued_tiers(db, badge_id: str, device_key) -> dict:
+    """{tier: ordinal} already issued to this device for this badge."""
+    rows = (await db.execute(select(QuestIssuedBadge.tier, QuestIssuedBadge.ordinal).where(
+        QuestIssuedBadge.badge_id == badge_id,
+        QuestIssuedBadge.device_key == uuid_or(device_key)))).all()
+    return {tr: od for tr, od in rows}
+
+
 async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label: str, year: int) -> dict:
     """Server-verified progress: distinct set-species this device identified INSIDE
-    the polygon during this year's half-month window (from History)."""
+    the polygon during this year's half-month window (from History), mapped onto the
+    tier ladder. `current_tier` = highest tier EARNED (need ≤ matched, regardless of
+    issuance, 0 = none); `claimable_tier` = highest earned tier NOT yet issued (null
+    = nothing to claim); `next_need` = species needed-count of the next not-yet-
+    earned rung (null at the top)."""
     ps = await _set_for(db, place_id, label)
     if not ps:
         return {"error": "no species-set for this place/window"}
@@ -203,39 +240,71 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
     """), {"dk": device_key, "f": f, "t": t, "p": place_id})).all()
     sset = set(ps.species_set or [])
     matched = sorted({k for (tl,) in rows if (k := _latin_key(tl)) in sset})
-    return {"badge_id": f"{place_id}:{label}:{year}", "matched": len(matched),
-            "target": ps.target, "set_size": len(sset), "matched_keys": matched}
+    m = len(matched)
+    badge_id = f"{place_id}:{label}:{year}"
+    tiers = tier_thresholds(ps.target, len(sset))
+    issued = await _issued_tiers(db, badge_id, device_key)
+    earned = [tr for tr in tiers if tr["need"] <= m]
+    current_tier = max((tr["tier"] for tr in earned), default=0)
+    claimable_tier = max((tr["tier"] for tr in earned if tr["tier"] not in issued), default=None)
+    not_earned = [tr for tr in tiers if tr["need"] > m]
+    next_need = not_earned[0]["need"] if not_earned else None
+    return {"badge_id": badge_id, "set_size": len(sset), "matched": m,
+            "target": ps.target, "tiers": tiers, "current_tier": current_tier,
+            "claimable_tier": claimable_tier, "next_need": next_need, "matched_keys": matched}
 
 
 async def claim_badge(db: AsyncSession, device_key: str, place_id: str, label: str, year: int) -> dict:
-    """Issue the yearly badge if the device met the target AND the window is open.
-    Server stamps an ordinal (scarcity). Idempotent per (badge_id, device)."""
+    """Issue every tier the device has EARNED but not yet claimed, up to the highest,
+    while the window is open. Each tier gets its own per-tier ordinal (scarcity).
+    Idempotent per (badge_id, device, tier). The response headlines the HIGHEST tier
+    granted; `granted` lists all rungs issued this call."""
     prog = await badge_progress(db, device_key, place_id, label, year)
     if "error" in prog:
         return prog
     badge_id = prog["badge_id"]
-    existing = (await db.execute(select(QuestIssuedBadge).where(
-        QuestIssuedBadge.badge_id == badge_id,
-        QuestIssuedBadge.device_key == device_key))).scalar_one_or_none()
-    if existing:
-        return {**prog, "issued": True, "ordinal": existing.ordinal, "already": True}
     _, t = window_dates(label, year)
-    if prog["matched"] < (prog["target"] or 10**9):
-        return {**prog, "issued": False, "reason": "below_target"}
     if date.today() > t:
         return {**prog, "issued": False, "reason": "window_closed"}
-    n = (await db.execute(select(func.count()).select_from(QuestIssuedBadge).where(
-        QuestIssuedBadge.badge_id == badge_id))).scalar() or 0
-    db.add(QuestIssuedBadge(badge_id=badge_id, device_key=device_key, ordinal=n + 1,
-                            window_closed=False))
+    issued = await _issued_tiers(db, badge_id, device_key)
+    earned_unissued = [tr for tr in prog["tiers"]
+                       if tr["need"] <= prog["matched"] and tr["tier"] not in issued]
+    if not earned_unissued:
+        return {**prog, "issued": False,
+                "reason": "already" if issued else "below_first_tier"}
+    granted = []
+    for tr in earned_unissued:   # ascending tier order
+        n = (await db.execute(select(func.count()).select_from(QuestIssuedBadge).where(
+            QuestIssuedBadge.badge_id == badge_id, QuestIssuedBadge.tier == tr["tier"]))).scalar() or 0
+        db.add(QuestIssuedBadge(badge_id=badge_id, device_key=uuid_or(device_key),
+                                tier=tr["tier"], points=tr["points"], ordinal=n + 1,
+                                window_closed=False))
+        granted.append({**tr, "ordinal": n + 1})
     await db.commit()
-    return {**prog, "issued": True, "ordinal": n + 1}
+    top = granted[-1]
+    # Re-read so current_tier/claimable_tier reflect the just-issued rungs.
+    prog = await badge_progress(db, device_key, place_id, label, year)
+    return {**prog, "issued": True, "tier": top["tier"], "name": top["name"],
+            "ordinal": top["ordinal"], "points": top["points"], "granted": granted}
 
 
 async def badge_shelf(db: AsyncSession, device_key: str) -> list[dict]:
     rows = (await db.execute(select(QuestIssuedBadge).where(
-        QuestIssuedBadge.device_key == device_key).order_by(QuestIssuedBadge.issued_at.desc()))).scalars().all()
-    return [{"badge_id": b.badge_id, "ordinal": b.ordinal, "issued_at": b.issued_at.isoformat()} for b in rows]
+        QuestIssuedBadge.device_key == uuid_or(device_key)).order_by(
+            QuestIssuedBadge.issued_at.desc()))).scalars().all()
+    out = []
+    for b in rows:
+        parts = b.badge_id.split(":")
+        out.append({
+            "badge_id": b.badge_id,
+            "place_id": parts[0] if parts else None,
+            "window": parts[1] if len(parts) > 1 else None,
+            "year": int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None,
+            "tier": b.tier, "name": _TIER_NAMES.get(b.tier, ""),
+            "points": b.points, "ordinal": b.ordinal,
+            "issued_at": b.issued_at.isoformat(),
+        })
+    return out
 
 
 # --------------------------------------------------- Phase 6: places (no live iNat)
@@ -337,14 +406,19 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
 # --------------------------------------------------- Phase 6: leaderboard (v1)
 
 async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20) -> dict:
-    """Global all-time leaderboard. score = POINTS_PER_BADGE × issued badges
-    (server-counted — client never sends a score). Dense rank by score desc,
-    tie-break earliest badge. `me` returned even when outside the top."""
+    """Global all-time leaderboard. score = Σ over each place×season badge of the
+    points of the HIGHEST tier reached (NOT the sum of all tiers — that would double-
+    count the ladder). `badges` = distinct place×season badges held. Server-counted
+    (client never sends a score). Dense rank by score desc, tie-break earliest badge.
+    `me` returned even when outside the top."""
     rows = (await db.execute(text("""
-        SELECT device_key, count(*) AS badges, min(issued_at) AS first_at
-        FROM quest_issued_badges GROUP BY device_key
+        SELECT device_key, SUM(maxpts) AS score, COUNT(*) AS badges, MIN(first_at) AS first_at
+        FROM (SELECT device_key, badge_id,
+                     MAX(COALESCE(points, 0)) AS maxpts, MIN(issued_at) AS first_at
+              FROM quest_issued_badges GROUP BY device_key, badge_id) z
+        GROUP BY device_key
     """))).all()
-    ranked = sorted(rows, key=lambda r: (-r.badges, r.first_at))
+    ranked = sorted(rows, key=lambda r: (-r.score, r.first_at))
 
     nicks: dict = {}
     if ranked:
@@ -356,16 +430,15 @@ async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20) -> dic
     rank_of: dict = {}
     rank, prev = 0, None
     for r in ranked:
-        score = r.badges * POINTS_PER_BADGE
-        if score != prev:
+        if r.score != prev:
             rank += 1
-            prev = score
+            prev = r.score
         rank_of[r.device_key] = rank
 
     def entry(r):
         return {"rank": rank_of[r.device_key],
                 "nick": nicks.get(r.device_key) or auto_nick(r.device_key),
-                "score": r.badges * POINTS_PER_BADGE, "badges": r.badges}
+                "score": int(r.score or 0), "badges": r.badges}
 
     top = [entry(r) for r in ranked[:limit]]
     me = None

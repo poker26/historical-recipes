@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Text, Float, Integer, Boolean, DateTime, ForeignKey, func
+from sqlalchemy import String, Text, Float, Integer, Boolean, DateTime, ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -48,12 +48,17 @@ class QuestPlaceSet(Base):
 
 class QuestIssuedBadge(Base):
     """A server-issued yearly badge instance with an ordinal — the scarcity record
-    (RFC-quests §3a/§8a)."""
+    (RFC-quests §3a/§8a). A badge has up to 3 TIERS (новичок/любитель/мастер,
+    HANDOFF-gamification-tiers); each tier is its own row with its own per-tier
+    ordinal scarcity, idempotent per (badge_id, device_key, tier)."""
     __tablename__ = "quest_issued_badges"
+    __table_args__ = (UniqueConstraint("badge_id", "device_key", "tier", name="uq_badge_device_tier"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     badge_id: Mapped[str] = mapped_column(Text)               # '{place_id}:{window}:{year}'
     device_key: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    tier: Mapped[int] = mapped_column(Integer, server_default="1")   # 1 новичок / 2 любитель / 3 мастер
+    points: Mapped[int | None] = mapped_column(Integer)             # tier points (5/15/30), stamped at issue
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    ordinal: Mapped[int | None] = mapped_column(Integer)
+    ordinal: Mapped[int | None] = mapped_column(Integer)            # per-(badge_id, tier) scarcity rank
     window_closed: Mapped[bool] = mapped_column(Boolean, server_default="false")

@@ -70,5 +70,6 @@ async def place_set(place_id: str, window: str | None = Query(None),
 async def leaderboard(device_key: str | None = Query(None),
                       limit: int = Query(20, ge=1, le=100),
                       db: AsyncSession = Depends(get_db)):
-    """Global all-time leaderboard (points = 10 × badges, server-counted)."""
+    """Global all-time leaderboard. Score = Σ highest-tier points per place×season
+    badge (5/15/30), server-counted."""
     return await quests.leaderboard(db, device_key=device_key, limit=limit)
