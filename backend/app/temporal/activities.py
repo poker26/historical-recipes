@@ -13,6 +13,7 @@ Each activity is a faithful port of the matching ``_bg_*`` background task from
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -60,6 +61,7 @@ from app.services.compound_extractor import (
     _with_heartbeat as _compound_with_heartbeat,
 )
 from app.services.compound_matching import normalize_plant_compounds
+from app.services.refbook_preprocess import expand_genus_abbreviations
 from app.services.aroma_extractor import (
     extract_oils_from_text,
     _split_into_chunks as _split_oil_chunks,
@@ -872,6 +874,12 @@ def _norm(s: str | None) -> str:
     return (s or "").strip().lower()
 
 
+# A name still carrying an UNexpanded single-letter genus ("Ш. железистоколосый").
+# Reference-flora genus expansion should have replaced these; if one slips through,
+# never fuzzy-match it — the bare epithet would mis-merge onto an unrelated genus.
+_ABBR_GENUS_RE = re.compile(r"^[А-ЯЁ]\.\s")
+
+
 def _clip(value: str | None, maxlen: int) -> str | None:
     """Trim an LLM free-text value so it fits a narrow ``VARCHAR(n)`` column.
 
@@ -935,7 +943,7 @@ async def _resolve_plant(db, ep, kingdom: str = "растение") -> Plant:
     # Only merge when UNambiguous — if several existing plants share the genus
     # (e.g. two Шалфей species), a wrong auto-merge is worse than a visible stub,
     # so we fall through and create a new row instead of guessing.
-    if plant is None and ep.name:
+    if plant is None and ep.name and not _ABBR_GENUS_RE.match(ep.name.strip()):
         candidates = [
             p for p in (await db.execute(select(Plant))).scalars().all()
             if same_plant_identity(ep.name, p.name)
@@ -959,7 +967,9 @@ async def _resolve_plant(db, ep, kingdom: str = "растение") -> Plant:
         await db.flush()
 
     # Fill identity fields only if currently empty (don't clobber a richer source).
-    if not plant.name_latin and ep.name_latin:
+    # Latin is filled ONLY when it's a real binomial — OCR-garbled latin from a
+    # scanned flora ("ЗАГУГА" for SALVIA) must never be injected as a name_latin.
+    if not plant.name_latin and ep.name_latin and _latin_key(ep.name_latin):
         plant.name_latin = ep.name_latin
     if not plant.family and ep.family:
         plant.family = ep.family
@@ -1111,6 +1121,15 @@ async def extract_plant_entries_activity(book_id: str) -> dict:
         # A fungi guide (domain=fungi) tags its rows as грибы so they don't
         # pollute the "plants" namespace; everything else is растение.
         kingdom = "гриб" if (book.domain or "").lower() == "fungi" else "растение"
+
+    # Reference-flora preprocessing: expand single-letter genus abbreviations
+    # ("Ш. эфиопский" → "Шалфей эфиопский") from the "Род N. … — ГЕНУС" block
+    # headers so species names match the herbarium instead of minting stubs. A
+    # no-op on books without that convention. MUST run before chunking (a header
+    # and the species lines it governs can fall in different chunks).
+    full_text, _gx = expand_genus_abbreviations(full_text)
+    if _gx["expansions"]:
+        _hb(f"Genus-abbrev expansion: {_gx['expansions']} name(s) across {_gx['headers']} block(s)")
 
     chunks = _split_into_chunks(full_text)
     n = len(chunks)
@@ -1426,11 +1445,23 @@ async def extract_vocabulary_activity(book_id: str) -> dict:
 @activity.defn
 async def normalize_corpus_activity(book_id: str) -> dict:
     """Corpus-wide, idempotent normalize of every ``PlantCompound.compound`` to a
-    ``compound_id`` against the current vocabulary (compound analog of relink)."""
+    ``compound_id`` against the current vocabulary (compound analog of relink).
+
+    First runs the CHEMISTRY-AWARE compound-vocab dedup so a reference book's
+    extract_vocabulary doesn't leave variant-spelled duplicates (виценин-2 / виценин–2
+    / OCR / synonyms fold to one canonical term, while α/β isomers stay distinct). Then
+    links plant_compounds to the consolidated survivors. Both idempotent."""
+    from app.services.vocab_dedup import dedup_compounds
     bid = uuid.UUID(book_id)
+    _hb("Deduplicating compound vocabulary (chemistry-aware)")
+    async with async_session() as db:
+        dd = await dedup_compounds(db, apply=True)
+    merged = dd.get("clusters_mergeable", 0)
+    _hb(f"Compound vocab dedup: folded {merged} cluster(s)")
     _hb("Normalizing plant compounds against the compound vocabulary")
     async with async_session() as db:
         result = await normalize_plant_compounds(db, commit=False)
+        result["vocab_dedup_folded"] = merged
         db.add(ProcessingLog(book_id=bid, step="normalize_corpus", status="completed", details=result))
         await db.commit()
     _hb(f"Normalized compounds: {result}")

@@ -105,10 +105,21 @@ def _parse_captured_at(raw: str | None) -> datetime | None:
         return None
 
 
+def _parse_uuid(raw: str | None) -> uuid.UUID | None:
+    """Lenient UUID parse — the device_key the client sends with each identify.
+    Returns None on absent/invalid so a bad value never breaks archival."""
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(raw.strip())
+    except (ValueError, AttributeError):
+        return None
+
+
 async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
                    organs: list[str] | None, lat, lng, geo_accuracy, captured_at,
                    exif_json, device_model, device_manufacturer, os_version,
-                   os_sdk, app_version) -> None:
+                   os_sdk, app_version, device_key=None) -> None:
     """Archive the photo (→ field-uploads bucket) + its metadata + the engine
     outcome to the ``identifications`` table. Best-effort: any failure is logged
     and swallowed so archival never breaks the user's identification."""
@@ -135,6 +146,7 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
 
         db.add(Identification(
             photo_key=photo_key,
+            device_key=_parse_uuid(device_key),
             engine=result.get("engine"),
             organ=(organs[0] if organs else None),
             lat=lat, lng=lng, geo_accuracy=geo_accuracy,
@@ -179,6 +191,9 @@ async def identify_plant(
     os_version: str | None = Form(None),
     os_sdk: int | None = Form(None),
     app_version: str | None = Form(None),
+    # Silent-identity device id (same UUID as /devices/register). Required for
+    # quest badge progress — identifications.device_key feeds badge_progress.
+    device_key: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Identify a plant from one or more uploaded photos and link each candidate
@@ -202,7 +217,7 @@ async def identify_plant(
         lat=lat, lng=lng, geo_accuracy=geo_accuracy, captured_at=captured_at,
         exif_json=exif_json, device_model=device_model,
         device_manufacturer=device_manufacturer, os_version=os_version,
-        os_sdk=os_sdk, app_version=app_version,
+        os_sdk=os_sdk, app_version=app_version, device_key=device_key,
     )
     return result
 

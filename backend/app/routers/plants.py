@@ -26,6 +26,7 @@ from app.models.plant import (
 )
 from app.models.reader_monograph import PlantReaderMonograph
 from app.services.plant_matching import relink_recipe_ingredients, merge_plants_by_latin_key
+from app.services.compound_matching import is_nontarget_compound_class
 from app.services.qdrant import delete_points
 from app.services.inaturalist import enrich_plants_inat, find_observations
 
@@ -578,6 +579,11 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
     # ── compound_groups: group by compound_group, examples capped, ranked ───
     comp_groups: dict = {}
     for c in plant.compounds:
+        # Suppress non-constituent classes (enzymes/synthetics/hormones) from the
+        # displayed chemical composition — they're substances named in the source but
+        # not what the plant "contains" in a herbal sense. Vitamins/minerals stay.
+        if c.compound_ref and is_nontarget_compound_class(c.compound_ref.compound_class):
+            continue
         gname = (c.compound_group or "").strip() or None
         g = comp_groups.get(gname)
         if g is None:

@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -247,7 +247,8 @@ async def classify_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 # ──────────────────────────────────────────────────────────────────────
 
 @router.post("/{book_id}/extract")
-async def extract_text(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def extract_text(book_id: uuid.UUID, restart: bool = Query(False),
+                       db: AsyncSession = Depends(get_db)):
     bid = str(book_id)
     _check_not_busy(bid)
     book = await _get_book(book_id, db)
@@ -256,13 +257,34 @@ async def extract_text(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
     tp = _start_progress(bid, "extract")
     tp.task = asyncio.create_task(
-        _bg_extract(book_id, book.file_path, book.pdf_type, book.source_format or "pdf", tp)
+        _bg_extract(book_id, book.file_path, book.pdf_type, book.source_format or "pdf", tp, restart)
     )
     return {"status": "started", "step": "extract"}
 
 
+async def _commit_page(book_id: uuid.UUID, page_num: int, image_path: str | None,
+                       raw_text: str | None, dpi: int | None, confidence: float | None,
+                       status: str) -> None:
+    """Commit one OCR'd/extracted page in its OWN short transaction.
+
+    The BookPage row's existence (keyed by page_number) is the per-page completion
+    marker, so a re-run skips it. Committing per page means no transaction is held
+    open across the long OCR loop (→ no idle-in-transaction kill) and an interrupted
+    run resumes from the last committed page instead of re-OCRing the whole book.
+    """
+    async with async_session() as db:
+        db.add(BookPage(
+            book_id=book_id, page_number=page_num, image_path=image_path,
+            # Postgres rejects NUL (0x00) in text; some PDF text layers carry it.
+            raw_text=(raw_text.replace("\x00", "") if raw_text else raw_text),
+            dpi=dpi, ocr_confidence=confidence,
+            needs_review=confidence is not None and confidence < 60.0, status=status,
+        ))
+        await db.commit()
+
+
 async def _bg_extract(book_id: uuid.UUID, file_path: str, pdf_type: str,
-                      source_format: str, tp: TaskProgress):
+                      source_format: str, tp: TaskProgress, restart: bool = False):
     try:
         # Born-text (txt/docx): the file already holds text — no PDF split, no OCR.
         if source_format in BORN_TEXT_FORMATS:
@@ -293,57 +315,63 @@ async def _bg_extract(book_id: uuid.UUID, file_path: str, pdf_type: str,
         pdf_bytes = minio_svc.download_file(file_path)
         tp.log("Splitting PDF into pages")
         pages = split_pdf_smart(pdf_bytes)
-        tp.log(f"Found {len(pages)} pages")
+        n = len(pages)
+        tp.log(f"Found {n} pages")
 
+        # Resumable per-page OCR (mirrors the durable extract_activity): each page is
+        # committed in its own transaction, so an interrupted run resumes from the
+        # last committed page and no transaction is held open across the OCR loop.
         async with async_session() as db:
-            # Delete existing pages
-            existing = await db.execute(select(BookPage).where(BookPage.book_id == book_id))
-            for p in existing.scalars().all():
-                await db.delete(p)
-            await db.flush()
+            if restart:
+                existing = await db.execute(select(BookPage).where(BookPage.book_id == book_id))
+                for p in existing.scalars().all():
+                    await db.delete(p)
+                await db.commit()
+                done_pages: set[int] = set()
+            else:
+                done_pages = set((await db.execute(
+                    select(BookPage.page_number).where(BookPage.book_id == book_id))).scalars().all())
+        if done_pages:
+            tp.log(f"Resuming: {len(done_pages)}/{n} page(s) already committed")
 
-            all_texts = []
-            for i, page_data in enumerate(pages):
-                page_num = page_data["page_number"]
-                page_type = page_data["page_type"]
-                tp.log(f"Page {page_num}/{len(pages)} ({page_type})")
+        for page_data in pages:
+            page_num = page_data["page_number"]
+            if page_num in done_pages:
+                continue
+            page_type = page_data["page_type"]
+            tp.log(f"Page {page_num}/{n} ({page_type})")
 
-                image_path = None
-                raw_text = page_data["text"]
-                confidence = 100.0 if page_type == "text" else None
-                method = "pdf_extract" if page_type == "text" else None
-                status = "text_extracted" if page_type == "text" else "needs_ocr"
+            image_path = None
+            raw_text = page_data["text"]
+            confidence = 100.0 if page_type == "text" else None
+            status = "text_extracted" if page_type == "text" else "needs_ocr"
 
-                if page_type == "image" and page_data["image_bytes"]:
-                    image_path = f"books/{book_id}/pages/{page_num:04d}.png"
-                    minio_svc.upload_file(page_data["image_bytes"], image_path, content_type="image/png")
-                    text, conf, ocr_method = await ocr_page_with_fallback(page_data["image_bytes"])
-                    raw_text = text
-                    confidence = conf
-                    method = ocr_method
-                    status = "ocr_done"
+            if page_type == "image" and page_data["image_bytes"]:
+                image_path = f"books/{book_id}/pages/{page_num:04d}.png"
+                minio_svc.upload_file(page_data["image_bytes"], image_path, content_type="image/png")
+                text, conf, _ocr_method = await ocr_page_with_fallback(page_data["image_bytes"])
+                raw_text = text
+                confidence = conf
+                status = "ocr_done"
 
-                page = BookPage(
-                    book_id=book_id, page_number=page_num, image_path=image_path,
-                    raw_text=raw_text, dpi=page_data["dpi"], ocr_confidence=confidence,
-                    needs_review=confidence is not None and confidence < 60.0, status=status,
-                )
-                db.add(page)
-                if raw_text:
-                    all_texts.append(raw_text)
+            await _commit_page(book_id, page_num, image_path, raw_text,
+                               page_data["dpi"], confidence, status)
 
-            full_text = "\n\n".join(all_texts)
+        # Finalize: rebuild full_text from every committed page, in order.
+        async with async_session() as db:
+            page_texts = (await db.execute(
+                select(BookPage.raw_text).where(BookPage.book_id == book_id)
+                .order_by(BookPage.page_number))).scalars().all()
+            full_text = "\n\n".join(t for t in page_texts if t)
             book = (await db.execute(select(Book).where(Book.id == book_id))).scalar_one()
             book.full_text = full_text
             book.wizard_step = 3
             book.status = "extracted"
-
-            log = ProcessingLog(book_id=book_id, step="extract", status="completed",
-                                details={"total_pages": len(pages), "text_length": len(full_text)})
-            db.add(log)
+            db.add(ProcessingLog(book_id=book_id, step="extract", status="completed",
+                                 details={"total_pages": n, "text_length": len(full_text)}))
             await db.commit()
 
-            tp.finish({"total_pages": len(pages), "text_length": len(full_text)})
+        tp.finish({"total_pages": n, "text_length": len(full_text)})
     except Exception as e:
         logger.exception("Extract failed")
         tp.fail(str(e))

@@ -7,6 +7,7 @@ returns the top-N as walk cards. Corpus is NOT required — a species we lack is
 still a card (iNat name/photo, plant_id null).
 """
 import calendar
+import hashlib
 import logging
 from datetime import date
 
@@ -17,11 +18,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.inaturalist import INAT_BASE, _HEADERS
 from app.services.plant_matching import resolve_latin_to_plants, _latin_key
-from app.models.place import QuestPlaceSet, QuestIssuedBadge
+from app.models.place import QuestPlace, QuestPlaceSet, QuestIssuedBadge
+from app.models.device import Device
 
 logger = logging.getLogger(__name__)
 
 _MIN_OBS = 50          # density threshold: below this a place gives only walks, no badge
+POINTS_PER_BADGE = 10  # v1 leaderboard: fixed points per badge (PLAN-quests-progression)
+
+# Deterministic anonymous nickname from a device_key (silent identity — no PII,
+# no prompt). Stable across calls, so it needn't be stored.
+_NICK_ADJ = ["Зелёный", "Лесной", "Тихий", "Быстрый", "Мудрый", "Солнечный", "Росистый",
+             "Полевой", "Горный", "Речной", "Утренний", "Вечерний", "Смелый", "Лёгкий",
+             "Цветущий", "Хвойный", "Луговой", "Степной", "Северный", "Янтарный"]
+_NICK_NOUN = ["Бегемот", "Лис", "Барсук", "Филин", "Ёж", "Зубр", "Олень", "Бобр", "Аист",
+              "Сокол", "Рысь", "Глухарь", "Хорёк", "Журавль", "Кабан", "Тетерев", "Енот",
+              "Выдра", "Дрозд", "Шмель"]
+
+
+def auto_nick(device_key) -> str:
+    h = int(hashlib.md5(str(device_key).encode()).hexdigest(), 16)
+    return (f"{_NICK_ADJ[h % len(_NICK_ADJ)]} "
+            f"{_NICK_NOUN[(h // len(_NICK_ADJ)) % len(_NICK_NOUN)]} #{h % 10000:04d}")
 
 
 def window_label(month: int, day: int) -> str:
@@ -135,14 +153,28 @@ async def compute_species_set(db: AsyncSession, place_id: str, label: str) -> di
              if (x.get("taxon") or {}).get("rank") in ("species", "subspecies")
              and (x.get("taxon") or {}).get("default_photo")]
     obs_total = sum(x.get("count", 0) for x in recog)
-    sset = [k for x in recog[:30] if (k := _latin_key((x.get("taxon") or {}).get("name")))]
+    # Build the key list + per-species display meta together (name/photo come free
+    # from the same iNat taxon → store them so place/{id}/set needs no live iNat).
+    sset: list[str] = []
+    meta: list[dict] = []
+    for x in recog[:30]:
+        t = x.get("taxon") or {}
+        k = _latin_key(t.get("name"))
+        if not k:
+            continue
+        sset.append(k)
+        meta.append({"key": k, "latin": t.get("name"),
+                     "name": t.get("preferred_common_name"),
+                     "photo": (t.get("default_photo") or {}).get("medium_url")})
     if obs_total < _MIN_OBS or len(sset) < 5:
         return {"place": name, "window": label, "skipped": "low_density", "obs_total": obs_total, "species": len(sset)}
     target = max(5, min(15, round(0.6 * len(sset))))
     await db.execute(pg_insert(QuestPlaceSet).values(
-        place_id=place_id, window_label=label, species_set=sset, target=target, obs_total=obs_total
+        place_id=place_id, window_label=label, species_set=sset, species_meta=meta,
+        target=target, obs_total=obs_total
     ).on_conflict_do_update(constraint="uq_place_window", set_={
-        "species_set": sset, "target": target, "obs_total": obs_total, "computed_at": func.now()}))
+        "species_set": sset, "species_meta": meta, "target": target,
+        "obs_total": obs_total, "computed_at": func.now()}))
     await db.commit()
     return {"place": name, "window": label, "set_size": len(sset), "target": target, "obs_total": obs_total}
 
@@ -204,3 +236,146 @@ async def badge_shelf(db: AsyncSession, device_key: str) -> list[dict]:
     rows = (await db.execute(select(QuestIssuedBadge).where(
         QuestIssuedBadge.device_key == device_key).order_by(QuestIssuedBadge.issued_at.desc()))).scalars().all()
     return [{"badge_id": b.badge_id, "ordinal": b.ordinal, "issued_at": b.issued_at.isoformat()} for b in rows]
+
+
+# --------------------------------------------------- Phase 6: places (no live iNat)
+
+def _current_window() -> str:
+    t = date.today()
+    return window_label(t.month, t.day)
+
+
+async def _badge_issued(db, device_key, place_id, window, year) -> bool:
+    if not device_key:
+        return False
+    n = (await db.execute(select(func.count()).select_from(QuestIssuedBadge).where(
+        QuestIssuedBadge.badge_id == f"{place_id}:{window}:{year}",
+        QuestIssuedBadge.device_key == device_key))).scalar() or 0
+    return n > 0
+
+
+async def places_near(db: AsyncSession, lat: float, lng: float, device_key=None,
+                      radius_km: float = 25, limit: int = 20,
+                      window: str | None = None, year: int | None = None) -> dict:
+    """Places near a point that have a precomputed species-set for the window —
+    for the map/list. Distance/centroid via PostGIS; per-device matched +
+    badge_issued so the client can show progress. No live iNat."""
+    win = window or _current_window()
+    yr = year or date.today().year
+    rows = (await db.execute(text("""
+        SELECT p.id, p.name, p.kind,
+               ST_Y(ST_Centroid(p.geom)) AS clat, ST_X(ST_Centroid(p.geom)) AS clng,
+               ST_Distance(ST_Centroid(p.geom)::geography,
+                           ST_SetSRID(ST_MakePoint(:lng,:lat),4326)::geography)/1000.0 AS dist,
+               ps.target, COALESCE(array_length(ps.species_set,1),0) AS set_size
+        FROM quest_places p
+        JOIN quest_place_sets ps ON ps.place_id = p.id AND ps.window_label = :win
+        WHERE p.geom IS NOT NULL
+          AND ST_DWithin(ST_Centroid(p.geom)::geography,
+                         ST_SetSRID(ST_MakePoint(:lng,:lat),4326)::geography, :rad)
+        ORDER BY dist LIMIT :lim
+    """), {"lat": lat, "lng": lng, "win": win, "rad": radius_km * 1000.0, "lim": limit})).all()
+
+    places = []
+    for pid, name, kind, clat, clng, dist, target, set_size in rows:
+        matched = 0
+        if device_key:
+            prog = await badge_progress(db, str(device_key), str(pid), win, yr)
+            matched = prog.get("matched", 0) if "error" not in prog else 0
+        places.append({
+            "id": str(pid), "name": name, "kind": kind,
+            "lat": clat, "lng": clng, "distance_km": round(dist, 2),
+            "window": win, "set_size": set_size, "target": target,
+            "matched": matched, "badge_issued": await _badge_issued(db, device_key, pid, win, yr),
+        })
+    return {"places": places}
+
+
+async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
+                    device_key=None, year: int | None = None) -> dict:
+    """«What to look for here» — species cards from the SAVED set (no live iNat).
+    Names/photos come from species_meta (saved at compute) with a corpus fallback;
+    plant_id via the latin-key bridge; found = this device identified it in the
+    polygon×window."""
+    win = window or _current_window()
+    yr = year or date.today().year
+    ps = await _set_for(db, place_id, win)
+    if not ps:
+        return {"error": "no species-set for this place/window"}
+    place = await db.get(QuestPlace, uuid_or(place_id))
+
+    found_keys: set[str] = set()
+    matched = 0
+    if device_key:
+        prog = await badge_progress(db, str(device_key), str(place_id), win, yr)
+        if "error" not in prog:
+            found_keys = set(prog.get("matched_keys", []))
+            matched = prog.get("matched", 0)
+
+    meta = ps.species_meta or [{"key": k} for k in (ps.species_set or [])]
+    # Resolve corpus cards for fallback name/photo + the plant_id bridge.
+    plant_map = await resolve_latin_to_plants(db, [m["key"] for m in meta])
+    items = []
+    for m in meta:
+        key = m["key"]
+        p = plant_map.get(key)
+        latin = m.get("latin") or (key[:1].upper() + key[1:])
+        items.append({
+            "latin_key": key,
+            "name": m.get("name") or (p.name if p else None) or latin,
+            "latin": latin,
+            "inat_photo": m.get("photo") or (p.photo_url if p else None),
+            "plant_id": str(p.id) if p else None,
+            "found": key in found_keys,
+        })
+    return {"place": {"id": str(place_id), "name": place.name if place else None,
+                      "window": win, "set_size": len(meta), "target": ps.target,
+                      "matched": matched, "badge_issued": await _badge_issued(db, device_key, place_id, win, yr)},
+            "items": items}
+
+
+# --------------------------------------------------- Phase 6: leaderboard (v1)
+
+async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20) -> dict:
+    """Global all-time leaderboard. score = POINTS_PER_BADGE × issued badges
+    (server-counted — client never sends a score). Dense rank by score desc,
+    tie-break earliest badge. `me` returned even when outside the top."""
+    rows = (await db.execute(text("""
+        SELECT device_key, count(*) AS badges, min(issued_at) AS first_at
+        FROM quest_issued_badges GROUP BY device_key
+    """))).all()
+    ranked = sorted(rows, key=lambda r: (-r.badges, r.first_at))
+
+    nicks: dict = {}
+    if ranked:
+        devs = (await db.execute(select(Device.device_key, Device.nickname).where(
+            Device.device_key.in_([r.device_key for r in ranked])))).all()
+        nicks = {dk: nk for dk, nk in devs}
+
+    # dense rank
+    rank_of: dict = {}
+    rank, prev = 0, None
+    for r in ranked:
+        score = r.badges * POINTS_PER_BADGE
+        if score != prev:
+            rank += 1
+            prev = score
+        rank_of[r.device_key] = rank
+
+    def entry(r):
+        return {"rank": rank_of[r.device_key],
+                "nick": nicks.get(r.device_key) or auto_nick(r.device_key),
+                "score": r.badges * POINTS_PER_BADGE, "badges": r.badges}
+
+    top = [entry(r) for r in ranked[:limit]]
+    me = None
+    if device_key:
+        dk = uuid_or(device_key)
+        hit = next((r for r in ranked if r.device_key == dk), None)
+        me = entry(hit) if hit else {"rank": None, "nick": auto_nick(dk), "score": 0, "badges": 0}
+    return {"me": me, "top": top}
+
+
+def uuid_or(v):
+    import uuid as _u
+    return v if isinstance(v, _u.UUID) else _u.UUID(str(v))

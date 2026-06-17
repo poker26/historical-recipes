@@ -11,6 +11,7 @@ mandatory: the prompt forces the model to cite the finding's data (names/latin);
 thin data → ``uncertain`` (we don't manufacture hallucinations during cleanup).
 """
 import asyncio
+import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select, func
@@ -18,6 +19,7 @@ from sqlalchemy import select, func
 from app.config import settings
 from app.database import async_session
 from app.models.plant import Plant
+from app.models.recipe import Recipe, RecipeIngredient
 from app.models.data_quality import DataQualityFinding
 from app.services.llm import chat_completion_json
 
@@ -83,6 +85,109 @@ async def _adj_alias_collision(db, f: DataQualityFinding) -> dict:
         # refine the existing fix to exactly what the LLM approved
         res["refined_aliases"] = strip
     return res
+
+
+# ── compound.bad_hierarchy ────────────────────────────────────────────
+_HIER_SYS = (
+    "Ты — химик-куратор базы веществ. Отвечаешь СТРОГО валидным JSON, опираясь только "
+    "на приведённые названия и классы, без домыслов."
+)
+
+
+@adjudicator("compound.bad_hierarchy")
+async def _adj_compound_hierarchy(db, f: DataQualityFinding) -> dict:
+    ev = f.evidence or {}
+    child, parent = ev.get("child", "?"), ev.get("parent", "?")
+    cclass = ev.get("child_class") or "—"
+    cf, pf = ev.get("child_facts"), ev.get("parent_facts")
+    prompt = (
+        f"Вещество-РЕБЁНОК: «{child}» (класс: {cclass}; встречается у {cf} растений).\n"
+        f"Указано как ПОТОМОК (parent) вещества: «{parent}» (встречается у {pf} растений).\n\n"
+        f"Вопрос: «{parent}» — это настоящий химический КЛАСС/группа, к которой «{child}» "
+        f"таксономически ПРИНАДЛЕЖИТ (специфика→класс, напр. кверцетин→флавоноиды, "
+        f"пектины→полисахариды)? ИЛИ «{parent}» — это конкретное вещество / смесь / "
+        f"экссудат (камедь, прополис, маточное молочко, конкретный яд), которое лишь "
+        f"СОДЕРЖИТ «{child}» — и тогда это ошибка (containment прочитан как таксономия), "
+        f"ребро надо УБРАТЬ?\n"
+        f"ГЛАВНОЕ ПРАВИЛО: если «{child}» таксономически ЯВЛЯЕТСЯ частным случаем «{parent}» "
+        f"(манноза — это гексоза; амигдалин — цианогенный гликозид; молибден — тяжёлый "
+        f"металл; фитостеролы — стеролы; тригонеллин — бетаин), это ПРАВИЛЬНОЕ ребро "
+        f"(false_positive) — ДАЖЕ если ребёнок встречается ЧАЩЕ родителя. Containment-ошибка "
+        f"(real) — ТОЛЬКО когда «{parent}» это физический МАТЕРИАЛ/смесь/секрет/включение "
+        f"(камедь, прополис, маточное молочко, друзы, одеревяневшие клетки, конкретный яд), "
+        f"а НЕ химический класс/группа. Сомневаешься, класс это или вещество → uncertain.\n"
+        'Верни JSON: {"verdict":"real|false_positive|uncertain","confidence":0.0-1.0,'
+        '"reasoning":"<кратко, со ссылкой на названия/классы>"}\n'
+        '"real" = это containment-ошибка, ребро убрать; "false_positive" = родитель '
+        "настоящий класс-предок, оставить."
+    )
+    out = await chat_completion_json(
+        [{"role": "system", "content": _HIER_SYS}, {"role": "user", "content": prompt}],
+        task="lightweight", temperature=0.1, max_tokens=512,
+    )
+    if not isinstance(out, dict):
+        return {"verdict": "uncertain", "confidence": 0.0, "action": None,
+                "reasoning": "LLM returned non-object"}
+    verdict = out.get("verdict", "uncertain")
+    action = "null_compound_parent" if verdict == "real" else (
+        "keep" if verdict == "false_positive" else None)
+    return {"verdict": verdict, "confidence": float(out.get("confidence") or 0.0),
+            "action": action, "reasoning": str(out.get("reasoning") or "")[:600]}
+
+
+# ── domain.recipe_is_monograph ────────────────────────────────────────
+_RECIPE_MONO_SYS = (
+    "Ты — куратор базы народных рецептов. Отвечаешь СТРОГО валидным JSON, опираясь "
+    "только на приведённый рецепт, без домыслов."
+)
+
+
+@adjudicator("domain.recipe_is_monograph")
+async def _adj_recipe_monograph(db, f: DataQualityFinding) -> dict:
+    try:
+        rid = uuid.UUID(f.entity_id)
+    except Exception:
+        return {"verdict": "uncertain", "confidence": 0.0, "action": None,
+                "reasoning": "bad entity_id"}
+    recipe = (await db.execute(select(Recipe).where(Recipe.id == rid))).scalar_one_or_none()
+    if recipe is None:
+        return {"verdict": "uncertain", "confidence": 0.0, "action": None,
+                "reasoning": "recipe gone"}
+    ings = [i for i in (await db.execute(
+        select(RecipeIngredient.name).where(RecipeIngredient.recipe_id == rid))).scalars().all() if i]
+    text = (recipe.original_text or recipe.normalized_text or "")[:600]
+    prompt = (
+        f"Рецепт: «{recipe.name}» (категория: {recipe.category}).\n"
+        f"Ингредиенты ({len(ings)}): {', '.join(ings[:15]) or '—'}.\n"
+        f"Текст: {text}\n\n"
+        f"Имя рецепта совпадает с названием вида растения. Определи: это МОНОГРАФИЯ-ДАМП — "
+        f"экстрактор по ошибке сделал фейковый «сбор» из монограф-секции про ОДНО растение "
+        f"(содержимое описывает сам вид «{recipe.name}», его части и применение, а НЕ "
+        f"препарат из нескольких РАЗНЫХ растений)?\n"
+        f"• is_monograph_dump=true — по сути запись об ОДНОМ растении (один вид-компонент; "
+        f"перечисленные «ингредиенты» — это части/формы того же вида; текст = описание "
+        f"растения). Такой рецепт УДАЛИМ.\n"
+        f"• is_monograph_dump=false — НАСТОЯЩИЙ препарат: ≥2 РАЗНЫХ ВИДА растений в сборе, "
+        f"ИЛИ именованный аптечный препарат (Ротокан, Коргликон), ИЛИ явный многокомпонентный "
+        f"способ. Такой ОСТАВИМ.\n"
+        'Верни JSON: {"is_monograph_dump": true|false, "confidence":0.0-1.0, "reasoning":"<кратко>"}'
+    )
+    out = await chat_completion_json(
+        [{"role": "system", "content": _RECIPE_MONO_SYS}, {"role": "user", "content": prompt}],
+        task="lightweight", temperature=0.1, max_tokens=700,
+    )
+    if not isinstance(out, dict) or "is_monograph_dump" not in out:
+        return {"verdict": "uncertain", "confidence": 0.0, "action": None,
+                "reasoning": "LLM returned no decision"}
+    dump = out.get("is_monograph_dump")
+    if dump is True:
+        verdict, action = "real", "delete_recipe_and_qdrant"
+    elif dump is False:
+        verdict, action = "false_positive", "keep"
+    else:
+        verdict, action = "uncertain", None
+    return {"verdict": verdict, "confidence": float(out.get("confidence") or 0.0),
+            "action": action, "reasoning": str(out.get("reasoning") or "")[:600]}
 
 
 # ── runner ────────────────────────────────────────────────────────────

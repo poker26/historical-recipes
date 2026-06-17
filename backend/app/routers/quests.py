@@ -43,3 +43,32 @@ async def badge_claim(device_key: str = Query(...), place_id: str = Query(...),
 @router.get("/badges")
 async def badges(device_key: str = Query(...), db: AsyncSession = Depends(get_db)):
     return {"device_key": device_key, "badges": await quests.badge_shelf(db, device_key)}
+
+
+@router.get("/places/near")
+async def places_near(lat: float = Query(...), lng: float = Query(...),
+                      device_key: str | None = Query(None),
+                      radius_km: float = Query(25, gt=0, le=200),
+                      limit: int = Query(20, ge=1, le=100),
+                      window: str | None = Query(None, description="default = current half-month"),
+                      db: AsyncSession = Depends(get_db)):
+    """Nearby places that have a precomputed species-set for the window — for the
+    map/list. Instant (DB only, no live iNat)."""
+    return await quests.places_near(db, lat, lng, device_key=device_key,
+                                    radius_km=radius_km, limit=limit, window=window)
+
+
+@router.get("/place/{place_id}/set")
+async def place_set(place_id: str, window: str | None = Query(None),
+                    device_key: str | None = Query(None),
+                    db: AsyncSession = Depends(get_db)):
+    """«What to look for here» — species cards from the saved set (no live iNat)."""
+    return await quests.place_set(db, place_id, window=window, device_key=device_key)
+
+
+@router.get("/leaderboard")
+async def leaderboard(device_key: str | None = Query(None),
+                      limit: int = Query(20, ge=1, le=100),
+                      db: AsyncSession = Depends(get_db)):
+    """Global all-time leaderboard (points = 10 × badges, server-counted)."""
+    return await quests.leaderboard(db, device_key=device_key, limit=limit)

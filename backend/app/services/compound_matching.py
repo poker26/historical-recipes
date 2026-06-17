@@ -28,6 +28,20 @@ def _norm(s: str | None) -> str:
     return " ".join(_WORD_RE.findall((s or "").lower()))
 
 
+# Compound classes that are NOT plant constituents we surface as «химический состав»:
+# functional enzymes/coenzymes, plant hormones, and synthetic substances the extractor
+# grabbed from metabolism/process discussions in reference books. Vitamins, minerals,
+# amino acids, proteins ARE kept (real constituents) — user decision 2026-06-16. The
+# class pattern auto-suppresses future compounds of these classes too; reversible.
+_NONTARGET_CLASS_RE = re.compile(r"фермент|синтетич|гормон", re.IGNORECASE)
+
+
+def is_nontarget_compound_class(compound_class: str | None) -> bool:
+    """True for enzyme / synthetic / hormone classes — suppressed from a plant's
+    displayed chemical composition (NOT deleted; just hidden, reversible)."""
+    return bool(compound_class and _NONTARGET_CLASS_RE.search(compound_class))
+
+
 def _tokens(s: str | None) -> frozenset[str]:
     return frozenset(_WORD_RE.findall((s or "").lower()))
 

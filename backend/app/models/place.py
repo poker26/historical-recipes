@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import String, Text, Float, Integer, Boolean, DateTime, ForeignKey, func
-from sqlalchemy.dialects.postgresql import UUID, ARRAY
+from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -36,6 +36,11 @@ class QuestPlaceSet(Base):
     place_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("quest_places.id", ondelete="CASCADE"))
     window_label: Mapped[str] = mapped_column(String(40))     # 'first-half-05'
     species_set: Mapped[list | None] = mapped_column(ARRAY(Text))   # latin_keys
+    # Per-species display meta [{key, latin, name, photo}], saved at compute time
+    # so place/{id}/set serves cards WITHOUT a live iNat round-trip (handoff
+    # quests-places). Nullable — sets computed before this column fall back to
+    # corpus-resolution in the endpoint.
+    species_meta: Mapped[list | None] = mapped_column(JSONB)
     target: Mapped[int | None] = mapped_column(Integer)        # round(0.6*|set|) clamp [5,15]
     obs_total: Mapped[int | None] = mapped_column(Integer)     # density signal
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

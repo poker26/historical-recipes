@@ -50,6 +50,26 @@ def _norm(s: str | None) -> str:
     return " ".join(_WORD_RE.findall((s or "").lower().replace("ё", "е")))
 
 
+# Sub/superscript digits → ASCII (so «B₁» vs «B₁₂» stay DISTINCT, not both collapsed to
+# «B»). 20 source chars ↔ 20 target chars.
+_SUBSUP = str.maketrans("₀₁₂₃₄₅₆₇₈₉⁰¹²³⁴⁵⁶⁷⁸⁹", "01234567890123456789")
+
+
+def _canon_compound(s: str | None) -> str:
+    """Chemistry-aware canonical key for compound names. Collapses ONLY typographic
+    noise (dash/space/apostrophe/punctuation) while KEEPING the tokens that distinguish
+    real compounds: Greek prefixes (α/β/γ/δ), digits, and subscript indices. So
+    «виценин-2» / «виценин 2» / «виценин – 2» fold to one, but «α-токоферол» ≠
+    «β-токоферол», «α-пинен» ≠ «β-пинен», «витамин B₁» ≠ «витамин B₁₂».
+
+    Uses `str.isalnum()` (Unicode-aware: keeps Cyrillic + Latin + Greek letters + digits,
+    drops separators/punctuation) — the generic _norm above instead uses a [а-яa-z0-9]
+    regex that DROPS Greek + subscripts and would WRONGLY merge these chemically-distinct
+    isomers/vitamers/homologs."""
+    s = (s or "").lower().replace("ё", "е").translate(_SUBSUP)
+    return "".join(c for c in s if c.isalnum())
+
+
 @dataclass(frozen=True)
 class VocabDedupSpec:
     """Describes one dedup-able vocabulary: its model, the use-fact link, and which
@@ -68,6 +88,10 @@ class VocabDedupSpec:
     link_model: type
     link_attr: str              # indication_ids / action_id / compound_id
     link_is_array: bool
+    # Name-normalizer used for clustering. Defaults to the generic word-token _norm;
+    # the compound vocab overrides it with the chemistry-aware _canon_compound so Greek
+    # prefixes / subscripts are NOT stripped (α-pinene must not merge with β-pinene).
+    norm_fn: "callable" = _norm
 
 
 INDICATION_SPEC = VocabDedupSpec(
@@ -84,6 +108,7 @@ COMPOUND_SPEC = VocabDedupSpec(
     model=Compound, label="compound", modern_attr="name_latin",
     archaic_attr=None, link_model=PlantCompound,
     link_attr="compound_id", link_is_array=False,
+    norm_fn=_canon_compound,   # chemistry-aware: keep Greek/subscripts (α-pinene ≠ β-pinene)
 )
 
 
@@ -129,9 +154,10 @@ def _build_clusters(rows: list, spec: VocabDedupSpec) -> list[list]:
     ``archaic`` bridge is populated loosely, so treating it as proof of identity
     cascades distinct conditions together. Archaic still drives RETRIEVAL; it just
     isn't trusted for MERGES."""
-    name_norm = {r.id: _norm(r.name) for r in rows}
+    nf = spec.norm_fn   # per-vocab name normalizer (chemistry-aware for compounds)
+    name_norm = {r.id: nf(r.name) for r in rows}
     mod_norm = {
-        r.id: _norm(getattr(r, spec.modern_attr)) if spec.modern_attr else "" for r in rows
+        r.id: nf(getattr(r, spec.modern_attr)) if spec.modern_attr else "" for r in rows
     }
 
     name_index: dict[str, list[uuid.UUID]] = {}
