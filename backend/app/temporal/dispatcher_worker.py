@@ -29,8 +29,8 @@ from app.temporal import cleanup_activities
 from app.temporal import quest_activities
 from app.temporal import monograph_activities
 from app.temporal.workflows import (
-    BookDispatcherWorkflow, PlantCleanupWorkflow, OsmIngestWorkflow, QuestSetBuilderWorkflow,
-    ReaderMonographWorkflow,
+    BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow, OsmIngestWorkflow,
+    QuestSetBuilderWorkflow, ReaderMonographWorkflow,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -47,7 +47,7 @@ async def main():
     worker = Worker(
         client,
         task_queue=DISPATCHER_TASK_QUEUE,
-        workflows=[BookDispatcherWorkflow, PlantCleanupWorkflow,
+        workflows=[BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow,
                    OsmIngestWorkflow, QuestSetBuilderWorkflow, ReaderMonographWorkflow],
         activities=[
             activities.maintain_pool_activity,
@@ -57,6 +57,7 @@ async def main():
             cleanup_activities.run_enrichment_activity,
             cleanup_activities.run_backfill_activity,
             cleanup_activities.run_rename_activity,
+            cleanup_activities.fill_latin_activity,
             quest_activities.osm_ingest_region_activity,
             quest_activities.build_place_sets_activity,
             monograph_activities.generate_monographs_activity,

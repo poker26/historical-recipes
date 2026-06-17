@@ -242,3 +242,121 @@ async def run_rename_activity() -> dict:
             f"UPDATE plants SET name = name_modern FROM t WHERE plants.id = t.id"))
         await db.commit()
     return {"phase": "rename", "renamed": res.rowcount}
+
+
+# ------------------------------------------------------------------ fill latin
+# Resolve name_latin for cards with a CLEAN Russian name but NULL latin (40% of the
+# herbarium → invisible to the latin-keyed dedup). qwen3-235b TRANSLATES the russian
+# binomial → latin binomial (джунгарский→soongaricum); GBIF verifies (retry) with a
+# local-DB genus fallback. Sets ONLY name_latin (keeps the Russian name) + unsync.
+_FILL_CHECK = "identity.fill_latin"
+_FILL_SYS = (
+    "Ты ботаник-систематик. Дано ЧИСТОЕ русское название растения (+ опц. семейство/"
+    "описание/химия). Русское название обычно содержит И РОД, И ВИДОВОЙ ЭПИТЕТ — "
+    "переведи его в ПРИНЯТЫЙ научный БИНОМ: «Аконит джунгарский»→Aconitum soongaricum, "
+    "«Аконит байкальский»→Aconitum baicalense, «Борец Кузнецова»→Aconitum kusnezoffii. "
+    "Семейство/описание/химия — для снятия ОМОНИМИИ. ВЕРНИ ВИД, когда эпитет определим "
+    "(это перевод, не угадывание); только если видовой эпитет реально неоднозначен — "
+    "верни один РОД (confidence ≤ 60). UNKNOWN, если и род ненадёжен. Строго JSON: "
+    "{\"latin\":\"Genus species\"|\"Genus\"|\"UNKNOWN\",\"confidence\":0-100,\"reason\":\"кратко\"}."
+)
+_FILL_BASE = (r"name_latin IS NULL AND name ~ '[А-Яа-яЁё]' AND name !~ '[A-Za-z0-9]' "
+              r"AND array_length(regexp_split_to_array(btrim(name),'\s+'),1) >= 2")
+
+
+async def _gbif_retry(client, sci, tries=3):
+    for k in range(tries):
+        g = await _resolve_one(client, sci)
+        if g and g.get("match_type"):
+            return g
+        await asyncio.sleep(1.2 * (k + 1))
+    return None
+
+
+async def _db_has_genus(genus):
+    async with async_session() as db:
+        n = (await db.execute(text(
+            "SELECT count(*) FROM plants WHERE name_latin ILIKE :g AND name_latin ~ '^[A-Z][a-z]+ [a-z]+'"),
+            {"g": genus + " %"})).scalar()
+    return (n or 0) >= 1
+
+
+async def _fill_decide(client, name, family, kingdom, desc, comps, acts):
+    payload = json.dumps({"name": name, "family": family, "description": (desc or "")[:300],
+                          "compounds": (comps or "")[:200], "actions": (acts or "")[:200]}, ensure_ascii=False)
+    try:
+        llm = await chat_completion_json(
+            [{"role": "system", "content": _FILL_SYS}, {"role": "user", "content": payload}],
+            task="plant_extraction", temperature=0.1, max_tokens=500)
+    except Exception:
+        return {"action": "error", "name": name}
+    sci = (llm.get("latin") or "").strip()
+    conf = llm.get("confidence") or 0
+    out = {"name": name, "proposed": sci, "conf": conf, "reason": llm.get("reason")}
+    if not sci or sci.upper() == "UNKNOWN":
+        out["action"] = "review"
+        return out
+    is_bino = len(sci.split()) >= 2
+    genus = sci.split()[0]
+    g = await _gbif_retry(client, sci)
+    canonical = (g or {}).get("canonical")
+    gmatch = bool(g and (g.get("match_type") or "").upper() in ("EXACT", "FUZZY"))
+    kok = _king_ok(kingdom, (g or {}).get("kingdom"))
+    out["gbif"] = canonical
+    if is_bino and gmatch and (g.get("confidence") or 0) >= 85 and kok and conf >= 70:
+        out["action"], out["latin"] = "apply_species", canonical
+        return out
+    gg = g if not is_bino else await _gbif_retry(client, genus)
+    if gg and (gg.get("match_type") or "").upper() in ("EXACT", "FUZZY") and _king_ok(kingdom, gg.get("kingdom")):
+        out["action"], out["latin"] = "apply_genus", (gg.get("canonical") or genus)
+    elif conf >= 50 and await _db_has_genus(genus):
+        out["action"], out["latin"] = "apply_genus", genus
+    else:
+        out["action"] = "review"
+    return out
+
+
+@activity.defn
+async def fill_latin_activity() -> dict:
+    """Durable, idempotent NULL-latin fill. Loops batches of clean-Russian-name NULL-
+    latin cards, heartbeating per card so a slow LLM/GBIF batch can't blow the timeout;
+    resumes on worker restart. EVERY card processed gets a finding (resolved on a fix,
+    open on review/error) and the todo excludes any card already holding a fill finding
+    → guaranteed termination (no infinite loop on review/error cards)."""
+    species = genus = review = err = 0
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            async with async_session() as db:
+                rows = (await db.execute(text(
+                    f"SELECT p.id, p.name, p.family, p.kingdom, p.description, "
+                    f"(SELECT string_agg(DISTINCT c.name, ', ') FROM plant_compounds pc JOIN compounds c ON c.id=pc.compound_id WHERE pc.plant_id=p.id), "
+                    f"(SELECT string_agg(DISTINCT u.action_raw, ', ') FROM plant_medicinal_uses u WHERE u.plant_id=p.id AND u.action_raw IS NOT NULL) "
+                    f"FROM plants p WHERE {_FILL_BASE} "
+                    f"AND p.id::text NOT IN (SELECT entity_id FROM data_quality_findings WHERE check_id=:c) "
+                    f"ORDER BY p.id LIMIT 100"), {"c": _FILL_CHECK})).all()
+            if not rows:
+                break
+            for pid, name, family, kingdom, desc, comps, acts in rows:
+                r = await _fill_decide(client, name, family, kingdom, desc, comps, acts)
+                act = r.get("action")
+                if act in ("apply_species", "apply_genus"):
+                    async with async_session() as db:
+                        await db.execute(text(
+                            "UPDATE plants SET name_latin=:l, inat_synced_at=NULL WHERE id=:i"),
+                            {"l": r["latin"], "i": pid})
+                        await db.commit()
+                    await _stage(pid, name, f"«{name}» → {r['latin']}", "fill_latin", r, _FILL_CHECK)
+                    # mark the finding resolved (fix applied)
+                    async with async_session() as db:
+                        await db.execute(text(
+                            "UPDATE data_quality_findings SET status='resolved' WHERE check_id=:c AND entity_id=:e"),
+                            {"c": _FILL_CHECK, "e": str(pid)})
+                        await db.commit()
+                    species += act == "apply_species"
+                    genus += act == "apply_genus"
+                else:
+                    await _stage(pid, name, f"«{name}»: латынь не определена ({act})", "review", r, _FILL_CHECK)
+                    review += act == "review"
+                    err += act == "error"
+                activity.heartbeat({"species": species, "genus": genus, "review": review, "err": err})
+    return {"phase": "fill_latin", "species": species, "genus": genus, "review": review, "err": err}

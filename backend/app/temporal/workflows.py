@@ -39,6 +39,7 @@ with workflow.unsafe.imports_passed_through():
         run_enrichment_activity,
         run_backfill_activity,
         run_rename_activity,
+        fill_latin_activity,
     )
     from app.temporal.quest_activities import (
         osm_ingest_region_activity,
@@ -480,6 +481,22 @@ class PlantCleanupWorkflow:
         out["rename"] = await workflow.execute_activity(
             run_rename_activity, start_to_close_timeout=_SHORT, retry_policy=_RETRY)
         workflow.logger.info(f"PlantCleanupWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class FillLatinWorkflow:
+    """Durable NULL-latin fill (identity foundation): resolve name_latin for clean-
+    Russian-name cards lacking it, so the latin-keyed dedup can see them. Single
+    resumable heartbeat activity (idempotent, skips cards already processed).
+    Singleton id 'fill-latin'."""
+
+    @workflow.run
+    async def run(self) -> dict:
+        out = await workflow.execute_activity(
+            fill_latin_activity, start_to_close_timeout=timedelta(hours=48),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"FillLatinWorkflow done: {out}")
         return out
 
 
