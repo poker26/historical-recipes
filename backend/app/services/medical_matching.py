@@ -43,6 +43,38 @@ _NUMERIC_ONLY_RE = re.compile(r"^[ivx\d\W]+$", re.IGNORECASE)
 _MAX_ATOM_WORDS = 6
 
 
+# ── non-target ACTION suppression (mirror of is_nontarget_compound_class) ──────
+# Route / form / application-site / meta labels the extractor mis-captured as a
+# "medicinal action" («лечебное», «наружное применение», «присыпка», «глазное»…).
+# They carry NO therapeutic-action meaning and bloat a plant's action list (the
+# Хмель 133→~12 case). Suppressed from the field-view ONLY (action_raw stays in the
+# DB — reversible, grounding-preserved; future labels of the same shape auto-catch).
+# Pattern matches the productive families («…применение», «лечебное…»); the set
+# pins the standalone words. Real actions with a locus («местное раздражающее
+# действие», «стимулирующее железы внутренней секреции», «вяжущее средство») are
+# NOT here — they keep an action head-word and must survive.
+_NONTARGET_ACTION_RE = re.compile(r"применени|^лечебн", re.IGNORECASE)
+_NONTARGET_ACTION_SET = frozenset({
+    "наружное", "наружно", "наружное средство", "внутрь", "внутреннее",
+    "местное", "местно", "народное средство",
+    "глазное", "гинекологическое", "дерматологическое", "зубное",
+    "ингаляционное", "жевательное", "заменитель",
+    "присыпка", "припарка", "примочки", "прикладывание", "окуривание", "притирка",
+    "использовалось", "для полосканий", "для получения масла", "вдувают в ноздри",
+    "принимают внутрь", "используется при хрипоте", "народные представления",
+    "способность к кумуляции",
+})
+
+
+def is_nontarget_action(name: str | None) -> bool:
+    """True for route / form / site / meta labels that are NOT a therapeutic action
+    — suppressed from a plant's displayed medicinal actions (NOT deleted)."""
+    if not name:
+        return False
+    n = name.strip().lower()
+    return n in _NONTARGET_ACTION_SET or bool(_NONTARGET_ACTION_RE.search(n))
+
+
 def _norm(s: str | None) -> str:
     return " ".join(_WORD_RE.findall((s or "").lower()))
 

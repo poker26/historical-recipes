@@ -29,6 +29,7 @@ from app.models.reader_monograph import PlantReaderMonograph
 from app.services.biotope import BIOTOPE_GROUP
 from app.services.plant_matching import relink_recipe_ingredients, merge_plants_by_latin_key
 from app.services.compound_matching import is_nontarget_compound_class
+from app.services.medical_matching import is_nontarget_action
 from app.services.qdrant import delete_points
 from app.services.inaturalist import enrich_plants_inat, find_observations
 
@@ -477,6 +478,9 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
             row_actions = [(u.action.name.strip(), str(u.action_id) if u.action_id else None)]
         else:
             row_actions = [(a, None) for a in _split_actions(None, u.action_raw)]
+        # Drop route/form/meta non-actions («лечебное», «наружное применение»…) —
+        # they bloat the action list; the indication (if any) stays in the DB.
+        row_actions = [(a, aid) for (a, aid) in row_actions if not is_nontarget_action(a)]
         # clean ICD/MKB codes out of the indications once per row (shared by every
         # action split out of this row)
         row_indications = [
