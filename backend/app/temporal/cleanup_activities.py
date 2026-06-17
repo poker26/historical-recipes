@@ -26,11 +26,24 @@ from app.services.data_quality.taxonomy import _resolve_one
 @activity.defn
 async def run_enrichment_activity() -> dict:
     """Loop enrich_plants_inat until no unsynced latin cards remain. Idempotent
-    (marks each plant synced; re-run only touches the unsynced floor)."""
+    (marks each plant synced; re-run only touches the unsynced floor).
+
+    Heartbeats PER PLANT (progress callback) so a 429-heavy batch can't blow the
+    15-min activity heartbeat-timeout and trigger the retry-storm that hammers iNat
+    and starves the live walk (the 2026-06-15 jam). Paced 3s/req + 150/batch keeps
+    each DB session under the 10-min idle-in-tx timeout and leaves iNat headroom for
+    the consumer walk; a pure-throttle batch (iNat pushing back) BREAKS instead of
+    re-hammering the same unsynced floor."""
     resolved = names = photos = batches = 0
+
+    def _hb(done, total, name):
+        activity.heartbeat({"batch": batches + 1, "plant": done, "of": total,
+                            "name": name, "resolved": resolved, "names": names})
+
     while True:
         async with async_session() as db:
-            r = await enrich_plants_inat(db, dry_run=False, limit=300)
+            r = await enrich_plants_inat(db, dry_run=False, limit=150,
+                                         pace_seconds=3.0, progress=_hb)
         batches += 1
         resolved += r.get("taxa_resolved", 0)
         names += r.get("names_set", 0)
@@ -38,6 +51,11 @@ async def run_enrichment_activity() -> dict:
         activity.heartbeat({"batch": batches, "remaining": r.get("remaining"),
                             "resolved": resolved, "names": names, "photos": photos})
         if not r.get("processed"):
+            break
+        # iNat pushing back (whole batch throttled, nothing resolved/no-matched) →
+        # stop rather than spin on the same floor and starve the live walk.
+        if (r.get("taxa_resolved", 0) == 0 and r.get("no_match", 0) == 0
+                and r.get("throttled", 0) > 0):
             break
     return {"phase": "enrichment", "batches": batches, "resolved": resolved,
             "names": names, "photos": photos}
@@ -153,6 +171,10 @@ async def run_backfill_activity() -> dict:
                         task="plant_extraction", temperature=0.1, max_tokens=900)
                 except Exception:
                     llm = {}
+                # Heartbeat per plant (after the slow LLM call) so a batch of slow
+                # LLM/iNat calls can't exceed the 15-min heartbeat-timeout.
+                activity.heartbeat({"processed": processed, "auto": auto,
+                                    "review": review, "nonplant": nonplant})
                 is_plant = llm.get("is_plant", True)
                 llm_sci = (llm.get("latin") or "").strip()
                 if llm_sci.upper() == "UNKNOWN":
