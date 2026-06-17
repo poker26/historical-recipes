@@ -51,6 +51,7 @@ class Plant(Base):
     compounds: Mapped[list["PlantCompound"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     harvests: Mapped[list["PlantHarvest"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     habitats: Mapped[list["PlantHabitat"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
+    biotopes: Mapped[list["PlantBiotope"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     toxicities: Mapped[list["PlantToxicity"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     culinary_uses: Mapped[list["PlantCulinaryUse"]] = relationship(back_populates="plant", cascade="all, delete-orphan")
     # Essential oils distilled FROM this plant (aromatherapy bridge). SET NULL on
@@ -274,6 +275,20 @@ class PlantHabitat(Base):
     source_book_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("books.id", ondelete="SET NULL"))
 
     plant: Mapped["Plant"] = relationship(back_populates="habitats")
+
+
+class PlantBiotope(Base):
+    """Canonical biotope tag (one of app.services.biotope.BIOTOPES) for a plant —
+    the normalized form of PlantHabitat.biotope free-text. ``biotope`` NULL marks a
+    plant processed by the canonicalizer that resolved to no biotope (idempotency)."""
+
+    __tablename__ = "plant_biotopes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
+    biotope: Mapped[str | None] = mapped_column(Text)
+
+    plant: Mapped["Plant"] = relationship(back_populates="biotopes")
 
 
 class PlantToxicity(Base):

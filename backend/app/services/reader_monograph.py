@@ -56,12 +56,17 @@ def distill(fv: dict, n_uses: int = N_USES, m_compounds: int = M_COMPOUNDS) -> d
         "uses": slim_uses, "compounds": slim_comps,
         "cautions": fv.get("cautions"), "harvest": fv.get("harvest"),
         "culinary": fv.get("culinary"), "sources": fv.get("sources") or [],
+        # canonical biotope keys → LLM writes habitat.summary prose (facing/hashed:
+        # a biotope change should refresh the summary).
+        "habitat_biotopes": [b["key"] for b in
+                             ((fv.get("habitat") or {}).get("biotopes") or [])],
         # ── deterministic skeleton (NOT LLM-touched, NOT hashed) ──
         "_photo": {k: fv.get(k) for k in
                    ("photo_url", "photo_attribution", "photo_license", "photo_source")},
         "_family_latin": fv.get("family_latin"), "_kingdom": fv.get("kingdom"),
         "_recipes": fv.get("recipes") or [], "_recipes_total": fv.get("recipes_total") or 0,
         "_uses_total": len(uses_all), "_compounds_total": len(comps_all),
+        "_habitat": fv.get("habitat"),     # structured chips + regions (carried verbatim)
     }
 
 
@@ -95,6 +100,8 @@ _SYS = (
     "одурманивающими шишками хмеля), description, по каждому действию summary, по "
     "каждой группе состава note, lead_fact (живой факт ТОЛЬКО из реальной цитаты "
     "источника), cautions.text.\n"
+    "• habitat.summary — короткая проза «где растёт» из habitat_biotopes (НЕ добавляй "
+    "биотопы не из списка; пусто → null).\n"
     "• Выбери по ОДНОЙ лучшей цитате на действие (с дозировкой/способом, если есть).\n"
     "ЖЁСТКО (анти-галлюцинация):\n"
     "• НЕ вводи НИ ОДНОГО факта, которого нет во входе. Перефразирование/реорганизация "
@@ -111,6 +118,7 @@ _SYS = (
     "\"quote\": {\"text\": str, \"source\": str}|null, \"source_count\": int}], "
     "\"compounds\": [{\"group\": str, \"note\": str}], "
     "\"cautions\": {\"text\": str, \"toxic_parts\": [str]}|null, "
+    "\"habitat\": {\"summary\": str|null}, "
     "\"parts_used\": [str], \"culinary\": [{\"use\": str, \"part\": str|null}]|null}"
 )
 
@@ -161,6 +169,14 @@ def assemble(distilled: dict, polished: dict, gen_hash: str, reviewed: bool = Fa
     h = distilled.get("harvest")
     if h and any(h.values()):
         out["harvest"] = h
+    hab = distilled.get("_habitat")
+    if isinstance(hab, dict) and (hab.get("biotopes") or hab.get("regions")):
+        hsum = (polished.get("habitat") or {}).get("summary") if isinstance(polished.get("habitat"), dict) else None
+        out["habitat"] = {
+            "biotopes": hab.get("biotopes") or [],
+            "regions": hab.get("regions") or [],
+            "summary": (hsum or "").strip() or None,
+        }
     return {k: v for k, v in out.items() if v is not None}
 
 

@@ -18,6 +18,7 @@ from app.models.plant import (
     PlantCompound,
     PlantHarvest,
     PlantHabitat,
+    PlantBiotope,
     PlantToxicity,
     PlantCulinaryUse,
     PlantBookMention,
@@ -25,6 +26,7 @@ from app.models.plant import (
     EssentialOilUse,
 )
 from app.models.reader_monograph import PlantReaderMonograph
+from app.services.biotope import BIOTOPE_GROUP
 from app.services.plant_matching import relink_recipe_ingredients, merge_plants_by_latin_key
 from app.services.compound_matching import is_nontarget_compound_class
 from app.services.qdrant import delete_points
@@ -146,6 +148,7 @@ async def list_plants(
     edibility: str | None = None,
     edible: bool | None = None,
     kingdom: str | None = None,
+    biotope: str | None = None,
     limit: int | None = None,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
@@ -266,6 +269,9 @@ async def list_plants(
             PlantCulinaryUse.edibility.in_(["съедобно", "условно-съедобно"])
         )
         stmt = stmt.where(edible_pred if edible else ~edible_pred)
+    if biotope:
+        # Reverse browse: plants tagged with a canonical biotope ("что растёт на лугу").
+        stmt = stmt.where(Plant.biotopes.any(PlantBiotope.biotope == biotope.strip()))
 
     # Total matching rows (before pagination) → header for the herbarium UI.
     total = (await db.execute(
@@ -278,6 +284,19 @@ async def list_plants(
 
     rows = (await db.execute(stmt)).all()
     return [_plant_summary(p, n) for p, n in rows]
+
+
+@router.get("/biotopes")
+async def biotope_vocabulary(db: AsyncSession = Depends(get_db)):
+    """The controlled biotope vocabulary (chips for the «где искать» filter) +
+    a live plant count per biotope. Use ``GET /api/plants?biotope=<key>`` to list."""
+    from app.services.biotope import BIOTOPES, BIOTOPE_GROUP
+    counts = dict((await db.execute(
+        select(PlantBiotope.biotope, func.count(func.distinct(PlantBiotope.plant_id)))
+        .where(PlantBiotope.biotope.isnot(None)).group_by(PlantBiotope.biotope))).all())
+    return {"biotopes": [
+        {"key": b, "group": BIOTOPE_GROUP.get(b, "прочее"), "count": counts.get(b, 0)}
+        for b in BIOTOPES]}
 
 
 @router.get("/facets")
@@ -639,6 +658,18 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
     if not any(harvest.values()):
         harvest = None
 
+    # ── habitat: canonical biotope chips (grouped) + geographic regions ──────
+    # biotopes = normalized PlantBiotope tags (deterministic — served NOW, no
+    # Layer-2 gate; the prose `summary` is added only in the reviewed monograph).
+    _biotopes = _distinct([b.biotope for b in plant.biotopes if b.biotope])
+    _regions = _distinct([h.region for h in plant.habitats])
+    habitat = None
+    if _biotopes or _regions:
+        habitat = {
+            "biotopes": [{"key": b, "group": BIOTOPE_GROUP.get(b, "прочее")} for b in _biotopes],
+            "regions": _regions,
+        }
+
     # ── culinary: compacted edible use ──────────────────────────────────────
     culinary = [
         {
@@ -699,6 +730,7 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
         "cautions": cautions,
         "compound_groups": compound_groups,
         "harvest": harvest,
+        "habitat": habitat,
         "culinary": culinary,
         "recipes": recipe_refs,
         "recipes_total": recipes_total,
@@ -774,6 +806,7 @@ async def get_plant(
         selectinload(Plant.compounds),
         selectinload(Plant.harvests),
         selectinload(Plant.habitats),
+        selectinload(Plant.biotopes),
         selectinload(Plant.toxicities),
         selectinload(Plant.culinary_uses),
         selectinload(Plant.mentions),
