@@ -442,15 +442,19 @@ async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20,
         pat = f"{place_id}:%"
     elif scope == "season" and window:
         pat = f"%:{window}:{year or date.today().year}"
-    rows = (await db.execute(text("""
+    # Build the filter conditionally — never bind a NULL param (asyncpg can't infer
+    # the type of `:pat` in `:pat IS NULL` → "could not determine data type"). The
+    # global path stays byte-identical to the original query (no WHERE, no params).
+    where = "WHERE badge_id LIKE :pat" if pat is not None else ""
+    rows = (await db.execute(text(f"""
         SELECT device_key, SUM(maxpts) AS score, COUNT(*) AS badges, MIN(first_at) AS first_at
         FROM (SELECT device_key, badge_id,
                      MAX(COALESCE(points, 0)) AS maxpts, MIN(issued_at) AS first_at
               FROM quest_issued_badges
-              WHERE (:pat IS NULL OR badge_id LIKE :pat)
+              {where}
               GROUP BY device_key, badge_id) z
         GROUP BY device_key
-    """), {"pat": pat})).all()
+    """), ({"pat": pat} if pat is not None else {}))).all()
     ranked = sorted(rows, key=lambda r: (-r.score, r.first_at))
 
     nicks: dict = {}
