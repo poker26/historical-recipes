@@ -60,7 +60,14 @@ def distill(fv: dict, n_uses: int = N_USES, m_compounds: int = M_COMPOUNDS) -> d
         # a biotope change should refresh the summary).
         "habitat_biotopes": [b["key"] for b in
                              ((fv.get("habitat") or {}).get("biotopes") or [])],
+        # forager-safety: level + twin are HASHED (a level/twin change must refresh
+        # the verdict) and shown to the LLM so the verdict prose matches — but the
+        # authoritative structured block is carried verbatim below (_safety), never
+        # reworded by the LLM (safety-critical).
+        "safety_level": (fv.get("safety") or {}).get("level"),
+        "deadly_twin": (fv.get("safety") or {}).get("deadly_twin"),
         # ── deterministic skeleton (NOT LLM-touched, NOT hashed) ──
+        "_safety": fv.get("safety"),
         "_photo": {k: fv.get(k) for k in
                    ("photo_url", "photo_attribution", "photo_license", "photo_source")},
         "_family_latin": fv.get("family_latin"), "_kingdom": fv.get("kingdom"),
@@ -98,6 +105,11 @@ _SYS = (
     "• Напиши человеческим языком: verdict (одна честная фраза-вердикт; если роль "
     "edible И toxic — объясни нюанс в одной фразе, как со съедобными побегами и "
     "одурманивающими шишками хмеля), description, по каждому действию summary, по "
+    "• БЕЗОПАСНОСТЬ ЕДОКА: тебе дан safety_level (0=нет данных, 1=съедобно, "
+    "2=условно съедобно, 3=опасно/дозозависимо — не еда, 4=СМЕРТЕЛЬНО ядовито) и "
+    "deadly_twin. Вердикт ОБЯЗАН соответствовать уровню и НЕ смягчать опасность; "
+    "при level 3-4 прямо предупреди, что есть нельзя; при deadly_twin обязательно "
+    "упомяни «опасный двойник — {twin}, не перепутай». Сам уровень НЕ меняй.\n"
     "каждой группе состава note, lead_fact (живой факт ТОЛЬКО из реальной цитаты "
     "источника), cautions.text.\n"
     "• habitat.summary — короткая проза «где растёт» из habitat_biotopes (НЕ добавляй "
@@ -147,6 +159,9 @@ def assemble(distilled: dict, polished: dict, gen_hash: str, reviewed: bool = Fa
         "verdict": (polished.get("verdict") or "").strip() or None,
         "roles": polished.get("roles") or distilled.get("roles") or [],
         "is_toxic": bool(polished.get("is_toxic", distilled.get("is_toxic"))),
+        # authoritative forager-safety verdict — carried VERBATIM from our classifier,
+        # the LLM never rewrites the level/twin (shown first in the reader card).
+        "safety": distilled.get("_safety"),
         "description": (polished.get("description") or "").strip() or None,
         "uses": [u for u in (polished.get("uses") or []) if u.get("action")],
         "compounds": [c for c in (polished.get("compounds") or []) if c.get("group")],

@@ -42,6 +42,10 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
                     # shape (members/aggregated) that the species distiller can't read;
                     # вещество/животное are non-plant materia medica, not monographed.
                     "AND rank = 'species' AND kingdom IN ('растение','гриб') "
+                    # safety-gated: never ship a reader monograph without a forager-
+                    # safety verdict (level + deadly twin shown first). NULL = not yet
+                    # classified → wait for EdibleSafetyWorkflow.
+                    "AND safety_level IS NOT NULL "
                     "AND id::text > :c ORDER BY id LIMIT :n"), {"c": cursor, "n": batch})).all()
             if not rows:
                 break
