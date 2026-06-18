@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.device import Device
 from app.services.quests import auto_handle, set_activity_public
+from app.services.profanity import is_offensive
 
 router = APIRouter()
 
@@ -66,7 +67,10 @@ async def set_nickname(device_key: uuid.UUID, body: NicknameUpdate,
     d = await db.get(Device, device_key)
     if not d:
         raise HTTPException(status_code=404, detail="device not registered")
-    d.nickname = (body.nickname or "").strip() or None
+    nick = (body.nickname or "").strip() or None
+    if nick and is_offensive(nick):
+        raise HTTPException(status_code=400, detail="Недопустимое имя — выбери другое.")
+    d.nickname = nick
     await db.commit()
     return {"status": "ok", "nickname": d.nickname}
 

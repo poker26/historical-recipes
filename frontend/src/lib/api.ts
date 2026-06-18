@@ -617,7 +617,24 @@ export const api = {
     apiFetch<{ id: string; status: string; applied: string }>(`/api/quality/findings/${id}/apply`, { method: "POST" }),
   qualityDeleteEntity: (id: string) =>
     apiFetch<{ deleted: Record<string, string>; finding: string }>(`/api/quality/findings/${id}/delete-entity`, { method: "POST" }),
+
+  // Nickname moderation (admin-only; /api/moderation is not in the public whitelist)
+  moderationNicknames: (onlyCustom = true, limit = 200) =>
+    apiFetch<{ devices: ModDevice[] }>(`/api/moderation/nicknames?only_custom=${onlyCustom}&limit=${limit}`),
+  moderationBlock: (target: string, blocked: boolean) =>
+    apiFetch<{ status: string; device_key: string; blocked: boolean }>(`/api/moderation/block`, {
+      method: "POST",
+      body: JSON.stringify({ target, blocked }),
+    }),
 };
+
+export interface ModDevice {
+  device_key: string;
+  handle: string | null;
+  nickname: string | null;
+  blocked: boolean;
+  last_seen: string | null;
+}
 
 export interface QualitySummaryRow {
   check_id: string;
