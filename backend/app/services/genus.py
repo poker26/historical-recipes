@@ -27,24 +27,17 @@ from app.services.plant_matching import (
 _DROP_WORDS = {"растение", "растения", "растений", "растению", "растениях",
                "растениями", "трава", "травы", "трав"}
 
-# Adjective tails the curated _ADJ_SUFFIXES misses (bare colour/size/relational
-# forms: жёлтый, большой, полевой, колючий, жёлтая…). Used ONLY for genus-head
-# detection — dropping an adjective-looking token can only make a genus key cleaner.
-_ADJ_TAIL = ("ый", "ий", "ой", "ая", "яя", "ое", "ее", "ые", "ие",
-             "ому", "его", "ого", "ыми", "ими", "ую", "юю", "ым", "им", "ом", "ем")
-
-
-def _is_adj2(tok: str) -> bool:
-    return _is_adjective(tok) or (len(tok) >= 5 and tok.endswith(_ADJ_TAIL))
-
-
 def genus_noun_keys(name: str | None) -> set[str]:
     """Hardened genus-noun stems of a name (adjectives + «растение» + part-words
-    dropped). The token a bare generic mention («вишня») would be reduced to."""
+    dropped). The token a bare generic mention («вишня») would be reduced to.
+
+    Adjective detection is the (now broadened) ``_is_adjective`` from plant_matching
+    — single source of truth, so the genus build and the matcher agree on what a
+    noun head is (notably both keep «зверобой», whose «-ой» must NOT read as an adj)."""
     out: set[str] = set()
     for tok in normalize(name).split():
         if (not tok or tok in _PART_WORDS or tok in _STOPWORDS or tok in _DROP_WORDS
-                or tok.isdigit() or _is_adj2(tok)):
+                or tok.isdigit() or _is_adjective(tok)):
             continue
         st = _stem(tok)
         if len(st) >= _MIN_KEY_TOKEN and not st.isdigit():
@@ -108,7 +101,7 @@ def _surface_noun(name: str | None, token: str) -> str | None:
     """The surface (un-stemmed) noun word in `name` whose stem == token, so the
     genus row can show «Вишня» (nominative) rather than the stem «вишн»."""
     for w in normalize(name).split():
-        if w in _PART_WORDS or w in _STOPWORDS or w in _DROP_WORDS or _is_adj2(w):
+        if w in _PART_WORDS or w in _STOPWORDS or w in _DROP_WORDS or _is_adjective(w):
             continue
         if _stem(w) == token:
             return w
@@ -132,7 +125,7 @@ def _is_bare_genus(name: str | None, token: str) -> bool:
     spawning a duplicate (e.g. an existing «Полынь»/«Борец»/«Вишня» card)."""
     sig = [w for w in normalize(name).split()
            if w not in _PART_WORDS and w not in _STOPWORDS and w not in _DROP_WORDS
-           and not _is_adj2(w) and not w.isdigit() and len(_stem(w)) >= _MIN_KEY_TOKEN]
+           and not _is_adjective(w) and not w.isdigit() and len(_stem(w)) >= _MIN_KEY_TOKEN]
     return len(sig) == 1 and _stem(sig[0]) == token
 
 

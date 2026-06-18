@@ -151,10 +151,20 @@ _ADJ_SUFFIXES = (
     "ова", "ева", "ина", "ына", "ьего", "ьих",
 )
 
+# Broad adjectival tails the curated list above misses — bare colour/size/plural
+# forms (жёлт-ый, ядовит-ые, малинов-ые). Without these, a plural epithet leaks as
+# a fake noun-key: «Малиновые ядовитые грибы» seeded "малиновы", which then captured
+# «малиновый сок» (raspberry juice → a TOXIC bolete). NB: bare "-ой" is DELIBERATELY
+# absent — it would eat real noun heads like «зверобой», «иван-да-марья» genitives.
+_ADJ_BROAD = (
+    "ые", "ие", "ых", "их", "ыми", "ими", "ый", "ий", "ое", "ее", "ая", "яя",
+    "ую", "юю", "ого", "его", "ому", "ему",
+)
+
 
 def _is_adjective(tok: str) -> bool:
     """Heuristic: does a (normalized, pre-stem) token look like an adjective?"""
-    return len(tok) >= 5 and tok.endswith(_ADJ_SUFFIXES)
+    return len(tok) >= 5 and (tok.endswith(_ADJ_SUFFIXES) or tok.endswith(_ADJ_BROAD))
 
 
 def normalize(s: str | None) -> str:
@@ -426,30 +436,40 @@ class PlantMatcher:
     def __init__(self, plants):
         self._exact: dict[str, uuid.UUID] = {}
         self._noun_key: dict[str, uuid.UUID] = {}
-        for p in plants:
-            # Tier 1 keys, scientific identity: primary + latin name as full
-            # strings (a recipe is free to name a plant by either). A bare
-            # non-plant substance as a primary name (a junk «Соль»/«Мёд» card)
-            # is never indexed — it isn't a species.
+        self._genus_by_token: dict[str, uuid.UUID] = {}
+        species = [p for p in plants if (getattr(p, "rank", None) or "species") != "genus"]
+        genera = [p for p in plants if (getattr(p, "rank", None) or "species") == "genus"]
+
+        # token -> set of species ids, so we can keep ONLY unambiguous (single-
+        # species) noun keys. A noun shared by ≥2 species (вишн, валериан) is
+        # generic: it must resolve to the GENUS row if one exists, else to nothing
+        # — never an arbitrary species. That is the genus-tier contract.
+        tok2sp: dict[str, set[uuid.UUID]] = {}
+        for p in species:
             for variant in (p.name, p.name_latin):
                 nv = normalize(variant)
                 if nv and nv not in _NON_PLANT_SUBSTANCES:
                     self._exact.setdefault(nv, p.id)
-            # Tier 1 keys, folk names: kept as full strings, but a single bare
-            # common-ingredient noun (гвоздика, мелисса, …) or any universal
-            # non-plant substance (соли, вода, сахар — the recurring landmine)
-            # is dropped so it can't capture the real spice/substance in recipes.
             for variant in (p.names_historical or []):
                 nv = normalize(variant)
                 if not nv or nv in _NON_PLANT_SUBSTANCES or (" " not in nv and nv in _AMBIGUOUS_FOLK):
                     continue
                 self._exact.setdefault(nv, p.id)
-            # Tier 2 keys: noun tokens of the PRIMARY name only (folk names
-            # excluded — see class docstring). Substance stems (сол, вод, …) are
-            # never seeded, so a card like «Бабья соль» can't capture «соль».
             for key in _noun_keys(p.name):
                 if key not in _NON_PLANT_STEMS:
-                    self._noun_key.setdefault(key, p.id)
+                    tok2sp.setdefault(key, set()).add(p.id)
+        self._noun_key = {tok: next(iter(ids)) for tok, ids in tok2sp.items() if len(ids) == 1}
+
+        # Genus rows (RFC-reference-granularity): a bare/generic mention of the
+        # token resolves to the HUB genus, overriding any single species that may
+        # share the bare exact name.
+        for g in genera:
+            nv = normalize(g.name)
+            if nv:
+                self._exact[nv] = g.id
+            for key in _noun_keys(g.name):
+                if key not in _NON_PLANT_STEMS:
+                    self._genus_by_token[key] = g.id
 
         # Curated knowledge: fold hand-maintained aliases into both tiers. These
         # are vetted, distinctive names (e.g. "кишнец"→Кориандр), so unlike
@@ -493,19 +513,22 @@ class PlantMatcher:
             nn = normalize(n)
             if nn and nn in self._exact:
                 return self._exact[nn]
-        # Tier 2: a distinctive plant noun token is present in the ingredient.
+        # Tier 2: distinctive noun tokens, longest (most specific) first. A genus
+        # token wins (hub for generic mentions); an unambiguous single-species
+        # token resolves to that species; an ambiguous bare token with NO genus
+        # row resolves to nothing — never an arbitrary species pick.
         ingredient_tokens: set[str] = set()
         for n in clean:
             ingredient_tokens |= _stem_tokens(n)
         ingredient_tokens -= _NON_PLANT_STEMS
-        # Prefer the longest matching token (most specific) for determinism.
-        best: uuid.UUID | None = None
-        best_len = 0
-        for tok in ingredient_tokens:
-            pid = self._noun_key.get(tok)
-            if pid is not None and len(tok) > best_len:
-                best, best_len = pid, len(tok)
-        return best
+        for tok in sorted(ingredient_tokens, key=len, reverse=True):
+            g = self._genus_by_token.get(tok)
+            if g is not None:
+                return g
+            s = self._noun_key.get(tok)
+            if s is not None:
+                return s
+        return None
 
 
 async def relink_recipe_ingredients(
