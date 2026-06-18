@@ -203,6 +203,12 @@ async def compute_species_set(db: AsyncSession, place_id: str, label: str) -> di
         meta.append({"key": k, "latin": t.get("name"),
                      "name": t.get("preferred_common_name"),
                      "photo": (t.get("default_photo") or {}).get("medium_url")})
+    # CORPUS-ONLY: keep only species we have a monograph for, so every badge species
+    # rewards the finder with info (a species we lack gives no extra knowledge). obs_total
+    # (density signal) stays over ALL recognizable species; the badge SET is corpus-bridged.
+    plant_map = await resolve_latin_to_plants(db, sset)
+    sset = [k for k in sset if plant_map.get(k)]
+    meta = [m for m in meta if plant_map.get(m["key"])]
     if obs_total < _MIN_OBS or len(sset) < 5:
         return {"place": name, "window": label, "skipped": "low_density", "obs_total": obs_total, "species": len(sset)}
     target = max(5, min(15, round(0.6 * len(sset))))
