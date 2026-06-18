@@ -37,8 +37,12 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
         while True:
             async with async_session() as db:
                 rows = (await db.execute(text(
-                    "SELECT id::text FROM plants WHERE name_latin IS NOT NULL AND id::text > :c "
-                    "ORDER BY id LIMIT :n"), {"c": cursor, "n": batch})).all()
+                    "SELECT id::text FROM plants WHERE name_latin IS NOT NULL "
+                    # species only: a genus row is a HUB with a different field-view
+                    # shape (members/aggregated) that the species distiller can't read;
+                    # вещество/животное are non-plant materia medica, not monographed.
+                    "AND rank = 'species' AND kingdom IN ('растение','гриб') "
+                    "AND id::text > :c ORDER BY id LIMIT :n"), {"c": cursor, "n": batch})).all()
             if not rows:
                 break
             for (pid,) in rows:
