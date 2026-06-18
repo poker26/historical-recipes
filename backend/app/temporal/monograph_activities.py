@@ -8,6 +8,7 @@ hash is unchanged skip (idempotent §7 hash-gate) → LLM polish → publish-gat
 Resumable (cursor + hash-skip), heartbeating. GATED: only run once Layer-1 data
 cleanup is complete — generating from dirty data = polishing garbage (RFC §10.5).
 """
+import asyncio
 import logging
 
 import httpx
@@ -33,6 +34,45 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
     hash-gate. Returns counts. Stores reviewed=false — publishing is a human step."""
     generated = skipped = blocked = errors = seen = 0
     cursor = "00000000-0000-0000-0000-000000000000"
+    sem = asyncio.Semaphore(6)   # concurrent 235b polish calls (was strictly sequential)
+
+    async def _one(pid: str, client: httpx.AsyncClient) -> None:
+        nonlocal generated, skipped, blocked, errors
+        async with sem:
+            try:
+                r = await client.get(f"{_BACKEND}/api/plants/{pid}?view=field&fresh=1")
+                r.raise_for_status()
+                fv = r.json()
+                distilled = rm.distill(fv)
+                h = rm.input_hash(distilled)
+                async with async_session() as db:
+                    existing = await db.get(PlantReaderMonograph, pid)
+                    if existing and existing.generated_from_hash == h:
+                        skipped += 1
+                        return
+                polished = await rm.polish(distilled)
+                mono = rm.assemble(distilled, polished, h, reviewed=False)
+                findings = rm.publish_gate(mono, distilled)
+                # The publish-gate IS the automated review: a P0-clean monograph
+                # auto-publishes (reviewed=True → served by ?view=field); a P0 holds
+                # it pending manual review (RFC §8 — "P0 doesn't reach users"). Hand-
+                # reviewing 18K is infeasible, so the gate must do the gating.
+                pub = not rm.has_p0(findings)
+                if not pub:
+                    blocked += 1
+                async with async_session() as db:
+                    await db.execute(pg_insert(PlantReaderMonograph).values(
+                        plant_id=pid, monograph=mono, generated_from_hash=h,
+                        model=rm.MODEL_TAG, reviewed=pub, gate_findings=findings,
+                    ).on_conflict_do_update(index_elements=["plant_id"], set_={
+                        "monograph": mono, "generated_from_hash": h, "model": rm.MODEL_TAG,
+                        "reviewed": pub, "gate_findings": findings, "updated_at": text("now()")}))
+                    await db.commit()
+                generated += 1
+            except Exception as ex:
+                errors += 1
+                logger.warning("monograph gen %s failed: %s", pid, str(ex)[:80])
+
     async with httpx.AsyncClient(timeout=120) as client:
         while True:
             async with async_session() as db:
@@ -49,43 +89,12 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
                     "AND id::text > :c ORDER BY id LIMIT :n"), {"c": cursor, "n": batch})).all()
             if not rows:
                 break
-            for (pid,) in rows:
-                cursor = pid
-                seen += 1
-                try:
-                    r = await client.get(f"{_BACKEND}/api/plants/{pid}?view=field&fresh=1")
-                    r.raise_for_status()
-                    fv = r.json()
-                    distilled = rm.distill(fv)
-                    h = rm.input_hash(distilled)
-                    async with async_session() as db:
-                        existing = await db.get(PlantReaderMonograph, pid)
-                        if existing and existing.generated_from_hash == h:
-                            skipped += 1
-                            continue
-                    polished = await rm.polish(distilled)
-                    mono = rm.assemble(distilled, polished, h, reviewed=False)
-                    findings = rm.publish_gate(mono, distilled)
-                    # The publish-gate IS the automated review: a P0-clean monograph
-                    # auto-publishes (reviewed=True → served by ?view=field); a P0 holds
-                    # it pending manual review (RFC §8 — "P0 doesn't reach users"). Hand-
-                    # reviewing 18K is infeasible, so the gate must do the gating.
-                    pub = not rm.has_p0(findings)
-                    if not pub:
-                        blocked += 1
-                    async with async_session() as db:
-                        await db.execute(pg_insert(PlantReaderMonograph).values(
-                            plant_id=pid, monograph=mono, generated_from_hash=h,
-                            model=rm.MODEL_TAG, reviewed=pub, gate_findings=findings,
-                        ).on_conflict_do_update(index_elements=["plant_id"], set_={
-                            "monograph": mono, "generated_from_hash": h, "model": rm.MODEL_TAG,
-                            "reviewed": pub, "gate_findings": findings, "updated_at": text("now()")}))
-                        await db.commit()
-                    generated += 1
-                except Exception as ex:
-                    errors += 1
-                    logger.warning("monograph gen %s failed: %s", pid, str(ex)[:80])
-                activity.heartbeat({"seen": seen, "generated": generated,
-                                    "skipped": skipped, "blocked": blocked, "errors": errors})
+            cursor = rows[-1][0]
+            seen += len(rows)
+            # process the batch concurrently (sem bounds in-flight LLM calls); the
+            # cursor advanced per-BATCH keeps a worker restart resumable.
+            await asyncio.gather(*[_one(pid, client) for (pid,) in rows])
+            activity.heartbeat({"seen": seen, "generated": generated,
+                                "skipped": skipped, "blocked": blocked, "errors": errors})
     return {"seen": seen, "generated": generated, "skipped": skipped,
             "blocked": blocked, "errors": errors}
