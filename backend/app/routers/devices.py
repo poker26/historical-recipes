@@ -51,8 +51,12 @@ async def register_device(device_key: uuid.UUID = Query(...), db: AsyncSession =
         set_={"last_seen": func.now(), "handle": func.coalesce(Device.handle, stmt.excluded.handle)})
     await db.execute(stmt)
     await db.commit()
-    # handle is the PUBLIC id the client uses for share links / profile URLs.
-    return {"status": "ok", "device_key": str(device_key), "handle": h}
+    d = await db.get(Device, device_key)
+    # handle = PUBLIC id for share links/profile URLs; activity_public seeds the
+    # client's privacy toggle.
+    return {"status": "ok", "device_key": str(device_key),
+            "handle": (d.handle if d else None) or h,
+            "activity_public": bool(d.activity_public) if d else True}
 
 
 @router.patch("/{device_key}/nickname")
