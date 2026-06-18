@@ -20,7 +20,7 @@ from temporalio import activity
 from app.database import async_session
 from app.services.inaturalist import enrich_plants_inat, INAT_BASE, _HEADERS
 from app.services.llm import chat_completion_json
-from app.services.data_quality.taxonomy import _resolve_one
+from app.services.data_quality.taxonomy import _resolve_one, GBIF_MATCH_URL
 
 # ------------------------------------------------------------------ enrichment
 
@@ -401,3 +401,104 @@ async def fill_latin_activity() -> dict:
                     err += act == "error"
                 activity.heartbeat({"species": species, "genus": genus, "review": review, "err": err})
     return {"phase": "fill_latin", "species": species, "genus": genus, "review": review, "err": err}
+
+
+# ------------------------------------------------------------------ identity conflict
+# name↔latin corruption: a card whose clean Russian name resolves (iNat) to a
+# DIFFERENT genus than its stored latin («Кирказон» / Aconitum vulparia). Distinguish
+# real corruption from a TAXONOMIC SYNONYM (Festuca↔Lolium) via the GBIF speciesKey:
+# same accepted species = reclassification, NOT corruption → skip.
+_CONFLICT_CHECK = "identity.conflict"
+
+
+def _genus_of(latin):
+    t = _LAT.findall(latin or "")
+    return t[0].lower() if t else None
+
+
+async def _gbif_full(client, sci, cache):
+    if not sci:
+        return None
+    if sci in cache:
+        return cache[sci]
+    out = None
+    try:
+        r = await client.get(GBIF_MATCH_URL, params={"name": sci})
+        d = r.json()
+        if d.get("matchType") and d.get("matchType") != "NONE":
+            out = {"speciesKey": d.get("speciesKey"),
+                   "canonical": d.get("canonicalName") or d.get("scientificName"),
+                   "kingdom": d.get("kingdom"), "match": d.get("matchType")}
+    except Exception:
+        out = None
+    cache[sci] = out
+    return out
+
+
+@activity.defn
+async def conflict_check_activity() -> dict:
+    """Durable name↔latin conflict fix. Cursor-resumable via heartbeat (last_id) so a
+    worker restart continues from where it left off; only ACTUAL conflicts get a
+    finding (agree/no-match/synonym leave none). gbif-confirmed corruption → fix the
+    latin (the Russian name is the grounded source); uncertain → review."""
+    info = activity.info()
+    last_id = ""
+    if info.heartbeat_details:
+        try:
+            last_id = info.heartbeat_details[0].get("last_id", "") or ""
+        except Exception:
+            last_id = ""
+    fixed = review = agree = nomatch = synonym = 0
+    gcache: dict = {}
+    async with httpx.AsyncClient(timeout=30) as client:
+        icache: dict = {}
+        while True:
+            async with async_session() as db:
+                rows = (await db.execute(text(
+                    "SELECT id, name, name_latin, kingdom FROM plants "
+                    "WHERE name ~ '[А-Яа-яЁё]' AND name_latin ~ '^[A-Za-z]+ [a-z]+' "
+                    "AND id::text > :cur "
+                    "AND id::text NOT IN (SELECT entity_id FROM data_quality_findings WHERE check_id=:c AND status='resolved') "
+                    "ORDER BY id::text LIMIT 100"), {"cur": last_id, "c": _CONFLICT_CHECK})).all()
+            if not rows:
+                break
+            for pid, name, latin, kingdom in rows:
+                inat = await _inat_by_ru(client, name, icache)
+                await asyncio.sleep(0.5)
+                sci = (inat or {}).get("sci")
+                last_id = str(pid)
+                if not sci or not _strong(name, (inat or {}).get("ru")):
+                    nomatch += 1
+                elif _genus_of(sci) == _genus_of(latin):
+                    agree += 1
+                else:
+                    ginat = await _gbif_full(client, sci, gcache)
+                    gstore = await _gbif_full(client, latin, gcache)
+                    ik, sk = (ginat or {}).get("speciesKey"), (gstore or {}).get("speciesKey")
+                    if ik and sk and ik == sk:
+                        synonym += 1
+                    else:
+                        ok = bool(ginat and (ginat.get("match") or "").upper() in ("EXACT", "FUZZY")
+                                  and _king_ok(kingdom, ginat.get("kingdom")))
+                        proposed = (ginat or {}).get("canonical") or sci
+                        ev = {"name": name, "stored": latin, "proposed": proposed, "gbif_ok": ok}
+                        if ok:
+                            async with async_session() as db:
+                                await db.execute(text(
+                                    "UPDATE plants SET name_latin=:l, inat_synced_at=NULL WHERE id=:i"),
+                                    {"l": proposed, "i": pid})
+                                await db.commit()
+                            await _stage(pid, name, f"«{name}»: {latin} → {proposed}", "fix_latin", ev, _CONFLICT_CHECK)
+                            async with async_session() as db:
+                                await db.execute(text(
+                                    "UPDATE data_quality_findings SET status='resolved' WHERE check_id=:c AND entity_id=:e"),
+                                    {"c": _CONFLICT_CHECK, "e": str(pid)})
+                                await db.commit()
+                            fixed += 1
+                        else:
+                            await _stage(pid, name, f"«{name}»: {latin} ? {proposed}", "review", ev, _CONFLICT_CHECK)
+                            review += 1
+                activity.heartbeat({"last_id": last_id, "fixed": fixed, "review": review,
+                                    "agree": agree, "nomatch": nomatch, "synonym": synonym})
+    return {"phase": "conflict", "fixed": fixed, "review": review,
+            "agree": agree, "nomatch": nomatch, "synonym": synonym}

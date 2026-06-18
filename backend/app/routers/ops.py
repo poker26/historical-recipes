@@ -12,6 +12,7 @@ router = APIRouter()
 # which has its own dashboard at /api/wizard/active).
 CLEANUP_TYPES = [
     "FillLatinWorkflow",
+    "IdentityConflictWorkflow",
     "BiotopeCanonWorkflow",
     "PlantCleanupWorkflow",
     "QuestSetBuilderWorkflow",

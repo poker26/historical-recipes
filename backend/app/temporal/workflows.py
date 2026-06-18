@@ -41,6 +41,7 @@ with workflow.unsafe.imports_passed_through():
         run_rename_activity,
         fill_latin_activity,
         biotope_canon_activity,
+        conflict_check_activity,
     )
     from app.temporal.quest_activities import (
         osm_ingest_region_activity,
@@ -498,6 +499,21 @@ class FillLatinWorkflow:
             fill_latin_activity, start_to_close_timeout=timedelta(hours=48),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"FillLatinWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class IdentityConflictWorkflow:
+    """Durable name↔latin conflict fix (identity foundation): correct cards whose
+    Russian name resolves to a different genus than the stored latin (corruption, not
+    a taxonomic synonym). Cursor-resumable heartbeat activity. Singleton 'identity-conflict'."""
+
+    @workflow.run
+    async def run(self) -> dict:
+        out = await workflow.execute_activity(
+            conflict_check_activity, start_to_close_timeout=timedelta(hours=48),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"IdentityConflictWorkflow done: {out}")
         return out
 
 
