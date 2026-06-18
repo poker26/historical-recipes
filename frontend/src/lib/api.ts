@@ -418,6 +418,18 @@ export interface ActiveWorkflow extends WizardWorkflow {
   domain?: string;
 }
 
+// A long-running cleanup/dispatcher workflow on the ops dashboard.
+export interface OpsWorkflow {
+  id: string;
+  type: string;
+  status: string;                       // RUNNING | FAILED | COMPLETED | …
+  start_time: string | null;
+  close_time: string | null;
+  progress?: Record<string, unknown> | null;   // latest heartbeat detail
+  attempt?: number | null;
+  error?: string | null;                // failure message when FAILED
+}
+
 // Canonical pipeline step order per domain (matches backend step_names_for_domain).
 export const PIPELINE_STEP_NAMES = [
   "convert", "classify", "extract", "cleanup", "translate",
@@ -580,6 +592,7 @@ export const api = {
   wizardWorkflow: (bookId: string) =>
     apiFetch<WizardWorkflow>(`/api/wizard/${bookId}/workflow`),
   activeWorkflows: () => apiFetch<ActiveWorkflow[]>("/api/wizard/active"),
+  opsWorkflows: () => apiFetch<{ workflows: OpsWorkflow[] }>("/api/ops/workflows"),
   wizardWorkflowCancel: (bookId: string) =>
     apiFetch<{ status: string }>(`/api/wizard/${bookId}/workflow/cancel`, { method: "POST" }),
 

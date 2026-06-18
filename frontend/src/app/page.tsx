@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { api, Book, ActiveWorkflow, stepNamesForDomain } from "@/lib/api";
+import { api, Book, ActiveWorkflow, OpsWorkflow, stepNamesForDomain } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
 function StepProgress({ steps, completed, current }: { steps: string[]; completed: string[]; current: string | null }) {
@@ -34,6 +34,7 @@ function StepProgress({ steps, completed, current }: { steps: string[]; complete
 export default function Dashboard() {
   const [books, setBooks] = useState<Book[]>([]);
   const [active, setActive] = useState<ActiveWorkflow[]>([]);
+  const [ops, setOps] = useState<OpsWorkflow[]>([]);
   const [loading, setLoading] = useState(true);
   const prevActiveIds = useRef<Set<string>>(new Set());
 
@@ -62,7 +63,16 @@ export default function Dashboard() {
 
     poll();
     const interval = setInterval(poll, 3000);
-    return () => clearInterval(interval);
+
+    // Long cleanup/dispatcher workflows (fill-latin, plant-cleanup, quest-sets…) —
+    // polled less often; surfaces RUNNING + recently-FAILED so a silent overnight
+    // failure is visible.
+    const pollOps = () =>
+      api.opsWorkflows().then((r) => setOps(r.workflows)).catch(console.error);
+    pollOps();
+    const opsInterval = setInterval(pollOps, 10000);
+
+    return () => { clearInterval(interval); clearInterval(opsInterval); };
   }, []);
 
   const stats = {
@@ -121,6 +131,47 @@ export default function Dashboard() {
                 {w.current_detail && (
                   <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 6 }}>
                     {w.current_detail}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {ops.length > 0 && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <h2 style={{ margin: 0 }}>Фоновые задачи (cleanup)</h2>
+            {ops.some((w) => w.status === "FAILED") && (
+              <span className="badge badge-red">{ops.filter((w) => w.status === "FAILED").length} FAILED</span>
+            )}
+          </div>
+          {ops.map((w, i) => {
+            const badge =
+              w.status === "RUNNING" ? "badge-blue" :
+              w.status === "FAILED" ? "badge-red" :
+              w.status === "COMPLETED" ? "badge-green" : "badge-gray";
+            const start = w.start_time ? new Date(w.start_time) : null;
+            const end = w.close_time ? new Date(w.close_time) : new Date();
+            const dur = start ? Math.round((end.getTime() - start.getTime()) / 60000) : null;
+            const prog = w.progress
+              ? Object.entries(w.progress).map(([k, v]) => `${k}=${v}`).join("  ")
+              : null;
+            return (
+              <div key={w.id + i} style={{ padding: "10px 0", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                  <span style={{ fontWeight: 600 }}>{w.type.replace("Workflow", "")}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {(w.attempt ?? 1) > 1 && <span className="badge badge-yellow">retry {w.attempt}</span>}
+                    <span className={`badge ${badge}`}>{w.status}</span>
+                    {dur != null && <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{dur}m</span>}
+                  </div>
+                </div>
+                {prog && <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 5 }}>{prog}</div>}
+                {w.status === "FAILED" && w.error && (
+                  <div style={{ color: "var(--red, #c0392b)", fontSize: 12, marginTop: 5, fontFamily: "monospace" }}>
+                    ⚠ {w.error}
                   </div>
                 )}
               </div>

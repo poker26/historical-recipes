@@ -8,6 +8,7 @@ Phases: enrichment (iNat modern+photo from latin) → latin backfill (clean-Russ
 latin-less species → iNat+LLM+GBIF) → enrichment again (for backfilled latins) →
 rename (garbage name → name_modern, collision-safe).
 """
+import asyncio
 import json
 import re
 import uuid
