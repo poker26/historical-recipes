@@ -326,6 +326,12 @@ async def biotope_canon_activity() -> dict:
     detached script that died on every dispatcher rebuild.)"""
     from app.services.biotope import canonicalize
     done = tagged = empty = 0
+    sem = asyncio.Semaphore(10)   # 10 concurrent LLM calls (was strictly sequential)
+
+    async def _canon(pid, bio):
+        async with sem:
+            return str(pid), await canonicalize(bio)
+
     while True:
         async with async_session() as db:
             rows = (await db.execute(text("""
@@ -333,23 +339,23 @@ async def biotope_canon_activity() -> dict:
                 FROM plant_habitats h
                 WHERE h.biotope IS NOT NULL AND length(h.biotope) > 3
                   AND h.plant_id NOT IN (SELECT plant_id FROM plant_biotopes)
-                GROUP BY h.plant_id LIMIT 100
+                GROUP BY h.plant_id LIMIT 200
             """))).all()
         if not rows:
             break
-        for pid, bio in rows:
-            tags = await canonicalize(bio)
+        results = await asyncio.gather(*[_canon(pid, bio) for pid, bio in rows])
+        for pid, tags in results:
             async with async_session() as db:
                 if tags:
                     for t in tags:
                         await db.execute(text(
                             "INSERT INTO plant_biotopes (plant_id, biotope) VALUES (:p, :b)"),
-                            {"p": str(pid), "b": t})
+                            {"p": pid, "b": t})
                     tagged += 1
                 else:
                     await db.execute(text(
                         "INSERT INTO plant_biotopes (plant_id, biotope) VALUES (:p, NULL)"),
-                        {"p": str(pid)})
+                        {"p": pid})
                     empty += 1
                 await db.commit()
             done += 1

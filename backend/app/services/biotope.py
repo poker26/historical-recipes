@@ -47,13 +47,17 @@ async def canonicalize(biotope_text: str) -> list[str]:
     if not biotope_text or len(biotope_text.strip()) < 4:
         return []
     voc = ", ".join(f'"{v}"' for v in BIOTOPES)
-    prompt = (f"Словарь биотопов: [{voc}].\n"
+    # `/no_think` disables qwen3's reasoning trace — for this tiny classification the
+    # <think> block ate the 300-token budget → finish_reason=length → empty content →
+    # a 5×[5,15,30,60]s ≈ 110s retry storm PER plant that always re-truncated (and
+    # wrongly returned []). No-think + a roomier cap → the call just succeeds fast.
+    prompt = (f"/no_think\nСловарь биотопов: [{voc}].\n"
               f"Описание: «{biotope_text[:1500]}»\n"
               'Верни JSON: {"biotopes": ["...", ...]} — только из словаря.')
     try:
         out = await chat_completion_json(
             [{"role": "system", "content": _SYS}, {"role": "user", "content": prompt}],
-            task="lightweight", temperature=0.1, max_tokens=300)
+            task="lightweight", temperature=0.1, max_tokens=800)
     except Exception:
         return []
     tags = out.get("biotopes") if isinstance(out, dict) else None
