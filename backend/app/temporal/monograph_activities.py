@@ -58,15 +58,20 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
                     polished = await rm.polish(distilled)
                     mono = rm.assemble(distilled, polished, h, reviewed=False)
                     findings = rm.publish_gate(mono, distilled)
-                    if rm.has_p0(findings):
+                    # The publish-gate IS the automated review: a P0-clean monograph
+                    # auto-publishes (reviewed=True → served by ?view=field); a P0 holds
+                    # it pending manual review (RFC §8 — "P0 doesn't reach users"). Hand-
+                    # reviewing 18K is infeasible, so the gate must do the gating.
+                    pub = not rm.has_p0(findings)
+                    if not pub:
                         blocked += 1
                     async with async_session() as db:
                         await db.execute(pg_insert(PlantReaderMonograph).values(
                             plant_id=pid, monograph=mono, generated_from_hash=h,
-                            model=rm.MODEL_TAG, reviewed=False, gate_findings=findings,
+                            model=rm.MODEL_TAG, reviewed=pub, gate_findings=findings,
                         ).on_conflict_do_update(index_elements=["plant_id"], set_={
                             "monograph": mono, "generated_from_hash": h, "model": rm.MODEL_TAG,
-                            "reviewed": False, "gate_findings": findings, "updated_at": text("now()")}))
+                            "reviewed": pub, "gate_findings": findings, "updated_at": text("now()")}))
                         await db.commit()
                     generated += 1
                 except Exception as ex:
