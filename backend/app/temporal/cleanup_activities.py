@@ -549,3 +549,87 @@ async def genus_assembly_activity() -> dict:
     async with async_session() as db:
         res = await build_genus_tier(db, dry_run=False, progress=_hb)
     return {"phase": "genus_assembly", **res}
+
+
+@activity.defn
+async def edible_safety_activity() -> dict:
+    """Forager-safety classification (RFC-edible-safety): assign each species a level
+    0-4 («will it hurt me if I eat it»), replacing the over-set is_toxic. Deterministic
+    safe-default for no-risk plants (edible→L1/L2, nothing-known→L0); the LLM (qwen3-
+    235b) decides the risky ones (deadly-anchor / has toxicity notes / edibility=ядовито)
+    — a deterministic regex recompute was proven UNSAFE (de-flagged real poisons that
+    merely mention animals/dose). The DEADLY anchor (latin) is an un-lowerable L4 floor.
+    Recomputes is_toxic := level>=3. Commit-per-plant, heartbeat, idempotent (safety_level
+    NULL = unprocessed) → a worker restart just resumes."""
+    from app.services.edible_safety import classify_safety, is_deadly_anchor, EDIBILITY_CANON
+    done = det = llm = 0
+    sem = asyncio.Semaphore(6)
+
+    async def _classify(pid):
+        async with sem:
+            async with async_session() as db:
+                p = (await db.execute(text(
+                    "SELECT name, name_latin, family FROM plants WHERE id=:p"), {"p": pid})).first()
+                edi = (await db.execute(text(
+                    "SELECT DISTINCT edibility FROM plant_culinary_uses WHERE plant_id=:p AND edibility IS NOT NULL"), {"p": pid})).all()
+                tox = (await db.execute(text(
+                    "SELECT original_text FROM plant_toxicities WHERE plant_id=:p"), {"p": pid})).all()
+                med = (await db.execute(text(
+                    "SELECT count(*) FROM plant_medicinal_uses WHERE plant_id=:p"), {"p": pid})).scalar()
+            data = {"name": p.name, "name_latin": p.name_latin, "family": p.family,
+                    "edibility": [EDIBILITY_CANON.get((e[0] or "").strip().lower(), e[0]) for e in edi],
+                    "toxicity_texts": [t[0] for t in tox], "has_medicinal": bool(med)}
+            try:
+                res = await asyncio.wait_for(classify_safety(data), timeout=90)
+            except Exception:
+                res = {"level": 0, "edible_parts": [], "dangerous_parts": [],
+                       "deadly_twin": None, "rationale": "timeout/error"}
+            lvl = res["level"]
+            if is_deadly_anchor(p.name_latin) and lvl < 4:
+                lvl = 4
+                res["rationale"] = "[anchor:deadly] " + (res["rationale"] or "")
+            return pid, lvl, res
+
+    while True:
+        async with async_session() as db:
+            rows = (await db.execute(text("""
+                SELECT p.id::text, p.name_latin,
+                  (SELECT count(*) FROM plant_toxicities t WHERE t.plant_id=p.id) ntox,
+                  (SELECT string_agg(DISTINCT lower(btrim(c.edibility)), '|')
+                   FROM plant_culinary_uses c WHERE c.plant_id=p.id AND c.edibility IS NOT NULL) edi
+                FROM plants p
+                WHERE p.rank='species' AND p.kingdom IN ('растение','гриб')
+                  AND p.safety_level IS NULL
+                ORDER BY p.id LIMIT 300"""))).all()
+        if not rows:
+            break
+        risky = []
+        async with async_session() as db:
+            for pid, latin, ntox, edi in rows:
+                canon = {EDIBILITY_CANON.get(e, e) for e in (edi.split("|") if edi else [])}
+                if is_deadly_anchor(latin) or ntox > 0 or ("ядовито" in canon):
+                    risky.append(pid)
+                    continue
+                # no toxicity signal → safe deterministic default (no LLM spend)
+                lvl = 2 if "условно-съедобно" in canon else (1 if canon & {"съедобно", "несъедобно"} else 0)
+                await db.execute(text(
+                    "UPDATE plants SET safety_level=:l, is_toxic=false, "
+                    "safety_rationale='[auto] нет сигналов токсичности' WHERE id=:p"),
+                    {"l": lvl, "p": pid})
+                det += 1
+                done += 1
+            await db.commit()
+        activity.heartbeat({"done": done, "det": det, "llm": llm})
+        for pid, lvl, res in await asyncio.gather(*[_classify(p) for p in risky]):
+            async with async_session() as db:
+                await db.execute(text(
+                    "UPDATE plants SET safety_level=:l, is_toxic=:tox, edible_parts=:ep, "
+                    "dangerous_parts=:dp, deadly_twin=:tw, safety_rationale=:r WHERE id=:p"),
+                    {"l": lvl, "tox": lvl >= 3, "ep": res["edible_parts"] or None,
+                     "dp": res["dangerous_parts"] or None, "tw": res["deadly_twin"],
+                     "r": res["rationale"], "p": pid})
+                await db.commit()
+            llm += 1
+            done += 1
+            activity.heartbeat({"done": done, "det": det, "llm": llm})
+    return {"phase": "edible_safety", "done": done, "deterministic": det, "llm": llm}

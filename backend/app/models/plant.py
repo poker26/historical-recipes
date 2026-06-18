@@ -36,6 +36,14 @@ class Plant(Base):
     # its member species point back via parent_id. genus rows grounded by latin genus.
     rank: Mapped[str] = mapped_column(String(20), default="species", server_default="species")
     parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("plants.id", ondelete="SET NULL"))
+    # Forager-safety (RFC-edible-safety): ordinal «will it hurt me if I eat it» level
+    # 0=unknown · 1=edible · 2=conditionally edible · 3=dose-dependent/medicinal-toxic ·
+    # 4=deadly. Replaces the over-set is_toxic (which becomes derived: level>=3).
+    safety_level: Mapped[int | None] = mapped_column(Integer)
+    edible_parts: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    dangerous_parts: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    deadly_twin: Mapped[str | None] = mapped_column(Text)        # easily-confused deadly lookalike
+    safety_rationale: Mapped[str | None] = mapped_column(Text)
     qdrant_point_id: Mapped[str | None] = mapped_column(String(100))
     qdrant_collection: Mapped[str | None] = mapped_column(String(50))
 

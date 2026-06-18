@@ -44,6 +44,7 @@ with workflow.unsafe.imports_passed_through():
         conflict_check_activity,
         recipe_relink_activity,
         genus_assembly_activity,
+        edible_safety_activity,
     )
     from app.temporal.quest_activities import (
         osm_ingest_region_activity,
@@ -547,6 +548,24 @@ class BiotopeCanonWorkflow:
             biotope_canon_activity, start_to_close_timeout=timedelta(hours=48),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"BiotopeCanonWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class EdibleSafetyWorkflow:
+    """Durable forager-safety classification (RFC-edible-safety): assign every species
+    an ordinal level 0-4 («will it hurt me if I eat it»), replacing the over-set
+    is_toxic. Deterministic safe-default for no-risk plants + LLM (qwen3-235b) for the
+    risky subset, deadly-anchor as an un-lowerable L4 floor. Idempotent (safety_level
+    NULL = unprocessed), commit-per-plant. Singleton 'edible-safety'. GATE: run BEFORE
+    monograph mass-gen (the level is shown as the card's first, safety-critical block)."""
+
+    @workflow.run
+    async def run(self) -> dict:
+        out = await workflow.execute_activity(
+            edible_safety_activity, start_to_close_timeout=timedelta(hours=24),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"EdibleSafetyWorkflow done: {out}")
         return out
 
 
