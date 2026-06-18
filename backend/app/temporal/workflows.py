@@ -47,6 +47,7 @@ with workflow.unsafe.imports_passed_through():
         edible_safety_activity,
     )
     from app.temporal.quest_activities import (
+        place_biotope_activity,
         osm_ingest_region_activity,
         build_place_sets_activity,
     )
@@ -582,6 +583,22 @@ class GenusTierWorkflow:
             genus_assembly_activity, start_to_close_timeout=timedelta(hours=2),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"GenusTierWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class PlaceBiotopeWorkflow:
+    """GPS→biotope precompute (biotope domain half b): map each quest_place's Overpass
+    landcover to the 18 canonical biotopes (quest_place_biotopes) so a walk can answer
+    «найди здесь виды биотопа X». Durable, idempotent (NULL-marker), Overpass-only.
+    Singleton 'place-biotope'."""
+
+    @workflow.run
+    async def run(self) -> dict:
+        out = await workflow.execute_activity(
+            place_biotope_activity, start_to_close_timeout=timedelta(hours=6),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"PlaceBiotopeWorkflow done: {out}")
         return out
 
 

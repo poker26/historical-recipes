@@ -32,6 +32,7 @@ from app.temporal.workflows import (
     BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow, BiotopeCanonWorkflow,
     IdentityConflictWorkflow, RecipeRelinkWorkflow, OsmIngestWorkflow, QuestSetBuilderWorkflow,
     ReaderMonographWorkflow, GenusTierWorkflow, EdibleSafetyWorkflow,
+    PlaceBiotopeWorkflow,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -51,7 +52,7 @@ async def main():
         workflows=[BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow,
                    BiotopeCanonWorkflow, IdentityConflictWorkflow, RecipeRelinkWorkflow,
                    OsmIngestWorkflow, QuestSetBuilderWorkflow, ReaderMonographWorkflow,
-                   GenusTierWorkflow, EdibleSafetyWorkflow],
+                   GenusTierWorkflow, EdibleSafetyWorkflow, PlaceBiotopeWorkflow],
         activities=[
             activities.maintain_pool_activity,
             # Autonomous plant-cleanup chain + quests-build + Layer-2 monograph batch.
@@ -68,6 +69,7 @@ async def main():
             cleanup_activities.edible_safety_activity,
             quest_activities.osm_ingest_region_activity,
             quest_activities.build_place_sets_activity,
+            quest_activities.place_biotope_activity,
             monograph_activities.generate_monographs_activity,
         ],
         max_concurrent_activities=4,

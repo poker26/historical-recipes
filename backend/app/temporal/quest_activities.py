@@ -9,6 +9,9 @@ Both resume after a worker restart (idempotent: ON CONFLICT / skip-existing).
 """
 import logging
 
+import asyncio
+
+import httpx
 from sqlalchemy import text
 from temporalio import activity
 
@@ -65,3 +68,49 @@ async def build_place_sets_activity(window_label: str) -> dict:
             logger.warning("set build %s failed: %s", pid, str(ex)[:80])
         activity.heartbeat({"done": i + 1, "total": len(ids), "built": built, "low_density": low_density})
     return {"total": len(ids), "built": built, "low_density": low_density}
+
+
+@activity.defn
+async def place_biotope_activity() -> dict:
+    """GPS→biotope precompute (biotope domain half b): for every quest_place lacking
+    biotopes, ask Overpass what landcover its bbox holds and map to the 18 canonical
+    biotopes (quest_place_biotopes). NULL-marker = processed, no landcover → resumable
+    + guaranteed termination. Overpass-paced (Semaphore 2, fair-use). No iNat."""
+    from app.services.place_biotope import build_place_biotopes
+    done = tagged = empty = 0
+    sem = asyncio.Semaphore(2)
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        async def _one(pid):
+            async with sem:
+                async with async_session() as db:
+                    try:
+                        bios = await asyncio.wait_for(build_place_biotopes(db, pid, client), timeout=120)
+                    except Exception:
+                        bios = set()
+                return pid, bios
+
+        while True:
+            async with async_session() as db:
+                rows = (await db.execute(text(
+                    "SELECT id::text FROM quest_places WHERE id NOT IN "
+                    "(SELECT place_id FROM quest_place_biotopes) LIMIT 40"))).all()
+            if not rows:
+                break
+            for pid, bios in await asyncio.gather(*[_one(r[0]) for r in rows]):
+                async with async_session() as db:
+                    if bios:
+                        for b in bios:
+                            await db.execute(text(
+                                "INSERT INTO quest_place_biotopes (place_id, biotope) VALUES (:p, :b)"),
+                                {"p": pid, "b": b})
+                        tagged += 1
+                    else:
+                        await db.execute(text(
+                            "INSERT INTO quest_place_biotopes (place_id, biotope) VALUES (:p, NULL)"),
+                            {"p": pid})
+                        empty += 1
+                    await db.commit()
+                done += 1
+                activity.heartbeat({"done": done, "tagged": tagged, "empty": empty})
+    return {"phase": "place_biotope", "done": done, "tagged": tagged, "empty": empty}
