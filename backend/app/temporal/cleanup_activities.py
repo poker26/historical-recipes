@@ -330,7 +330,13 @@ async def biotope_canon_activity() -> dict:
 
     async def _canon(pid, bio):
         async with sem:
-            return str(pid), await canonicalize(bio)
+            # per-call timeout: a single hung httpx request (timeout=600) must NOT
+            # block the whole gather batch — cap it, treat a hang as «no tags».
+            try:
+                tags = await asyncio.wait_for(canonicalize(bio), timeout=40)
+            except Exception:
+                tags = []
+            return str(pid), tags
 
     while True:
         async with async_session() as db:
@@ -339,7 +345,7 @@ async def biotope_canon_activity() -> dict:
                 FROM plant_habitats h
                 WHERE h.biotope IS NOT NULL AND length(h.biotope) > 3
                   AND h.plant_id NOT IN (SELECT plant_id FROM plant_biotopes)
-                GROUP BY h.plant_id LIMIT 200
+                GROUP BY h.plant_id LIMIT 100
             """))).all()
         if not rows:
             break
