@@ -453,6 +453,24 @@ def _distinct(items) -> list:
     return out
 
 
+_GENERIC_IND_RE = re.compile(r"\b(средств\w*|препарат\w*|действие|применени\w*)\b", re.IGNORECASE)
+
+
+def _ind_stems(s: str | None) -> frozenset[str]:
+    """Crude Russian word-stems (first 5 chars of each content word ≥3 long)."""
+    return frozenset(w[:5] for w in re.findall(r"[а-яё]+", (s or "").lower()) if len(w) >= 3)
+
+
+def _is_circular_indication(indication: str, action: str) -> bool:
+    """A circular indication merely restates its action and carries no information
+    («успокаивающее» → «успокаивающие средства», «регулирующее месячные» → «регулируют
+    месячные»). True when the indication's content stems add nothing beyond the action
+    (after stripping generic «средства/действие/применение» words). A specific
+    indication (бессонница, раны, импотенция) survives."""
+    iw = _ind_stems(_GENERIC_IND_RE.sub(" ", indication))
+    return bool(iw) and iw <= _ind_stems(action)
+
+
 def _field_view(plant, src, recipes: list[dict]) -> dict:
     """Compact, deduped + ranked monograph for the low-bandwidth field client.
 
@@ -536,6 +554,8 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
             lk = phrase.lower()
             if lk in seen_ind:
                 continue
+            if _is_circular_indication(phrase, g["action"]):
+                continue  # drop indications that merely restate the action
             seen_ind.add(lk)
             ranked_ind.append(phrase)
             if len(ranked_ind) >= 6:
