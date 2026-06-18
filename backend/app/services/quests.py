@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.inaturalist import INAT_BASE, _HEADERS
 from app.services.plant_matching import resolve_latin_to_plants, _latin_key
 from app.models.place import QuestPlace, QuestPlaceSet, QuestIssuedBadge
-from app.models.device import Device
+from app.models.device import Device, QuestFollow
 from app.models.identification import Identification
+from app.models.plant import Plant
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,21 @@ def auto_nick(device_key) -> str:
     h = int(hashlib.md5(str(device_key).encode()).hexdigest(), 16)
     return (f"{_NICK_ADJ[h % len(_NICK_ADJ)]} "
             f"{_NICK_NOUN[(h // len(_NICK_ADJ)) % len(_NICK_NOUN)]} #{h % 10000:04d}")
+
+
+# Public handle (short slug) — derived deterministically from device_key (one-way),
+# so backfill is idempotent and collision-free at our scale. Stored + indexed for
+# reverse lookup (handle → device). device_key never appears on public surfaces.
+_HANDLE_ABC = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def auto_handle(device_key) -> str:
+    h = int(hashlib.md5(("handle:" + str(device_key)).encode()).hexdigest()[:16], 16)
+    out = []
+    for _ in range(9):
+        out.append(_HANDLE_ABC[h % 36])
+        h //= 36
+    return "".join(out)
 
 
 def window_label(month: int, day: int) -> str:
@@ -458,12 +474,20 @@ async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20,
     ranked = sorted(rows, key=lambda r: (-r.score, r.first_at))
 
     nicks: dict = {}
+    handles: dict = {}
+    blocked: set = set()
     if ranked:
-        devs = (await db.execute(select(Device.device_key, Device.nickname).where(
+        devs = (await db.execute(select(
+            Device.device_key, Device.nickname, Device.handle, Device.blocked).where(
             Device.device_key.in_([r.device_key for r in ranked])))).all()
-        nicks = {dk: nk for dk, nk in devs}
+        for dk_, nk_, hd_, bl_ in devs:
+            nicks[dk_] = nk_
+            handles[dk_] = hd_
+            if bl_:
+                blocked.add(dk_)
+    ranked = [r for r in ranked if r.device_key not in blocked]   # hide blocked
 
-    # dense rank
+    # dense rank (after excluding blocked)
     rank_of: dict = {}
     rank, prev = 0, None
     for r in ranked:
@@ -474,6 +498,7 @@ async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20,
 
     def entry(r):
         return {"rank": rank_of[r.device_key],
+                "handle": handles.get(r.device_key) or auto_handle(r.device_key),
                 "nick": nicks.get(r.device_key) or auto_nick(r.device_key),
                 "score": int(r.score or 0), "badges": r.badges}
 
@@ -482,7 +507,8 @@ async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20,
     if device_key:
         dk = uuid_or(device_key)
         hit = next((r for r in ranked if r.device_key == dk), None)
-        me = entry(hit) if hit else {"rank": None, "nick": auto_nick(dk), "score": 0, "badges": 0}
+        me = entry(hit) if hit else {
+            "rank": None, "handle": auto_handle(dk), "nick": auto_nick(dk), "score": 0, "badges": 0}
     return {"me": me, "top": top}
 
 
@@ -539,12 +565,35 @@ async def _species_count(db, device_key) -> int:
     return len(seen)
 
 
-async def public_profile(db: AsyncSession, device_key) -> dict:
-    """Public profile for the landing — nick, level, score, rank + the badge shelf
-    with place NAMES. Returns a valid (possibly empty) profile for any well-formed
-    key, so a fresh device still has a shareable page. No coordinates."""
-    dk = uuid_or(device_key)
+def _try_uuid(s):
+    import uuid as _u
+    try:
+        return _u.UUID(str(s))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+async def resolve_subject(db, id_str):
+    """Public id → device_key. Accepts a `handle` (preferred) OR a legacy device_key
+    UUID (share links still in the wild). None for an unknown handle."""
+    u = _try_uuid(id_str)
+    if u is not None:
+        return u
+    return (await db.execute(select(Device.device_key).where(
+        Device.handle == id_str))).scalar_one_or_none()
+
+
+async def public_profile(db: AsyncSession, id_str, viewer_device_key=None) -> dict | None:
+    """Public «паспорт» by handle (or legacy device_key). nick/avatar/level/score/rank
+    + badge shelf (place NAMES, no coordinates). device_key is NEVER returned. None →
+    unknown handle or blocked (router → 404). `is_following` set when a viewer is given."""
+    dk = await resolve_subject(db, id_str)
+    if dk is None:
+        return None
     dev = await db.get(Device, dk)
+    if dev and dev.blocked:
+        return None
+    handle = (dev.handle if dev else None) or auto_handle(dk)
     species = await _species_count(db, dk)
     shelf = await badge_shelf(db, str(dk))
     names = await _place_names(db, [b.get("place_id") for b in shelf])
@@ -552,15 +601,148 @@ async def public_profile(db: AsyncSession, device_key) -> dict:
         b["place"] = names.get(b.get("place_id"))
     board = await leaderboard(db, device_key=str(dk), limit=1)
     me = board.get("me") or {}
+    is_following = None
+    if viewer_device_key:
+        vk = _try_uuid(viewer_device_key)
+        if vk is not None:
+            n = (await db.execute(select(func.count()).select_from(QuestFollow).where(
+                QuestFollow.follower_key == vk, QuestFollow.followee_handle == handle))).scalar() or 0
+            is_following = n > 0
     return {
-        "device_key": str(dk),
+        "handle": handle,
         "nick": (dev.nickname if dev else None) or auto_nick(dk),
         "avatar": dev.avatar if dev else None,
         "level": _level_for(species),
         "score": me.get("score", 0),
         "rank": me.get("rank"),
         "badges": shelf,
+        "is_following": is_following,
     }
+
+
+# --------------------------------------------------- Phase 8: follows + feed
+
+async def ensure_handle(db, device_key) -> str:
+    """Return the device's handle, generating + storing it on first need (also serves
+    backfill). Deterministic, so concurrent calls converge."""
+    dk = uuid_or(device_key)
+    dev = await db.get(Device, dk)
+    h = auto_handle(dk)
+    if dev and not dev.handle:
+        dev.handle = h
+        await db.commit()
+    return (dev.handle if dev else None) or h
+
+
+async def follow(db, device_key, target_handle: str) -> dict:
+    vk = uuid_or(device_key)
+    target = await resolve_subject(db, target_handle)
+    if target is None:
+        return {"error": "unknown handle"}
+    if target == vk:
+        return {"error": "cannot follow yourself"}
+    tdev = await db.get(Device, target)
+    if tdev and tdev.blocked:
+        return {"error": "unavailable"}
+    # store followee as its canonical handle
+    th = (tdev.handle if tdev else None) or auto_handle(target)
+    await db.execute(pg_insert(QuestFollow).values(
+        follower_key=vk, followee_handle=th).on_conflict_do_nothing(
+        index_elements=["follower_key", "followee_handle"]))
+    await db.commit()
+    return {"status": "ok", "following": True, "handle": th}
+
+
+async def unfollow(db, device_key, target_handle: str) -> dict:
+    vk = uuid_or(device_key)
+    await db.execute(QuestFollow.__table__.delete().where(
+        (QuestFollow.follower_key == vk) & (QuestFollow.followee_handle == target_handle)))
+    await db.commit()
+    return {"status": "ok", "following": False}
+
+
+async def _actors_for(db, handles: list[str], public_only: bool):
+    """{device_key: {handle,nick,avatar}} for the given handles, dropping blocked
+    (and, when public_only, activity_public=false)."""
+    if not handles:
+        return {}
+    q = select(Device.device_key, Device.handle, Device.nickname, Device.avatar).where(
+        Device.handle.in_(handles), Device.blocked.is_(False))
+    if public_only:
+        q = q.where(Device.activity_public.is_(True))
+    rows = (await db.execute(q)).all()
+    return {dk: {"handle": h, "nick": nk or auto_nick(dk), "avatar": av} for dk, h, nk, av in rows}
+
+
+async def following(db, device_key) -> dict:
+    vk = uuid_or(device_key)
+    handles = (await db.execute(select(QuestFollow.followee_handle).where(
+        QuestFollow.follower_key == vk))).scalars().all()
+    actors = await _actors_for(db, handles, public_only=False)
+    # species count per followee (one grouped query)
+    out = []
+    for dk, a in actors.items():
+        out.append({**a})
+    return {"following": out}
+
+
+async def feed(db, device_key, limit: int = 30) -> dict:
+    """Merged recent activity of followees: in-corpus identifications + badges.
+    No coordinates; excludes blocked + activity_public=false."""
+    vk = uuid_or(device_key)
+    handles = (await db.execute(select(QuestFollow.followee_handle).where(
+        QuestFollow.follower_key == vk))).scalars().all()
+    actors = await _actors_for(db, handles, public_only=True)
+    if not actors:
+        return {"events": []}
+    keys = list(actors.keys())
+
+    ids = (await db.execute(select(
+        Identification.device_key, Identification.matched_plant_id, Identification.created_at).where(
+        Identification.device_key.in_(keys), Identification.matched_plant_id.isnot(None))
+        .order_by(Identification.created_at.desc()).limit(limit))).all()
+    plant_ids = list({pid for _, pid, _ in ids if pid})
+    plants: dict = {}
+    if plant_ids:
+        prows = (await db.execute(select(
+            Plant.id, Plant.name, Plant.name_modern, Plant.photo_url).where(
+            Plant.id.in_(plant_ids)))).all()
+        plants = {pid: {"id": str(pid), "name": (nm or nmm or "растение"),
+                        "name_modern": nmm, "photo": ph}
+                  for pid, nm, nmm, ph in prows}
+
+    badges = (await db.execute(select(
+        QuestIssuedBadge.device_key, QuestIssuedBadge.badge_id, QuestIssuedBadge.tier,
+        QuestIssuedBadge.ordinal, QuestIssuedBadge.issued_at).where(
+        QuestIssuedBadge.device_key.in_(keys))
+        .order_by(QuestIssuedBadge.issued_at.desc()).limit(limit))).all()
+    place_names = await _place_names(db, [b.badge_id.split(":")[0] for b in badges])
+
+    events = []
+    for dk, pid, at in ids:
+        pl = plants.get(pid)
+        if not pl:
+            continue
+        events.append({"type": "id", "actor": actors[dk],
+                       "plant": {"id": pl["id"], "name": pl.get("name_modern") or pl["name"], "photo": pl["photo"]},
+                       "at": at.isoformat()})
+    for b in badges:
+        parts = b.badge_id.split(":")
+        events.append({"type": "badge", "actor": actors[b.device_key],
+                       "place": place_names.get(parts[0] if parts else None),
+                       "tier": b.tier, "name": _TIER_NAMES.get(b.tier, ""),
+                       "ordinal": b.ordinal, "at": b.issued_at.isoformat()})
+    events.sort(key=lambda e: e["at"], reverse=True)
+    return {"events": events[:limit]}
+
+
+async def set_activity_public(db, device_key, value: bool) -> dict:
+    dev = await db.get(Device, uuid_or(device_key))
+    if not dev:
+        return {"error": "device not registered"}
+    dev.activity_public = bool(value)
+    await db.commit()
+    return {"status": "ok", "activity_public": dev.activity_public}
 
 
 async def recent_badges(db: AsyncSession, limit: int = 20, place_id: str | None = None) -> dict:

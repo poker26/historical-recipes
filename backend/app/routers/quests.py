@@ -85,16 +85,16 @@ async def leaderboard(device_key: str | None = Query(None),
 
 # --------- Public read surfaces for the landing (botanik.fun). No coordinates. ---------
 
-@router.get("/profile/{device_key}")
-async def public_profile(device_key: str, db: AsyncSession = Depends(get_db)):
-    """Public «паспорт натуралиста»: nick, level, score, rank + badge shelf with
-    place names. 404 on a malformed key; a valid-but-unknown key returns an empty
-    (but shareable) profile."""
-    try:
-        _uuid.UUID(device_key)
-    except ValueError:
+@router.get("/profile/{subject}")
+async def public_profile(subject: str, viewer_device_key: str | None = Query(None),
+                         db: AsyncSession = Depends(get_db)):
+    """Public «паспорт натуралиста» by `handle` (or legacy device_key): nick, avatar,
+    level, score, rank + badge shelf (place names, no coordinates). `is_following` set
+    when `viewer_device_key` is given. 404 for unknown handle / blocked."""
+    p = await quests.public_profile(db, subject, viewer_device_key=viewer_device_key)
+    if p is None:
         raise HTTPException(status_code=404, detail="not found")
-    return await quests.public_profile(db, device_key)
+    return p
 
 
 @router.get("/recent-badges")
@@ -103,3 +103,32 @@ async def recent_badges(limit: int = Query(20, ge=1, le=100),
                         db: AsyncSession = Depends(get_db)):
     """Newest issued badges — social-proof activity feed (nick + place + tier)."""
     return await quests.recent_badges(db, limit=limit, place_id=place_id)
+
+
+# --------- Follows + activity feed (Phase 8). follower = private device_key. ---------
+
+@router.post("/follow")
+async def follow(device_key: str = Query(...), target: str = Query(..., description="followee handle"),
+                 db: AsyncSession = Depends(get_db)):
+    res = await quests.follow(db, device_key, target)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+
+@router.post("/unfollow")
+async def unfollow(device_key: str = Query(...), target: str = Query(...),
+                   db: AsyncSession = Depends(get_db)):
+    return await quests.unfollow(db, device_key, target)
+
+
+@router.get("/following")
+async def following(device_key: str = Query(...), db: AsyncSession = Depends(get_db)):
+    return await quests.following(db, device_key)
+
+
+@router.get("/feed")
+async def feed(device_key: str = Query(...), limit: int = Query(30, ge=1, le=100),
+               db: AsyncSession = Depends(get_db)):
+    """Merged recent activity (in-corpus finds + badges) of followees. No coordinates."""
+    return await quests.feed(db, device_key, limit=limit)

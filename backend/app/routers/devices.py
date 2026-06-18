@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.device import Device
+from app.services.quests import auto_handle, set_activity_public
 
 router = APIRouter()
 
@@ -24,6 +25,10 @@ class NicknameUpdate(BaseModel):
 
 class AvatarUpdate(BaseModel):
     avatar: str | None = None
+
+
+class PrivacyUpdate(BaseModel):
+    activity_public: bool = True
 
 
 # Curated avatar set (slugs) — assets live at botanik.fun/avatars/{slug}.png.
@@ -39,11 +44,15 @@ async def register_device(device_key: uuid.UUID = Query(...), db: AsyncSession =
     call just refreshes last_seen. The only thing the client must do for quests.
     `device_key` is a QUERY param — consistent with every other /api/quests route
     (and with how the «Что растёт» client calls it)."""
-    stmt = pg_insert(Device).values(device_key=device_key).on_conflict_do_update(
-        index_elements=["device_key"], set_={"last_seen": func.now()})
+    h = auto_handle(device_key)
+    stmt = pg_insert(Device).values(device_key=device_key, handle=h)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["device_key"],
+        set_={"last_seen": func.now(), "handle": func.coalesce(Device.handle, stmt.excluded.handle)})
     await db.execute(stmt)
     await db.commit()
-    return {"status": "ok", "device_key": str(device_key)}
+    # handle is the PUBLIC id the client uses for share links / profile URLs.
+    return {"status": "ok", "device_key": str(device_key), "handle": h}
 
 
 @router.patch("/{device_key}/nickname")
@@ -72,6 +81,16 @@ async def set_avatar(device_key: uuid.UUID, body: AvatarUpdate,
     d.avatar = av
     await db.commit()
     return {"status": "ok", "avatar": d.avatar}
+
+
+@router.patch("/{device_key}/privacy")
+async def set_privacy(device_key: uuid.UUID, body: PrivacyUpdate,
+                      db: AsyncSession = Depends(get_db)):
+    """«Показывать мою активность» — off removes me from followers' feeds."""
+    res = await set_activity_public(db, device_key, body.activity_public)
+    if "error" in res:
+        raise HTTPException(status_code=404, detail=res["error"])
+    return res
 
 
 @router.get("/avatars")
