@@ -2,7 +2,7 @@
 // the profile OG image (1200×630 link unfurl) and the square share card (/card.png).
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
-import { cap, pluralRu, type Profile } from "./lib";
+import { cap, pluralRu, type Profile, type PlantLite } from "./lib";
 
 const FONT_REG = readFileSync(join(process.cwd(), "public/og/pt-reg.ttf"));
 const FONT_BOLD = readFileSync(join(process.cwd(), "public/og/pt-bold.ttf"));
@@ -81,6 +81,45 @@ export function profileCard(p: Profile | null, variant: "og" | "square") {
         <div style={{ fontSize: 38, color: "#2E7D32", fontWeight: 700, marginTop: 10 }}>{`${levelTitle} · уровень ${levelN}`}</div>
         <div style={{ fontSize: 28, color: "#3f4a43", marginTop: 6 }}>{stats}</div>
       </div>
+    </div>
+  );
+}
+
+const Brand = (
+  <div style={{ display: "flex", alignItems: "center", fontSize: 30, color: "#1B5E20", fontWeight: 700 }}>
+    <div style={{ width: 24, height: 24, borderRadius: 12, background: "#2E7D32", marginRight: 10 }} />
+    Что растёт
+  </div>
+);
+
+/** Square «находка» card (1080²) — plant photo + name. [photoUri] is a data URI
+ *  fetched by the route (null if unavailable → leaf placeholder). */
+export function plantCard(p: PlantLite | null, photoUri: string | null) {
+  const name = p?.name ?? "Растение";
+  const latin = p?.name_latin || "";
+  return (
+    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center",
+      padding: 64, fontFamily: "PT", background: GRAD }}>
+      {Brand}
+      <div style={{ display: "flex", marginTop: 28 }}>
+        {photoUri ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={photoUri} width={600} height={600} alt="" style={{ borderRadius: 32, objectFit: "cover" }} />
+        ) : (
+          <div style={{ width: 600, height: 600, borderRadius: 32, background: "#dcebd0", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: 120, height: 120, borderRadius: 60, background: "#2E7D32" }} />
+          </div>
+        )}
+      </div>
+      <div style={{ fontSize: 60, fontWeight: 700, color: "#1f2a24", marginTop: 26, textAlign: "center" }}>{name}</div>
+      {latin ? <div style={{ fontSize: 32, color: "#6b7280", marginTop: 2 }}>{latin}</div> : null}
+      {p?.is_toxic ? (
+        <div style={{ marginTop: 14, padding: "8px 18px", borderRadius: 12, background: "#FFEBEE", color: "#B71C1C", fontWeight: 700, fontSize: 28, display: "flex" }}>
+          Ядовитое
+        </div>
+      ) : null}
+      <div style={{ flex: 1 }} />
+      <div style={{ fontSize: 28, color: "#1B5E20", fontWeight: 700 }}>определено в «Что растёт» · botanik.fun</div>
     </div>
   );
 }
