@@ -89,6 +89,45 @@ _AMBIGUOUS_FOLK = {
     "гриб", "грибы",
 }
 
+# Universal NON-PLANT substances — water, table salt, sugar, the alcohols,
+# vinegar, dairy/egg/animal products, flour/starch/yeast, and mineral / chemical
+# materia medica (lime, alum, vitriol, sal-ammoniac, potash, tar, glycerin,
+# camphor…). A recipe names these constantly as ordinary ingredients, but they
+# are NOT botanical species and must never resolve to a herbarium card, however
+# a junk folk-name alias on some card spells them ("вода"→туффах май, "соль"→
+# Бабья соль, "сахар"→солодка). This is the DURABLE cure for that recurring
+# mis-link: because ``relink_recipe_ingredients`` clears and recomputes every
+# link through this matcher, a one-off manual unlink always got recaptured — the
+# block has to live HERE, in the matcher, to stick. Stored normalized (lowercase,
+# ё→е, single-spaced). Spice/food PLANTS (перец, корица, имбирь, хрен, лук…) are
+# deliberately ABSENT — they are real species.
+_NON_PLANT_SUBSTANCES = frozenset({
+    # water · sugar · salt
+    "вода", "сахар", "сахара", "сахарный песок", "сахарная пудра",
+    "тростниковый сахар", "сахар тростниковый", "кристаллический сахар",
+    "леденцовый сахар", "жжёный сахар", "жженый сахар",
+    "соль", "соли", "поваренная соль", "соль поваренная", "морская соль",
+    "каменная соль", "крупная соль", "мелкая соль", "столовая соль",
+    "крупнозернистая поваренная соль", "крупнозернистая соль",
+    # alcohols · wine · vinegar
+    "спирт", "винный спирт", "хлебный спирт", "этиловый спирт", "чистый спирт",
+    "водка", "вино", "красное вино", "белое вино", "виноградное вино",
+    "уксус", "винный уксус", "яблочный уксус", "столовый уксус", "уксусная кислота",
+    # dairy · egg · animal products
+    "мед", "молоко", "козье молоко", "молоко козье", "коровье молоко", "сливки",
+    "сметана", "творог", "масло коровье", "сливочное масло", "сало", "свиное сало",
+    "яйцо", "яйца", "желток", "яичный желток", "белок", "яичный белок",
+    "воск", "пчелиный воск", "мыло",
+    # flour · starch · yeast
+    "мука", "ржаная мука", "пшеничная мука", "мука ржаная", "крахмал", "дрожжи",
+    # minerals · chemical materia medica
+    "зола", "известь", "негашеная известь", "гашеная известь", "квасцы",
+    "купорос", "медный купорос", "железный купорос", "нашатырь", "нашатырный спирт",
+    "сода", "поташ", "мел", "гипс", "глина", "песок", "селитра",
+    "деготь", "березовый деготь", "скипидар", "глицерин", "растительный глицерин",
+    "камфора", "желатин",
+})
+
 _VOWEL_ENDINGS = "аяоеёыиуюьйъ"
 _PUNCT_RE = re.compile(r"[^\w\s-]", re.UNICODE)
 _SPACE_RE = re.compile(r"\s+")
@@ -193,6 +232,15 @@ def _stem(token: str) -> str:
     if len(token) > _MIN_STEM and token[-1] in _VOWEL_ENDINGS:
         return token[:-1]
     return token
+
+
+# Stems of the single-word substances, so the loose noun-token tier (and key
+# building) also drop them — e.g. "Бабья соль" must not seed the key "сол" that
+# would capture every "соль". Verified safe: no real plant's stemmed noun-key
+# equals any of these (real species roots are longer — солодк, солянк, водяник…).
+_NON_PLANT_STEMS = frozenset(
+    _stem(w) for w in _NON_PLANT_SUBSTANCES if " " not in w
+)
 
 
 # Relational ("denominal") adjective endings: X-ов-/X-ев- = "made of / from X".
@@ -380,23 +428,28 @@ class PlantMatcher:
         self._noun_key: dict[str, uuid.UUID] = {}
         for p in plants:
             # Tier 1 keys, scientific identity: primary + latin name as full
-            # strings (a recipe is free to name a plant by either).
+            # strings (a recipe is free to name a plant by either). A bare
+            # non-plant substance as a primary name (a junk «Соль»/«Мёд» card)
+            # is never indexed — it isn't a species.
             for variant in (p.name, p.name_latin):
                 nv = normalize(variant)
-                if nv:
+                if nv and nv not in _NON_PLANT_SUBSTANCES:
                     self._exact.setdefault(nv, p.id)
             # Tier 1 keys, folk names: kept as full strings, but a single bare
-            # common-ingredient noun (гвоздика, мелисса, …) is dropped so it
-            # can't capture the real spice/fruit meant in recipes.
+            # common-ingredient noun (гвоздика, мелисса, …) or any universal
+            # non-plant substance (соли, вода, сахар — the recurring landmine)
+            # is dropped so it can't capture the real spice/substance in recipes.
             for variant in (p.names_historical or []):
                 nv = normalize(variant)
-                if not nv or (" " not in nv and nv in _AMBIGUOUS_FOLK):
+                if not nv or nv in _NON_PLANT_SUBSTANCES or (" " not in nv and nv in _AMBIGUOUS_FOLK):
                     continue
                 self._exact.setdefault(nv, p.id)
             # Tier 2 keys: noun tokens of the PRIMARY name only (folk names
-            # excluded — see class docstring).
+            # excluded — see class docstring). Substance stems (сол, вод, …) are
+            # never seeded, so a card like «Бабья соль» can't capture «соль».
             for key in _noun_keys(p.name):
-                self._noun_key.setdefault(key, p.id)
+                if key not in _NON_PLANT_STEMS:
+                    self._noun_key.setdefault(key, p.id)
 
         # Curated knowledge: fold hand-maintained aliases into both tiers. These
         # are vetted, distinctive names (e.g. "кишнец"→Кориандр), so unlike
@@ -423,13 +476,18 @@ class PlantMatcher:
                 continue  # target plant not in the herbarium yet — activates later
             for alias in names:
                 nv = normalize(alias)
-                if nv:
+                if nv and nv not in _NON_PLANT_SUBSTANCES:
                     self._exact.setdefault(nv, pid)
                 for key in _noun_keys(alias):
-                    self._noun_key.setdefault(key, pid)
+                    if key not in _NON_PLANT_STEMS:
+                        self._noun_key.setdefault(key, pid)
 
     def match(self, names: list[str | None]) -> uuid.UUID | None:
-        clean = [n for n in names if n]
+        # Universal non-plant substances (water, salt, sugar, alcohols, dairy,
+        # minerals…) are ingredients, not species — never resolve them to a
+        # plant card, whatever a junk folk alias calls them. Dropping them here
+        # AND excluding their keys/stems above makes the block survive a relink.
+        clean = [n for n in names if n and normalize(n) not in _NON_PLANT_SUBSTANCES]
         # Tier 1: exact normalized full-name match.
         for n in clean:
             nn = normalize(n)
@@ -439,6 +497,7 @@ class PlantMatcher:
         ingredient_tokens: set[str] = set()
         for n in clean:
             ingredient_tokens |= _stem_tokens(n)
+        ingredient_tokens -= _NON_PLANT_STEMS
         # Prefer the longest matching token (most specific) for determinism.
         best: uuid.UUID | None = None
         best_len = 0
