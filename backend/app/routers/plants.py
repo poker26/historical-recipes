@@ -134,6 +134,35 @@ def _plant_summary(p: Plant, uses_count: int = 0) -> dict:
         "photo_url": p.photo_url,
         "photo_attribution": p.photo_attribution,
         "uses_count": uses_count,
+        # forager-safety badge for list cards (RFC-edible-safety)
+        "safety_level": p.safety_level,
+        "deadly_twin": p.deadly_twin,
+    }
+
+
+# Forager-safety (RFC-edible-safety): ordinal «can I eat this» verdict.
+SAFETY_LABELS = {
+    0: "нет данных",
+    1: "съедобно",
+    2: "условно съедобно",
+    3: "опасно — лекарственное, дозозависимо",
+    4: "смертельно ядовито",
+}
+
+
+def _safety_block(p) -> dict | None:
+    """The «не умру ли я, если съем» answer — shown as the card's FIRST block.
+    None until classified (safety_level NULL = not yet processed)."""
+    lvl = getattr(p, "safety_level", None)
+    if lvl is None:
+        return None
+    return {
+        "level": lvl,
+        "label": SAFETY_LABELS.get(lvl, "нет данных"),
+        "edible_parts": p.edible_parts or [],
+        "dangerous_parts": p.dangerous_parts or [],
+        "deadly_twin": p.deadly_twin,
+        "rationale": p.safety_rationale,
     }
 
 
@@ -749,6 +778,8 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
         "description": plant.description,
         "parts_used": plant.parts_used,
         "roles": roles,
+        # «Можно ли это есть» — the forager's first question; render FIRST.
+        "safety": _safety_block(plant),
         "fun_fact": None,            # null until the grounded «Интересное» field (RFC A3) lands
         "uses": uses,
         "cautions": cautions,
@@ -876,12 +907,30 @@ async def _genus_view(db: AsyncSession, genus: Plant) -> dict:
     recipes = [{"id": str(r[0]), "name": r[1], "category": r[2], "book": r[3], "year": r[4]}
                for r in recipe_rows]
 
+    # Forager-safety across the genus: worst-case level + which members are dangerous
+    # (a genus is browsed when the recipe said «вишня» — show the cautious envelope).
+    levels = [m.safety_level for m in members if m.safety_level is not None]
+    genus_safety = None
+    if levels:
+        worst = max(levels)
+        genus_safety = {
+            "level": worst,
+            "label": SAFETY_LABELS.get(worst, "нет данных"),
+            "note": "уровень опасности различается по видам — сверяйтесь с конкретным видом",
+            "dangerous_members": [
+                {"id": str(m.id), "name": m.name, "level": m.safety_level,
+                 "deadly_twin": m.deadly_twin}
+                for m in members if (m.safety_level or 0) >= 3
+            ][:12],
+        }
+
     return {
         "id": str(genus.id),
         "name": genus.name,
         "name_latin": genus.name_latin,
         "rank": "genus",
         "kingdom": genus.kingdom,
+        "safety": genus_safety,
         "member_count": len(members),
         "members": [{"id": str(m.id), "name": m.name, "name_latin": m.name_latin}
                     for m in members],
@@ -1052,6 +1101,7 @@ async def get_plant(
         "description": plant.description,
         "parts_used": plant.parts_used,
         "is_toxic": plant.is_toxic,
+        "safety": _safety_block(plant),
         "kingdom": plant.kingdom,
         "photo_url": plant.photo_url,
         "photo_attribution": plant.photo_attribution,
