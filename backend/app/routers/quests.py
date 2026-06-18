@@ -63,9 +63,20 @@ async def places_near(lat: float = Query(...), lng: float = Query(...),
 @router.get("/place/{place_id}/set")
 async def place_set(place_id: str, window: str | None = Query(None),
                     device_key: str | None = Query(None),
+                    biotope: str | None = Query(None, description="filter to species of this habitat (GPS→biotope)"),
                     db: AsyncSession = Depends(get_db)):
-    """«What to look for here» — species cards from the saved set (no live iNat)."""
-    return await quests.place_set(db, place_id, window=window, device_key=device_key)
+    """«What to look for here» — species cards from the saved set (no live iNat).
+    `biotope` filters to species of that habitat."""
+    return await quests.place_set(db, place_id, window=window, device_key=device_key,
+                                  biotope=biotope)
+
+
+@router.get("/place/{place_id}/biotopes")
+async def place_biotopes(place_id: str, window: str | None = Query(None),
+                         db: AsyncSession = Depends(get_db)):
+    """«Что искать здесь, по среде» — the place's landcover biotopes (GPS→biotope)
+    with the count of its expected species in each. Tap → `set?biotope=<key>`."""
+    return await quests.place_biotopes(db, place_id, window=window)
 
 
 @router.get("/leaderboard")

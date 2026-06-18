@@ -396,11 +396,13 @@ async def places_near(db: AsyncSession, lat: float, lng: float, device_key=None,
 
 
 async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
-                    device_key=None, year: int | None = None) -> dict:
+                    device_key=None, year: int | None = None,
+                    biotope: str | None = None) -> dict:
     """«What to look for here» — species cards from the SAVED set (no live iNat).
     Names/photos come from species_meta (saved at compute) with a corpus fallback;
     plant_id via the latin-key bridge; found = this device identified it in the
-    polygon×window."""
+    polygon×window. ``biotope`` filters to species of that habitat (GPS→biotope
+    half-b: join the place's expected species with plant_biotopes)."""
     win = window or _current_window()
     yr = year or date.today().year
     ps = await _set_for(db, place_id, win)
@@ -432,10 +434,47 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
             "plant_id": str(p.id) if p else None,
             "found": key in found_keys,
         })
+    # GPS→biotope filter: keep only species of the requested habitat (those whose
+    # corpus card is tagged with `biotope` in plant_biotopes).
+    if biotope:
+        pids = [i["plant_id"] for i in items if i["plant_id"]]
+        keep: set[str] = set()
+        if pids:
+            keep = {r[0] for r in (await db.execute(text(
+                "SELECT DISTINCT plant_id::text FROM plant_biotopes "
+                "WHERE plant_id = ANY(cast(:ids as uuid[])) AND biotope = :b"),
+                {"ids": pids, "b": biotope})).all()}
+        items = [i for i in items if i["plant_id"] in keep]
     return {"place": {"id": str(place_id), "name": place.name if place else None,
                       "window": win, "set_size": len(meta), "target": ps.target,
                       "matched": matched, "badge_issued": await _badge_issued(db, device_key, place_id, win, yr)},
-            "items": items}
+            "biotope": biotope, "items": items}
+
+
+async def place_biotopes(db: AsyncSession, place_id: str, window: str | None = None) -> dict:
+    """«Что искать здесь, по среде» — the place's landcover biotopes (GPS→biotope
+    half-b) with how many of its expected species belong to each. Tap a biotope →
+    ``place/{id}/set?biotope=<key>`` for the filtered cards."""
+    from app.services.biotope import BIOTOPE_GROUP
+    win = window or _current_window()
+    pbs = [r[0] for r in (await db.execute(text(
+        "SELECT DISTINCT biotope FROM quest_place_biotopes "
+        "WHERE place_id = :p AND biotope IS NOT NULL"), {"p": place_id})).all()]
+    counts: dict[str, int] = {}
+    if pbs:
+        ps = await _set_for(db, place_id, win)
+        if ps:
+            meta = ps.species_meta or [{"key": k} for k in (ps.species_set or [])]
+            plant_map = await resolve_latin_to_plants(db, [m["key"] for m in meta])
+            pids = [str(p.id) for p in plant_map.values() if p]
+            if pids:
+                counts = {b: n for b, n in (await db.execute(text(
+                    "SELECT biotope, count(DISTINCT plant_id) FROM plant_biotopes "
+                    "WHERE plant_id = ANY(cast(:ids as uuid[])) AND biotope = ANY(:bs) "
+                    "GROUP BY biotope"), {"ids": pids, "bs": pbs})).all()}
+    return {"place_id": str(place_id), "window": win,
+            "biotopes": [{"key": b, "group": BIOTOPE_GROUP.get(b, "прочее"),
+                          "species_count": counts.get(b, 0)} for b in sorted(pbs)]}
 
 
 # --------------------------------------------------- Phase 6: leaderboard (v1)
