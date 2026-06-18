@@ -85,6 +85,32 @@ export const getPlaceSet = (placeId: string, window: string) =>
     `/quests/place/${encodeURIComponent(placeId)}/set?window=${encodeURIComponent(window)}`,
   );
 
+export type PlantLite = {
+  id?: string;
+  name?: string;
+  name_latin?: string | null;
+  name_modern?: string | null;
+  family?: string | null;
+  is_toxic?: boolean;
+  verdict?: string | null;
+  photo_url?: string | null;
+  lead_fact?: unknown;
+  fun_fact?: unknown;
+  uses?: { action?: string; summary?: string | null }[];
+};
+export const getPlant = (id: string) =>
+  getJson<PlantLite>(`/plants/${encodeURIComponent(id)}?view=field`);
+
+/** A {text,source} object — or a bare string — → trimmed text or null. */
+export function quoteText(q: unknown): string | null {
+  if (!q) return null;
+  if (typeof q === "string") return q.trim() || null;
+  if (typeof q === "object" && q !== null && typeof (q as { text?: unknown }).text === "string") {
+    return ((q as { text: string }).text).trim() || null;
+  }
+  return null;
+}
+
 // ---- Display helpers (mirror Quest.kt) ----
 const MONTHS_GEN = [
   "января", "февраля", "марта", "апреля", "мая", "июня",
