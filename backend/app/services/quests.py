@@ -21,6 +21,7 @@ from app.services.inaturalist import INAT_BASE, _HEADERS
 from app.services.plant_matching import resolve_latin_to_plants, _latin_key
 from app.models.place import QuestPlace, QuestPlaceSet, QuestIssuedBadge
 from app.models.device import Device
+from app.models.identification import Identification
 
 logger = logging.getLogger(__name__)
 
@@ -423,19 +424,33 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
 
 # --------------------------------------------------- Phase 6: leaderboard (v1)
 
-async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20) -> dict:
-    """Global all-time leaderboard. score = Σ over each place×season badge of the
-    points of the HIGHEST tier reached (NOT the sum of all tiers — that would double-
-    count the ladder). `badges` = distinct place×season badges held. Server-counted
+async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20,
+                      scope: str = "global", place_id: str | None = None,
+                      window: str | None = None, year: int | None = None) -> dict:
+    """All-time leaderboard. score = Σ over each place×season badge of the points
+    of the HIGHEST tier reached (NOT the sum of all tiers — that would double-count
+    the ladder). `badges` = distinct place×season badges held. Server-counted
     (client never sends a score). Dense rank by score desc, tie-break earliest badge.
-    `me` returned even when outside the top."""
+    `me` returned even when outside the top.
+
+    `scope` narrows the board (badge_id is `{place_id}:{window}:{year}`):
+      • global — all badges (default, back-compatible)
+      • place  — only badges at `place_id`   (all its windows/years)
+      • season — only badges in `window`×`year` (across all places)."""
+    pat = None
+    if scope == "place" and place_id:
+        pat = f"{place_id}:%"
+    elif scope == "season" and window:
+        pat = f"%:{window}:{year or date.today().year}"
     rows = (await db.execute(text("""
         SELECT device_key, SUM(maxpts) AS score, COUNT(*) AS badges, MIN(first_at) AS first_at
         FROM (SELECT device_key, badge_id,
                      MAX(COALESCE(points, 0)) AS maxpts, MIN(issued_at) AS first_at
-              FROM quest_issued_badges GROUP BY device_key, badge_id) z
+              FROM quest_issued_badges
+              WHERE (:pat IS NULL OR badge_id LIKE :pat)
+              GROUP BY device_key, badge_id) z
         GROUP BY device_key
-    """))).all()
+    """), {"pat": pat})).all()
     ranked = sorted(rows, key=lambda r: (-r.score, r.first_at))
 
     nicks: dict = {}
@@ -470,3 +485,104 @@ async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20) -> dic
 def uuid_or(v):
     import uuid as _u
     return v if isinstance(v, _u.UUID) else _u.UUID(str(v))
+
+
+# --------------------------------------------------- Phase 7: public social read
+#
+# Read-only surfaces for the landing site (botanik.fun): a public «паспорт
+# натуралиста», a recent-badges activity feed, and leaderboard scoping (above).
+# GEOPRIVACY: these expose the place NAME only — never coordinates.
+
+# Client-side personal level ladder (mirrors Quest.kt naturalistLevel): species
+# thresholds → title. Computed from this device's distinct identifications.
+_LEVEL_AT = [1, 5, 15, 40, 100]
+_LEVEL_TITLE = ["новичок", "любитель", "знаток", "мастер", "легенда"]
+
+
+def _level_for(species: int) -> dict:
+    idx = 0
+    for i, a in enumerate(_LEVEL_AT):
+        if species >= a:
+            idx = i
+    return {"n": idx + 1, "title": _LEVEL_TITLE[idx], "species": species}
+
+
+async def _place_names(db, place_ids) -> dict:
+    """{place_id(str): name} for the given place ids (the badge_id first segment)."""
+    ids = []
+    for p in {pid for pid in place_ids if pid}:
+        try:
+            ids.append(uuid_or(p))
+        except (ValueError, AttributeError):
+            pass
+    if not ids:
+        return {}
+    rows = (await db.execute(select(QuestPlace.id, QuestPlace.name).where(
+        QuestPlace.id.in_(ids)))).all()
+    return {str(i): n for i, n in rows}
+
+
+async def _species_count(db, device_key) -> int:
+    """Distinct species this device identified (genus+species, like the client)."""
+    lats = (await db.execute(select(Identification.top_latin).where(
+        Identification.device_key == uuid_or(device_key),
+        Identification.top_latin.isnot(None)))).scalars().all()
+    seen = set()
+    for s in lats:
+        norm = " ".join((s or "").strip().lower().split()[:2])
+        if norm:
+            seen.add(norm)
+    return len(seen)
+
+
+async def public_profile(db: AsyncSession, device_key) -> dict:
+    """Public profile for the landing — nick, level, score, rank + the badge shelf
+    with place NAMES. Returns a valid (possibly empty) profile for any well-formed
+    key, so a fresh device still has a shareable page. No coordinates."""
+    dk = uuid_or(device_key)
+    nk = (await db.execute(select(Device.nickname).where(
+        Device.device_key == dk))).scalar_one_or_none()
+    species = await _species_count(db, dk)
+    shelf = await badge_shelf(db, str(dk))
+    names = await _place_names(db, [b.get("place_id") for b in shelf])
+    for b in shelf:
+        b["place"] = names.get(b.get("place_id"))
+    board = await leaderboard(db, device_key=str(dk), limit=1)
+    me = board.get("me") or {}
+    return {
+        "device_key": str(dk),
+        "nick": nk or auto_nick(dk),
+        "level": _level_for(species),
+        "score": me.get("score", 0),
+        "rank": me.get("rank"),
+        "badges": shelf,
+    }
+
+
+async def recent_badges(db: AsyncSession, limit: int = 20, place_id: str | None = None) -> dict:
+    """Newest issued badges (social-proof feed) — nick + place name + tier, no geo."""
+    q = (select(QuestIssuedBadge)
+         .order_by(QuestIssuedBadge.issued_at.desc()).limit(limit))
+    if place_id:
+        q = q.where(QuestIssuedBadge.badge_id.like(f"{place_id}:%"))
+    rows = (await db.execute(q)).scalars().all()
+    dks = list({r.device_key for r in rows})
+    nicks: dict = {}
+    if dks:
+        devs = (await db.execute(select(Device.device_key, Device.nickname).where(
+            Device.device_key.in_(dks)))).all()
+        nicks = {dk: nk for dk, nk in devs}
+    names = await _place_names(db, [r.badge_id.split(":")[0] for r in rows])
+    feed = []
+    for r in rows:
+        parts = r.badge_id.split(":")
+        pid = parts[0] if parts else None
+        feed.append({
+            "nick": nicks.get(r.device_key) or auto_nick(r.device_key),
+            "tier": r.tier, "name": _TIER_NAMES.get(r.tier, ""),
+            "place": names.get(pid), "place_id": pid,
+            "window": parts[1] if len(parts) > 1 else None,
+            "year": int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None,
+            "ordinal": r.ordinal, "issued_at": r.issued_at.isoformat(),
+        })
+    return {"badges": feed}

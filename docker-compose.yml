@@ -24,6 +24,22 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # === Public landing site (botanik.fun) ===
+  # Server-rendered marketing + public profiles. Fetches the INTERNAL backend on
+  # the compose network (no public-API exposure / CORS needed). Bound to
+  # 127.0.0.1 only — the HOST nginx terminates TLS for botanik.fun and proxies
+  # to this port (see deploy/botanik.fun.nginx.conf).
+  landing:
+    build: ./landing
+    environment:
+      - LANDING_API_BASE=http://backend:8000/api
+    ports:
+      - "127.0.0.1:8127:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
   backend:
     build: ./backend
     env_file: .env

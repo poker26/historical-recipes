@@ -1,5 +1,7 @@
 """Quests: the walk engine endpoint (Phase 3). Badges land here later."""
-from fastapi import APIRouter, Depends, Query
+import uuid as _uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -69,7 +71,35 @@ async def place_set(place_id: str, window: str | None = Query(None),
 @router.get("/leaderboard")
 async def leaderboard(device_key: str | None = Query(None),
                       limit: int = Query(20, ge=1, le=100),
+                      scope: str = Query("global", pattern="^(global|place|season)$"),
+                      place_id: str | None = Query(None, description="for scope=place"),
+                      window: str | None = Query(None, description="for scope=season, e.g. 'second-half-06'"),
+                      year: int | None = Query(None, description="for scope=season; default current year"),
                       db: AsyncSession = Depends(get_db)):
-    """Global all-time leaderboard. Score = Σ highest-tier points per place×season
-    badge (5/15/30), server-counted."""
-    return await quests.leaderboard(db, device_key=device_key, limit=limit)
+    """All-time leaderboard. Score = Σ highest-tier points per place×season badge
+    (5/15/30), server-counted. `scope`: global (default) · place (`place_id`) ·
+    season (`window`×`year`)."""
+    return await quests.leaderboard(db, device_key=device_key, limit=limit,
+                                    scope=scope, place_id=place_id, window=window, year=year)
+
+
+# --------- Public read surfaces for the landing (botanik.fun). No coordinates. ---------
+
+@router.get("/profile/{device_key}")
+async def public_profile(device_key: str, db: AsyncSession = Depends(get_db)):
+    """Public «паспорт натуралиста»: nick, level, score, rank + badge shelf with
+    place names. 404 on a malformed key; a valid-but-unknown key returns an empty
+    (but shareable) profile."""
+    try:
+        _uuid.UUID(device_key)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="not found")
+    return await quests.public_profile(db, device_key)
+
+
+@router.get("/recent-badges")
+async def recent_badges(limit: int = Query(20, ge=1, le=100),
+                        place_id: str | None = Query(None),
+                        db: AsyncSession = Depends(get_db)):
+    """Newest issued badges — social-proof activity feed (nick + place + tier)."""
+    return await quests.recent_badges(db, limit=limit, place_id=place_id)
