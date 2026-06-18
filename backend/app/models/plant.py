@@ -30,7 +30,12 @@ class Plant(Base):
     description: Mapped[str | None] = mapped_column(Text)         # botanical morphology + phenology (free text)
     parts_used: Mapped[list[str] | None] = mapped_column(ARRAY(String))  # лист, корень, цвет, кора, семя, плод, трава
     is_toxic: Mapped[bool] = mapped_column(Boolean, default=False)
-    kingdom: Mapped[str] = mapped_column(String(20), default="растение", server_default="растение")  # растение | гриб — biological kingdom; a mushroom guide tags its rows гриб so a future agent can ask for plants, fungi, or both unambiguously
+    kingdom: Mapped[str] = mapped_column(String(20), default="растение", server_default="растение")  # растение | гриб | вещество — biological kingdom (вещество = a non-plant materia-medica substance moved out of the herbarium); a mushroom guide tags its rows гриб so a future agent can ask for plants, fungi, or both unambiguously
+    # Genus tier (RFC-reference-granularity): rank=species|genus. A genus row is a
+    # HUB (no own facts) that bare/generic ingredient mentions («вишня») link to;
+    # its member species point back via parent_id. genus rows grounded by latin genus.
+    rank: Mapped[str] = mapped_column(String(20), default="species", server_default="species")
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("plants.id", ondelete="SET NULL"))
     qdrant_point_id: Mapped[str | None] = mapped_column(String(100))
     qdrant_collection: Mapped[str | None] = mapped_column(String(50))
 

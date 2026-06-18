@@ -532,3 +532,20 @@ async def recipe_relink_activity() -> dict:
     async with async_session() as db:
         res = await relink_recipe_ingredients(db, progress=_hb)
     return {"phase": "recipe_relink", **res}
+
+
+@activity.defn
+async def genus_assembly_activity() -> dict:
+    """Durable genus-tier assembly (RFC-reference-granularity): create a hub genus row
+    (rank='genus') per Russian noun-token realized by ≥2 species, grounded by latin
+    genus, and parent the confirmed members. Idempotent (find-or-create genus, first-
+    claim parent_id) → a worker restart just resumes. Commits per genus; heartbeats
+    through the ~2K-token loop. Run BEFORE the genus-aware relink."""
+    from app.services.genus import build_genus_tier
+
+    def _hb(done, total, genera):
+        activity.heartbeat({"done": done, "total": total, "genera": genera})
+
+    async with async_session() as db:
+        res = await build_genus_tier(db, dry_run=False, progress=_hb)
+    return {"phase": "genus_assembly", **res}

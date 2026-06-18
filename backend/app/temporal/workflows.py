@@ -43,6 +43,7 @@ with workflow.unsafe.imports_passed_through():
         biotope_canon_activity,
         conflict_check_activity,
         recipe_relink_activity,
+        genus_assembly_activity,
     )
     from app.temporal.quest_activities import (
         osm_ingest_region_activity,
@@ -546,6 +547,22 @@ class BiotopeCanonWorkflow:
             biotope_canon_activity, start_to_close_timeout=timedelta(hours=48),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"BiotopeCanonWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class GenusTierWorkflow:
+    """Durable genus-tier assembly (RFC-reference-granularity): create a hub genus row
+    (rank='genus') per Russian noun-token realized by ≥2 species, grounded by latin
+    genus; parent the confirmed members. Idempotent (find-or-create + first-claim
+    parent). Singleton 'genus-tier'. Run BEFORE the genus-aware recipe relink."""
+
+    @workflow.run
+    async def run(self) -> dict:
+        out = await workflow.execute_activity(
+            genus_assembly_activity, start_to_close_timeout=timedelta(hours=2),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"GenusTierWorkflow done: {out}")
         return out
 
 
