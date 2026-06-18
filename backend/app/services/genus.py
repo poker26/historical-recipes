@@ -58,17 +58,26 @@ _GENUS_SYN = {
     "jacobaea": "senecio", "oreomecon": "papaver", "phedimus": "sedum",
     "micranthes": "saxifraga", "pseudognaphalium": "gnaphalium",
     "omalotheca": "gnaphalium", "pentanema": "inula",
+    # segregate genera folded back to the folk-level genus (false-C → A)
+    "pseudopodospermum": "scorzonera", "takhtajaniantha": "scorzonera",
+    "cota": "anthemis",
+    # OCR spelling variants of one genus (typo, not a real second genus)
+    "polemanium": "polemonium", "dactylorchiza": "dactylorhiza", "spireae": "spiraea",
 }
+
+# Latin-name abbreviations that are NOT genera (so «Spiraea sp.» doesn't read as a
+# second genus «sp»). Single-letter genera already collapse to None below.
+_LATIN_ABBREV = {"sp", "spp", "ssp", "subsp", "var", "cv", "f", "aff", "cf"}
 
 
 def acc_genus(name_latin: str | None) -> str | None:
     """Accepted latin genus of a name, or None. Single-letter «genera» (OCR
-    abbreviations like «A. absinthium») collapse to None — not a distinct genus."""
+    abbreviations like «A. absinthium») and rank abbreviations collapse to None."""
     k = _latin_key(name_latin)
     if not k:
         return None
     g = k.split()[0]
-    if len(g) <= 1:
+    if len(g) <= 1 or g in _LATIN_ABBREV:
         return None
     return _GENUS_SYN.get(g, g)
 
