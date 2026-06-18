@@ -154,16 +154,22 @@ _ADJ_SUFFIXES = (
 # Broad adjectival tails the curated list above misses — bare colour/size/plural
 # forms (жёлт-ый, ядовит-ые, малинов-ые). Without these, a plural epithet leaks as
 # a fake noun-key: «Малиновые ядовитые грибы» seeded "малиновы", which then captured
-# «малиновый сок» (raspberry juice → a TOXIC bolete). NB: bare "-ой" is DELIBERATELY
-# absent — it would eat real noun heads like «зверобой», «иван-да-марья» genitives.
+# «малиновый сок» (raspberry juice → a TOXIC bolete). "-ой" IS included (полевой,
+# большой, морской, луговой, прямой leaked as fake genus heads) — but a tiny whitelist
+# below protects the rare NOUN heads that genuinely end "-ой" (зверобой).
 _ADJ_BROAD = (
     "ые", "ие", "ых", "их", "ыми", "ими", "ый", "ий", "ое", "ее", "ая", "яя",
-    "ую", "юю", "ого", "его", "ому", "ему",
+    "ую", "юю", "ого", "его", "ому", "ему", "ой",
 )
+# Noun heads that LOOK adjectival (end "-ой") but are real plant nouns — never
+# demote these to adjective. Small + curated; grows if another surfaces.
+_NOUN_NOT_ADJ = {"зверобой"}
 
 
 def _is_adjective(tok: str) -> bool:
     """Heuristic: does a (normalized, pre-stem) token look like an adjective?"""
+    if tok in _NOUN_NOT_ADJ:
+        return False
     return len(tok) >= 5 and (tok.endswith(_ADJ_SUFFIXES) or tok.endswith(_ADJ_BROAD))
 
 
