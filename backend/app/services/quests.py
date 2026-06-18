@@ -544,8 +544,7 @@ async def public_profile(db: AsyncSession, device_key) -> dict:
     with place NAMES. Returns a valid (possibly empty) profile for any well-formed
     key, so a fresh device still has a shareable page. No coordinates."""
     dk = uuid_or(device_key)
-    nk = (await db.execute(select(Device.nickname).where(
-        Device.device_key == dk))).scalar_one_or_none()
+    dev = await db.get(Device, dk)
     species = await _species_count(db, dk)
     shelf = await badge_shelf(db, str(dk))
     names = await _place_names(db, [b.get("place_id") for b in shelf])
@@ -555,7 +554,8 @@ async def public_profile(db: AsyncSession, device_key) -> dict:
     me = board.get("me") or {}
     return {
         "device_key": str(dk),
-        "nick": nk or auto_nick(dk),
+        "nick": (dev.nickname if dev else None) or auto_nick(dk),
+        "avatar": dev.avatar if dev else None,
         "level": _level_for(species),
         "score": me.get("score", 0),
         "rank": me.get("rank"),

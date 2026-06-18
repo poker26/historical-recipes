@@ -41,6 +41,7 @@ export type Badge = {
 export type Profile = {
   device_key: string;
   nick: string;
+  avatar?: string | null;
   level: { n: number; title: string; species: number };
   score: number;
   rank: number | null;

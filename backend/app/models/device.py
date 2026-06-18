@@ -23,5 +23,7 @@ class Device(Base):
 
     device_key: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     nickname: Mapped[str | None] = mapped_column(String(60))
+    # Chosen avatar slug from the curated set (e.g. "cactus"); null = default.
+    avatar: Mapped[str | None] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

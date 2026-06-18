@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { getProfile, pluralRu, cap } from "../../lib";
-import { Header, Footer, DownloadButtons, BadgeTile } from "../../ui";
+import { Header, Footer, DownloadButtons, BadgeTile, ProfileCrest } from "../../ui";
 
 type Params = { params: { id: string } };
 
@@ -36,14 +36,17 @@ export default async function ProfilePage({ params }: Params) {
       ) : (
         <>
           {/* Passport */}
-          <section className="hero-grad" style={{ padding: "32px 28px", marginTop: 12 }}>
-            <div style={{ fontSize: 13, color: "#5a6b5f", fontWeight: 600 }}>ПАСПОРТ НАТУРАЛИСТА</div>
-            <h1 style={{ fontSize: 32, margin: "6px 0 10px" }}>{p.nick}</h1>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <span className="chip">🌿 {cap(p.level.title)} · уровень {p.level.n}</span>
-              <span className="chip">{p.level.species} {pluralRu(p.level.species, "вид", "вида", "видов")}</span>
-              {p.rank ? <span className="chip">#{p.rank} в рейтинге</span> : null}
-              <span className="chip">{p.score} очков</span>
+          <section className="hero-grad" style={{ padding: "28px 28px", marginTop: 12, display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap" }}>
+            <ProfileCrest avatar={p.avatar} level={p.level.n} />
+            <div style={{ flex: 1, minWidth: 240 }}>
+              <div style={{ fontSize: 13, color: "#5a6b5f", fontWeight: 600 }}>ПАСПОРТ НАТУРАЛИСТА</div>
+              <h1 style={{ fontSize: 32, margin: "6px 0 10px" }}>{p.nick}</h1>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <span className="chip">🌿 {cap(p.level.title)} · уровень {p.level.n}</span>
+                <span className="chip">{p.level.species} {pluralRu(p.level.species, "вид", "вида", "видов")}</span>
+                {p.rank ? <span className="chip">#{p.rank} в рейтинге</span> : null}
+                <span className="chip">{p.score} очков</span>
+              </div>
             </div>
           </section>
 

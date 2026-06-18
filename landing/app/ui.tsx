@@ -100,6 +100,25 @@ export function DownloadButtons() {
   );
 }
 
+/** Avatar disc framed by the level wreath, for the profile page (browser, not OG). */
+export function ProfileCrest({ avatar, level, size = 168 }: { avatar?: string | null; level: number; size?: number }) {
+  const a = Math.round(size * 0.6);
+  const off = (size - a) / 2;
+  const w = Math.min(5, Math.max(1, level));
+  return (
+    <div style={{ position: "relative", width: size, height: size, flex: "0 0 auto" }}>
+      {avatar ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={`/avatars/${avatar}.png`} width={a} height={a} alt="" style={{ position: "absolute", top: off, left: off, borderRadius: a / 2 }} />
+      ) : (
+        <div style={{ position: "absolute", top: off, left: off, width: a, height: a, borderRadius: a / 2, background: "#cfe3cf" }} />
+      )}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={`/wreaths/${w}.png`} width={size} height={size} alt="" style={{ position: "absolute", top: 0, left: 0 }} />
+    </div>
+  );
+}
+
 export function Header() {
   return (
     <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 0" }}>

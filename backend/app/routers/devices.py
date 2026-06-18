@@ -22,6 +22,17 @@ class NicknameUpdate(BaseModel):
     nickname: str | None = None
 
 
+class AvatarUpdate(BaseModel):
+    avatar: str | None = None
+
+
+# Curated avatar set (slugs) — assets live at botanik.fun/avatars/{slug}.png.
+AVATARS = {
+    "cactus", "sunflower", "flyagaric", "dandelion", "monstera", "aloe", "basil",
+    "rose", "fern", "oak", "clover", "tulip", "wheat", "flytrap", "succulent", "pine",
+}
+
+
 @router.post("/register")
 async def register_device(device_key: uuid.UUID = Query(...), db: AsyncSession = Depends(get_db)):
     """Silently upsert the client-generated device UUID. Idempotent — a repeat
@@ -45,3 +56,25 @@ async def set_nickname(device_key: uuid.UUID, body: NicknameUpdate,
     d.nickname = (body.nickname or "").strip() or None
     await db.commit()
     return {"status": "ok", "nickname": d.nickname}
+
+
+@router.patch("/{device_key}/avatar")
+async def set_avatar(device_key: uuid.UUID, body: AvatarUpdate,
+                     db: AsyncSession = Depends(get_db)):
+    """Pick an avatar from the curated set (or null to clear). Validated against
+    the known slugs so the stored value always resolves to an asset."""
+    d = await db.get(Device, device_key)
+    if not d:
+        raise HTTPException(status_code=404, detail="device not registered")
+    av = (body.avatar or "").strip() or None
+    if av is not None and av not in AVATARS:
+        raise HTTPException(status_code=400, detail="unknown avatar")
+    d.avatar = av
+    await db.commit()
+    return {"status": "ok", "avatar": d.avatar}
+
+
+@router.get("/avatars")
+async def list_avatars():
+    """The curated avatar slugs (client renders the picker from these)."""
+    return {"avatars": sorted(AVATARS)}
