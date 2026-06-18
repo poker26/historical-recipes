@@ -92,7 +92,7 @@ export function DownloadButtons() {
         📲 Скачать в RuStore
       </a>
       {APPSTORE_URL ? (
-        <a href={APPSTORE_URL} target="_blank" rel="noopener" className="btn btn-ghost"> App Store</a>
+        <a href={APPSTORE_URL} target="_blank" rel="noopener" className="btn btn-ghost"> Скачать в App Store</a>
       ) : (
         <span className="btn btn-disabled"> App Store — скоро</span>
       )}

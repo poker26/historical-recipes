@@ -138,7 +138,8 @@ export function pluralRu(n: number, one: string, few: string, many: string): str
   return many;
 }
 
-// Store links (env-overridable). iOS is TestFlight-only for now → marked "скоро".
+// Store links (env-overridable). App Store v1.0 is live (id 6778605472).
 export const RUSTORE_URL =
   process.env.NEXT_PUBLIC_RUSTORE_URL || "https://www.rustore.ru/catalog/app/ru.begemot.plantid";
-export const APPSTORE_URL = process.env.NEXT_PUBLIC_APPSTORE_URL || "";
+export const APPSTORE_URL =
+  process.env.NEXT_PUBLIC_APPSTORE_URL || "https://apps.apple.com/app/id6778605472";
