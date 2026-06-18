@@ -121,3 +121,38 @@ async def build_place_biotopes(db, place_id: str, client: httpx.AsyncClient) -> 
     if seed:
         biotopes.add(seed)
     return biotopes
+
+
+async def biotope_at_point(db, lat: float, lng: float, client: httpx.AsyncClient,
+                           radius_deg: float = 0.003) -> set[str]:
+    """Canonical biotope(s) of an ARBITRARY GPS point (RFC-cold-start-nearby P1):
+    the landcover polygon(s) the point falls inside. Works anywhere OSM has landcover
+    (not just named places) → the «field vs forest» primitive for «5 plants near you».
+    Empty set = point not inside any mapped landcover → caller falls back to ungated."""
+    s, w, n, e = lat - radius_deg, lng - radius_deg, lat + radius_deg, lng + radius_deg
+    pairs: list[tuple[str, str]] = []
+    try:
+        r = await client.post(OVERPASS_URL,
+                              data={"data": _overpass_landcover_query(s, w, n, e)},
+                              headers=_HEADERS)
+        r.raise_for_status()
+        fc = osm2geojson.json2geojson(r.json())
+        for feat in fc.get("features", []):
+            geom = feat.get("geometry") or {}
+            if geom.get("type") not in ("Polygon", "MultiPolygon"):
+                continue  # the point must be INSIDE an area
+            b = _tags_to_biotope((feat.get("properties") or {}).get("tags") or {})
+            if b in _BSET:
+                pairs.append((json.dumps(geom), b))
+    except Exception as ex:
+        logger.warning("overpass point landcover %s,%s: %s", lat, lng, str(ex)[:80])
+    if not pairs:
+        return set()
+    rows = (await db.execute(text("""
+        SELECT DISTINCT f.biotope
+        FROM unnest(cast(:gjs as text[]), cast(:bios as text[])) AS f(gj, biotope)
+        WHERE ST_Contains(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON(f.gj), 4326)),
+                          ST_SetSRID(ST_MakePoint(:lng, :lat), 4326))
+    """), {"gjs": [p[0] for p in pairs], "bios": [p[1] for p in pairs],
+           "lng": lng, "lat": lat})).all()
+    return {x[0] for x in rows}

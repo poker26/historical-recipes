@@ -40,6 +40,10 @@ mcp>=1.9.0
 osm2geojson>=0.2.4
 shapely>=2.0.0
 
+# ESA WorldCover raster point-lookup → «biotope at a GPS point» (RFC-cold-start-nearby).
+# manylinux wheel bundles GDAL, so no system gdal/libgdal is needed.
+rasterio>=1.3.0
+
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

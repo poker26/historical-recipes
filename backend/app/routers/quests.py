@@ -20,6 +20,16 @@ async def walk(lat: float = Query(...), lng: float = Query(...),
     return await quests.build_walk(db, lat, lng, month=month, theme=theme)
 
 
+@router.get("/nearby")
+async def nearby(lat: float = Query(...), lng: float = Query(...),
+                 biotope: str | None = Query(None, description="override the point's OSM biotope"),
+                 month: int | None = Query(None, ge=1, le=12, description="phenology filter"),
+                 db: AsyncSession = Depends(get_db)):
+    """«5 растений рядом» — cold-start base (RFC-cold-start-nearby): live iNat near
+    the point, ranked so habitat-appropriate corpus species lead. Works anywhere."""
+    return await quests.nearby(db, lat, lng, biotope=biotope, month=month)
+
+
 @router.post("/set/compute")
 async def compute_set(place_id: str = Query(...), window: str = Query(..., description="e.g. 'first-half-06'"),
                       db: AsyncSession = Depends(get_db)):

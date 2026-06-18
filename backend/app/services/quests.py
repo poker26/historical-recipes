@@ -171,6 +171,68 @@ async def build_walk(db: AsyncSession, lat: float, lng: float,
             "radius_km": used_radius, "theme": theme, "items": items}
 
 
+async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None = None,
+                 month: int | None = None, target: int = 5) -> dict:
+    """«5 растений рядом» — the cold-start base (RFC-cold-start-nearby): live iNat
+    frequency near the point, RANKED so habitat-appropriate corpus species lead. The
+    point's biotope (OSM landcover at the GPS, or the explicit `biotope`) fixes the
+    «I'm in a field but the radius pulled forest species» problem. Works ANYWHERE —
+    no precomputed place needed. Always returns up to `target` (soft filter: biotope-
+    matching first, then corpus, then the rest, iNat-frequency order within each tier)."""
+    from app.services.worldcover import biotope_at
+
+    # biotope of the point from the local WorldCover raster (no egress, no Overpass
+    # rate-limit) — the «field vs forest» primitive. Explicit `biotope` overrides.
+    bios = {biotope} if biotope else await asyncio.to_thread(biotope_at, lat, lng)
+    used_radius = _RADII_KM[-1]
+    recognizable: list[dict] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        for radius in _RADII_KM:
+            species = await _species_counts(client, lat, lng, radius, month=month)
+            recognizable = [s for s in species if _recognizable(s)]
+            if len(recognizable) >= _MIN_CANDIDATES:
+                used_radius = radius
+                break
+
+    plant_map = await resolve_latin_to_plants(db, [s["latin"] for s in recognizable])
+    # corpus plants whose habitat matches the point's biotope
+    match_ids: set[str] = set()
+    if bios:
+        pids = [str(p.id) for p in plant_map.values() if p]
+        if pids:
+            match_ids = {r[0] for r in (await db.execute(text(
+                "SELECT DISTINCT plant_id::text FROM plant_biotopes "
+                "WHERE plant_id = ANY(cast(:ids as uuid[])) AND biotope = ANY(:bs)"),
+                {"ids": pids, "bs": list(bios)})).all()}
+
+    def _tier(s: dict) -> int:
+        p = plant_map.get(s["latin"])
+        if p is not None and str(p.id) in match_ids:
+            return 0          # corpus + habitat-appropriate → lead
+        if p is not None:
+            return 1          # in corpus (tap → monograph)
+        return 2              # iNat-only, no monograph
+
+    items, seen = [], set()
+    for s in sorted(recognizable, key=_tier):   # stable → iNat-frequency order kept within tier
+        k = _latin_key(s["latin"])
+        if k in seen:
+            continue
+        seen.add(k)
+        p = plant_map.get(s["latin"])
+        items.append({
+            "latin_key": k, "name": s.get("name_ru") or s["latin"], "latin": s["latin"],
+            "inat_photo": s.get("photo"), "plant_id": str(p.id) if p is not None else None,
+            "count": s.get("count"),
+            "biotope_match": bool(p is not None and str(p.id) in match_ids),
+        })
+        if len(items) >= target:
+            break
+
+    return {"kind": "nearby", "near": {"lat": lat, "lng": lng}, "radius_km": used_radius,
+            "biotopes": sorted(bios), "items": items}
+
+
 # ----------------------------------------------------------- Phase 4: species-set
 
 async def compute_species_set(db: AsyncSession, place_id: str, label: str) -> dict:
