@@ -61,11 +61,10 @@ export default async function Image({ params }: Params) {
           <div style={{ fontSize: 30, color: "#5a6b5f" }}>Паспорт натуралиста</div>
           <div style={{ fontSize: 72, fontWeight: 700, color: "#1f2a24", marginTop: 6 }}>{nick}</div>
           <div style={{ fontSize: 40, color: "#2E7D32", fontWeight: 700, marginTop: 12 }}>
-            {levelTitle} · уровень {levelN}
+            {`${levelTitle} · уровень ${levelN}`}
           </div>
           <div style={{ fontSize: 30, color: "#3f4a43", marginTop: 8 }}>
-            {species} {pluralRu(species, "вид", "вида", "видов")} · {badges}{" "}
-            {pluralRu(badges, "значок", "значка", "значков")}
+            {`${species} ${pluralRu(species, "вид", "вида", "видов")} · ${badges} ${pluralRu(badges, "значок", "значка", "значков")}`}
           </div>
         </div>
 
