@@ -6,6 +6,7 @@ ADAPTIVE radius), keeps the recognizable ones, applies optional theme safety
 returns the top-N as walk cards. Corpus is NOT required — a species we lack is
 still a card (iNat name/photo, plant_id null).
 """
+import asyncio
 import calendar
 import hashlib
 import logging
@@ -166,14 +167,25 @@ async def compute_species_set(db: AsyncSession, place_id: str, label: str) -> di
         return {"error": "place not found"}
     name, swlat, swlng, nelat, nelng = row
     month = _window_month(label)
+    # Retry iNat; a FAILED call must NOT be read as obs_total=0 → false low_density
+    # (that silently lost rich places like Нескучный сад: 235 obs → 0). results stays
+    # None until a 200 lands; if every attempt fails we return a distinct inat_error
+    # (transient, retry later), NOT low_density. A 200 with [] IS genuinely empty.
+    results = None
     async with httpx.AsyncClient(timeout=60) as client:
-        try:
-            r = await client.get(f"{INAT_BASE}/observations/species_counts", headers=_HEADERS, params={
-                "nelat": nelat, "nelng": nelng, "swlat": swlat, "swlng": swlng, "month": month,
-                "iconic_taxa": "Plantae", "quality_grade": "research", "per_page": 100, "locale": "ru"})
-            results = r.json().get("results", []) if r.status_code == 200 else []
-        except (httpx.HTTPError, ValueError):
-            results = []
+        for attempt in range(3):
+            try:
+                r = await client.get(f"{INAT_BASE}/observations/species_counts", headers=_HEADERS, params={
+                    "nelat": nelat, "nelng": nelng, "swlat": swlat, "swlng": swlng, "month": month,
+                    "iconic_taxa": "Plantae", "quality_grade": "research", "per_page": 100, "locale": "ru"})
+                if r.status_code == 200:
+                    results = r.json().get("results", [])
+                    break
+                await asyncio.sleep(2 * (attempt + 1))
+            except (httpx.HTTPError, ValueError):
+                await asyncio.sleep(1.5 * (attempt + 1))
+    if results is None:
+        return {"place": name, "window": label, "skipped": "inat_error"}
     recog = [x for x in results
              if (x.get("taxon") or {}).get("rank") in ("species", "subspecies")
              and (x.get("taxon") or {}).get("default_photo")]

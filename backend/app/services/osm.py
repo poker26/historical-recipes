@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # Overpass returns 406 Not Acceptable without an identifiable User-Agent.
 _HEADERS = {"User-Agent": "chto-rastet-quests/1.0 (botanical walks app)"}
+# Below this a "place" is an urban courtyard / alley / micro-square — no nature-walk
+# value, excluded from ingest (0.05 km² = 50 000 m²).
+_MIN_AREA_M2 = 50_000
 
 
 def _kind(tags: dict) -> str:
@@ -68,21 +71,25 @@ async def ingest_bbox(db, s: float, w: float, n: float, e: float) -> dict:
             continue
         osm_id = f"{props.get('type', 'way')}/{props.get('id')}"
         try:
+            # Skip micro-places (urban courtyards/alleys/squares < _MIN_AREA_M2): no
+            # nature-walk value, they just pollute the map + waste iNat density queries.
             res = await db.execute(text("""
                 INSERT INTO quest_places (osm_id, name, kind, geom, area)
-                VALUES (
-                    :osm_id, :name, :kind,
-                    ST_Multi(ST_CollectionExtract(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON(:gj), 4326)), 3)),
-                    ST_Area(ST_SetSRID(ST_GeomFromGeoJSON(:gj), 4326)::geography)
-                )
+                SELECT :osm_id, :name, :kind, g.geom, g.area FROM (
+                    SELECT ST_Multi(ST_CollectionExtract(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON(:gj), 4326)), 3)) AS geom,
+                           ST_Area(ST_SetSRID(ST_GeomFromGeoJSON(:gj), 4326)::geography) AS area
+                ) g
+                WHERE g.area >= :minarea
                 ON CONFLICT (osm_id) DO UPDATE SET
                     name=EXCLUDED.name, kind=EXCLUDED.kind, geom=EXCLUDED.geom,
                     area=EXCLUDED.area, updated_at=now()
                 RETURNING (xmax = 0) AS inserted
             """), {"osm_id": osm_id, "name": name, "kind": _kind(tags),
-                   "gj": json.dumps(geom)})
+                   "gj": json.dumps(geom), "minarea": _MIN_AREA_M2})
             row = res.first()
-            if row and row[0]:
+            if row is None:
+                skipped += 1
+            elif row[0]:
                 inserted += 1
             else:
                 updated += 1
