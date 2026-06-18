@@ -169,4 +169,4 @@ export function pluralRu(n: number, one: string, few: string, many: string): str
 export const RUSTORE_URL =
   process.env.NEXT_PUBLIC_RUSTORE_URL || "https://www.rustore.ru/catalog/app/ru.begemot.plantid";
 export const APPSTORE_URL =
-  process.env.NEXT_PUBLIC_APPSTORE_URL || "https://apps.apple.com/app/id6778605472";
+  process.env.NEXT_PUBLIC_APPSTORE_URL || "https://apps.apple.com/ru/app/что-растёт/id6778605472";
