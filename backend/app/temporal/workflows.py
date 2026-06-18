@@ -42,6 +42,7 @@ with workflow.unsafe.imports_passed_through():
         fill_latin_activity,
         biotope_canon_activity,
         conflict_check_activity,
+        recipe_relink_activity,
     )
     from app.temporal.quest_activities import (
         osm_ingest_region_activity,
@@ -499,6 +500,22 @@ class FillLatinWorkflow:
             fill_latin_activity, start_to_close_timeout=timedelta(hours=48),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"FillLatinWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class RecipeRelinkWorkflow:
+    """Corpus-wide recipe→plant relink (Phase 2b): clear + rematch all recipe/ingredient
+    links against the cleaned plant identity. Idempotent full recompute. GATE: run only
+    AFTER the plant-identity foundation is closed (merge + fill-latin + conflict + the
+    1g alias.collision strip). Singleton 'recipe-relink'."""
+
+    @workflow.run
+    async def run(self) -> dict:
+        out = await workflow.execute_activity(
+            recipe_relink_activity, start_to_close_timeout=timedelta(hours=6),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"RecipeRelinkWorkflow done: {out}")
         return out
 
 

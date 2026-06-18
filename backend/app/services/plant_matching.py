@@ -453,6 +453,7 @@ async def relink_recipe_ingredients(
     db: AsyncSession,
     plants: list[Plant] | None = None,
     commit: bool = True,
+    progress=None,
 ) -> dict:
     """(Re)compute plant links for every canonical ingredient and recipe
     ingredient against the current plants table. Idempotent — safe to run
@@ -488,7 +489,9 @@ async def relink_recipe_ingredients(
     # 2) recipe ingredients → plant (inherit canonical link, else match names)
     ris = (await db.execute(select(RecipeIngredient))).scalars().all()
     linked_ri = 0
-    for ri in ris:
+    for i, ri in enumerate(ris):
+        if progress is not None and i % 1000 == 0:
+            progress(i, len(ris), linked_ri)
         ing = ing_by_id.get(ri.ingredient_id) if ri.ingredient_id else None
         if ing is not None and ing.plant_id is not None:
             if ri.plant_id != ing.plant_id:

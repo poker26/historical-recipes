@@ -502,3 +502,21 @@ async def conflict_check_activity() -> dict:
                                     "agree": agree, "nomatch": nomatch, "synonym": synonym})
     return {"phase": "conflict", "fixed": fixed, "review": review,
             "agree": agree, "nomatch": nomatch, "synonym": synonym}
+
+
+# ------------------------------------------------------------------ recipe relink (2b)
+@activity.defn
+async def recipe_relink_activity() -> dict:
+    """Corpus-wide 2b recipe→plant relink: clear every recipe/ingredient plant_id and
+    rematch against the CLEANED plant identity (merged + latin-filled + conflict-fixed,
+    alias.collision magnets already stripped in 1g — else the matcher re-captures the
+    «вишня»→308-cherry mis-routing). Idempotent full recompute → retry-safe; heartbeats
+    through the ~48K-row matching loop so it can't blow the timeout."""
+    from app.services.plant_matching import relink_recipe_ingredients
+
+    def _hb(done, total, linked):
+        activity.heartbeat({"matched": done, "total": total, "linked": linked})
+
+    async with async_session() as db:
+        res = await relink_recipe_ingredients(db, progress=_hb)
+    return {"phase": "recipe_relink", **res}

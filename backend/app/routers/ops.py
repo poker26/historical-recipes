@@ -13,6 +13,7 @@ router = APIRouter()
 CLEANUP_TYPES = [
     "FillLatinWorkflow",
     "IdentityConflictWorkflow",
+    "RecipeRelinkWorkflow",
     "BiotopeCanonWorkflow",
     "PlantCleanupWorkflow",
     "QuestSetBuilderWorkflow",

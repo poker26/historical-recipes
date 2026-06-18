@@ -30,7 +30,8 @@ from app.temporal import quest_activities
 from app.temporal import monograph_activities
 from app.temporal.workflows import (
     BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow, BiotopeCanonWorkflow,
-    IdentityConflictWorkflow, OsmIngestWorkflow, QuestSetBuilderWorkflow, ReaderMonographWorkflow,
+    IdentityConflictWorkflow, RecipeRelinkWorkflow, OsmIngestWorkflow, QuestSetBuilderWorkflow,
+    ReaderMonographWorkflow,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -48,8 +49,8 @@ async def main():
         client,
         task_queue=DISPATCHER_TASK_QUEUE,
         workflows=[BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow,
-                   BiotopeCanonWorkflow, IdentityConflictWorkflow, OsmIngestWorkflow,
-                   QuestSetBuilderWorkflow, ReaderMonographWorkflow],
+                   BiotopeCanonWorkflow, IdentityConflictWorkflow, RecipeRelinkWorkflow,
+                   OsmIngestWorkflow, QuestSetBuilderWorkflow, ReaderMonographWorkflow],
         activities=[
             activities.maintain_pool_activity,
             # Autonomous plant-cleanup chain + quests-build + Layer-2 monograph batch.
@@ -61,6 +62,7 @@ async def main():
             cleanup_activities.fill_latin_activity,
             cleanup_activities.biotope_canon_activity,
             cleanup_activities.conflict_check_activity,
+            cleanup_activities.recipe_relink_activity,
             quest_activities.osm_ingest_region_activity,
             quest_activities.build_place_sets_activity,
             monograph_activities.generate_monographs_activity,
