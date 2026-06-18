@@ -811,6 +811,89 @@ async def plant_observations(
     )
 
 
+async def _genus_view(db: AsyncSession, genus: Plant) -> dict:
+    """Hub view of a genus row: its member species + their facts AGGREGATED with
+    per-species attribution (no invented genus-level facts), plus the generic
+    recipe mentions that resolved to the genus. Consumed by the web card, the
+    field client and MCP — all branch on ``rank == "genus"``."""
+    members = (await db.execute(
+        select(Plant).where(Plant.parent_id == genus.id)
+        .options(selectinload(Plant.medicinal_uses).selectinload(PlantMedicinalUse.action),
+                 selectinload(Plant.compounds))
+        .order_by(Plant.name)
+    )).scalars().all()
+
+    book_ids: set[uuid.UUID] = set()
+    for m in members:
+        for u in m.medicinal_uses:
+            if u.source_book_id:
+                book_ids.add(u.source_book_id)
+    titles: dict[str, str] = {}
+    if book_ids:
+        books = (await db.execute(select(Book).where(Book.id.in_(book_ids)))).scalars().all()
+        titles = _book_title_map(books)
+
+    # uses: group by action across members, keep which species report it + sources.
+    use_agg: dict[str, dict] = {}
+    for m in members:
+        for u in m.medicinal_uses:
+            act = (u.action.name if u.action else u.action_raw) or None
+            if not act or is_nontarget_action(act):
+                continue
+            d = use_agg.setdefault(act, {"species": set(), "sources": set(), "ind": []})
+            d["species"].add(m.name)
+            t = titles.get(str(u.source_book_id)) if u.source_book_id else None
+            if t:
+                d["sources"].add(t)
+            d["ind"].extend(u.indications or [])
+    uses = sorted(
+        ({"action": a, "n_species": len(d["species"]),
+          "species": sorted(d["species"])[:8],
+          "indications": _distinct(d["ind"])[:6],
+          "sources": sorted(d["sources"])[:5]}
+         for a, d in use_agg.items()),
+        key=lambda x: (-x["n_species"], x["action"]))[:40]
+
+    # compounds: group by name across members, with species attribution.
+    comp_agg: dict[str, set] = {}
+    for m in members:
+        for c in m.compounds:
+            name = (c.compound or "").strip()
+            if name:
+                comp_agg.setdefault(name, set()).add(m.name)
+    compounds = sorted(
+        ({"compound": k, "n_species": len(v), "species": sorted(v)[:8]}
+         for k, v in comp_agg.items()),
+        key=lambda x: (-x["n_species"], x["compound"]))[:40]
+
+    recipe_rows = (await db.execute(
+        select(Recipe.id, Recipe.name, Recipe.category, Book.title, Book.year)
+        .join(RecipeIngredient, RecipeIngredient.recipe_id == Recipe.id)
+        .join(Book, Recipe.book_id == Book.id)
+        .where(RecipeIngredient.plant_id == genus.id)
+        .distinct().order_by(Recipe.name)
+    )).all()
+    recipes = [{"id": str(r[0]), "name": r[1], "category": r[2], "book": r[3], "year": r[4]}
+               for r in recipe_rows]
+
+    return {
+        "id": str(genus.id),
+        "name": genus.name,
+        "name_latin": genus.name_latin,
+        "rank": "genus",
+        "kingdom": genus.kingdom,
+        "member_count": len(members),
+        "members": [{"id": str(m.id), "name": m.name, "name_latin": m.name_latin}
+                    for m in members],
+        "uses": uses,
+        "compounds": compounds,
+        "recipes": recipes,
+        "note": (f"Род «{genus.name}» — обобщает виды рода; факты приведены с "
+                 f"атрибуцией по видам. Рецепты с недоопределённым названием "
+                 f"привязаны сюда — конкретный вид смотрите в карточке вида."),
+    }
+
+
 @router.get("/{plant_id}")
 async def get_plant(
     plant_id: uuid.UUID,
@@ -845,6 +928,12 @@ async def get_plant(
     plant = (await db.execute(stmt)).scalar_one_or_none()
     if plant is None:
         raise HTTPException(status_code=404, detail="Plant not found")
+
+    # Genus tier (RFC-reference-granularity): a genus row is a HUB with no own
+    # facts — it aggregates its member species (with per-species attribution) and
+    # owns the generic «вишня»-style recipe mentions. Same shape for default+field.
+    if (plant.rank or "species") == "genus":
+        return await _genus_view(db, plant)
 
     # Layer 2: if a vetted reader-monograph exists, serve it (humans get the
     # precomputed prose; recipes/sources are baked in at generation time). Falls
@@ -910,10 +999,21 @@ async def get_plant(
         for (rid, rname, rcat, btitle, byear) in recipe_rows
     ]
 
+    # Genus backlink: a member species points up to its hub so the client can
+    # offer «другие виды рода» / drill back. Cheap single lookup, null for the rest.
+    parent = None
+    if plant.parent_id:
+        pr = (await db.execute(select(Plant.id, Plant.name, Plant.name_latin)
+                               .where(Plant.id == plant.parent_id))).first()
+        if pr:
+            parent = {"id": str(pr[0]), "name": pr[1], "name_latin": pr[2]}
+
     # Opt-in compact aggregation for the field client. Returned BEFORE the
     # essential-oil query so the default (raw) path is wholly untouched.
     if view == "field":
-        return _field_view(plant, src, recipes)
+        fv = _field_view(plant, src, recipes)
+        fv["parent"] = parent
+        return fv
 
     # Cross-pillar link: essential oils distilled/pressed from this plant. The
     # aroma pillar bridges each oil to its source plant via EssentialOil.plant_id;
@@ -945,6 +1045,8 @@ async def get_plant(
         "name_latin": plant.name_latin,
         "name_modern": plant.name_modern,
         "names_historical": plant.names_historical,
+        "rank": plant.rank,
+        "parent": parent,
         "family": plant.family,
         "family_latin": plant.family_latin,
         "description": plant.description,
