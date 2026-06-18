@@ -33,12 +33,18 @@ def _norm(s: str | None) -> str:
 # grabbed from metabolism/process discussions in reference books. Vitamins, minerals,
 # amino acids, proteins ARE kept (real constituents) — user decision 2026-06-16. The
 # class pattern auto-suppresses future compounds of these classes too; reversible.
-_NONTARGET_CLASS_RE = re.compile(r"фермент|синтетич|гормон", re.IGNORECASE)
+# + PREPARATIONS (galenicals / raw material mis-filed as a chemical constituent:
+# «растительные экстракты», «галеновые препараты», «лекарственные растения/формы/
+# сырьё» — «валериана содержит экстракт корня валерианы» is nonsense). Essential/fatty
+# OILS («эфирные/жирные масла») ARE real constituents → deliberately NOT matched.
+_NONTARGET_CLASS_RE = re.compile(
+    r"фермент|синтетич|гормон|экстракт|препарат|сырь|галенов|лекарствен", re.IGNORECASE)
 
 
 def is_nontarget_compound_class(compound_class: str | None) -> bool:
-    """True for enzyme / synthetic / hormone classes — suppressed from a plant's
-    displayed chemical composition (NOT deleted; just hidden, reversible)."""
+    """True for enzyme / synthetic / hormone / PREPARATION classes — suppressed from a
+    plant's displayed chemical composition (NOT deleted; just hidden, reversible).
+    Preparations (extracts/galenicals/raw material) are not chemical constituents."""
     return bool(compound_class and _NONTARGET_CLASS_RE.search(compound_class))
 
 
