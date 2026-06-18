@@ -318,6 +318,46 @@ async def _fill_decide(client, name, family, kingdom, desc, comps, acts):
 
 
 @activity.defn
+async def biotope_canon_activity() -> dict:
+    """Durable biotope normalization: canonicalize free-text plant_habitats.biotope
+    into controlled biotopes (plant_biotopes). Heartbeats per plant; idempotent —
+    skips plants already in plant_biotopes, and a NULL-biotope row marks a 0-tag
+    plant as processed → resumes on restart, guaranteed termination. (Was a fragile
+    detached script that died on every dispatcher rebuild.)"""
+    from app.services.biotope import canonicalize
+    done = tagged = empty = 0
+    while True:
+        async with async_session() as db:
+            rows = (await db.execute(text("""
+                SELECT h.plant_id, string_agg(DISTINCT h.biotope, ' | ') AS bio
+                FROM plant_habitats h
+                WHERE h.biotope IS NOT NULL AND length(h.biotope) > 3
+                  AND h.plant_id NOT IN (SELECT plant_id FROM plant_biotopes)
+                GROUP BY h.plant_id LIMIT 100
+            """))).all()
+        if not rows:
+            break
+        for pid, bio in rows:
+            tags = await canonicalize(bio)
+            async with async_session() as db:
+                if tags:
+                    for t in tags:
+                        await db.execute(text(
+                            "INSERT INTO plant_biotopes (plant_id, biotope) VALUES (:p, :b)"),
+                            {"p": str(pid), "b": t})
+                    tagged += 1
+                else:
+                    await db.execute(text(
+                        "INSERT INTO plant_biotopes (plant_id, biotope) VALUES (:p, NULL)"),
+                        {"p": str(pid)})
+                    empty += 1
+                await db.commit()
+            done += 1
+            activity.heartbeat({"done": done, "tagged": tagged, "empty": empty})
+    return {"phase": "biotope", "done": done, "tagged": tagged, "empty": empty}
+
+
+@activity.defn
 async def fill_latin_activity() -> dict:
     """Durable, idempotent NULL-latin fill. Loops batches of clean-Russian-name NULL-
     latin cards, heartbeating per card so a slow LLM/GBIF batch can't blow the timeout;

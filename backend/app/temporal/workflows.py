@@ -40,6 +40,7 @@ with workflow.unsafe.imports_passed_through():
         run_backfill_activity,
         run_rename_activity,
         fill_latin_activity,
+        biotope_canon_activity,
     )
     from app.temporal.quest_activities import (
         osm_ingest_region_activity,
@@ -497,6 +498,21 @@ class FillLatinWorkflow:
             fill_latin_activity, start_to_close_timeout=timedelta(hours=48),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"FillLatinWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class BiotopeCanonWorkflow:
+    """Durable biotope normalization (side-domain): canonicalize free-text habitat
+    into controlled biotopes. Single resumable heartbeat activity, idempotent.
+    Singleton id 'biotope-canon'."""
+
+    @workflow.run
+    async def run(self) -> dict:
+        out = await workflow.execute_activity(
+            biotope_canon_activity, start_to_close_timeout=timedelta(hours=48),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"BiotopeCanonWorkflow done: {out}")
         return out
 
 
