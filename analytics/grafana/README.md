@@ -1,3 +1,16 @@
+# Grafana — дашборды
+
+Два дашборда на Grafana server 3 (`45.12.72.157:3100`):
+- **`dashboard-chto-rastet.json`** (uid `chto-rastet-app`) — аналитика приложения (этот файл, ниже).
+- **`dashboard-infra.json`** (uid `fleet-infra`) — мониторинг инфраструктуры из **Prometheus** (datasource
+  `prometheus_s1` → `http://46.173.19.68:9090`): доступность сайтов (blackbox), дни до истечения SSL,
+  CPU/RAM/диск server 1 (node-exporter), Postgres up + соединения vs лимит (`pg_stat_database_numbackends`
+  vs `pg_settings_max_connections`) + размер БД, таблица `up` по всем целям. Prometheus уже скрейпит
+  node/blackbox/postgres_exporter/qdrant; Grafana дотягивается до :9090 напрямую. Импорт — тот же API,
+  что ниже, datasource `prometheus_s1`.
+
+---
+
 # «Что растёт» — аналитика в Grafana
 
 Дашборд по СОБСТВЕННЫМ данным приложения (не ждём статов из сторов). Источник — наш Postgres

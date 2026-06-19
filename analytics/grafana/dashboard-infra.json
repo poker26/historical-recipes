@@ -1,0 +1,110 @@
+{
+  "title": "Инфраструктура — мониторинг",
+  "uid": "fleet-infra",
+  "tags": ["infra", "monitoring"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Доступность сайтов",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "НЕ ОТВЕЧАЕТ", "color": "red" }, "1": { "text": "OK", "color": "green" } } } ], "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": true }, "textMode": "value_and_name", "colorMode": "background", "orientation": "horizontal" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "probe_success{job=\"blackbox_http\"}", "instant": true, "legendFormat": "{{instance}}" } ]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Латентность проб, с",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "showLegend": true, "placement": "bottom" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "probe_duration_seconds{job=\"blackbox_http\"}", "legendFormat": "{{instance}}" } ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Дней до истечения SSL-сертификатов",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "d", "decimals": 0, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 14 }, { "color": "green", "value": 30 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": true }, "textMode": "value_and_name", "colorMode": "background", "orientation": "horizontal" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "(probe_ssl_earliest_cert_expiry{job=\"blackbox_ssl\"} - time()) / 86400", "instant": true, "legendFormat": "{{instance}}" } ]
+    },
+    {
+      "id": 4, "type": "gauge", "title": "CPU сервер 1, %",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 75 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdMarkers": true },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)", "instant": true } ]
+    },
+    {
+      "id": 5, "type": "gauge", "title": "RAM сервер 1, %",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 7, "w": 6, "x": 6, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 80 }, { "color": "red", "value": 92 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdMarkers": true },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100", "instant": true } ]
+    },
+    {
+      "id": 6, "type": "gauge", "title": "Диск / сервер 1, %",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 7, "w": 6, "x": 12, "y": 11 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 80 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdMarkers": true },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "(1 - node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"}) * 100", "instant": true } ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Load average сервер 1",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 11 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "showLegend": true, "placement": "bottom" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "node_load1", "legendFormat": "1m" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "node_load5", "legendFormat": "5m" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "node_load15", "legendFormat": "15m" }
+      ]
+    },
+    {
+      "id": 8, "type": "stat", "title": "Postgres (Supabase)",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ], "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value", "colorMode": "background" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "pg_up", "instant": true } ]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Postgres: соединения vs лимит",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 6, "w": 12, "x": 4, "y": 18 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15 } }, "overrides": [ { "matcher": { "id": "byName", "options": "лимит" }, "properties": [ { "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "legend": { "showLegend": true, "placement": "bottom" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "sum(pg_stat_database_numbackends)", "legendFormat": "активные соединения" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "pg_settings_max_connections", "legendFormat": "лимит" }
+      ]
+    },
+    {
+      "id": 10, "type": "stat", "title": "Размер БД postgres",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value", "colorMode": "value" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "pg_database_size_bytes{datname=\"postgres\"}", "instant": true } ]
+    },
+    {
+      "id": 11, "type": "table", "title": "Цели Prometheus (up = 1)",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": {}, "overrides": [ { "matcher": { "id": "byName", "options": "Value" }, "properties": [ { "id": "mappings", "value": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ] }, { "id": "custom.cellOptions", "value": { "type": "color-background" } } ] } ] },
+      "options": { "showHeader": true },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "up", "instant": true, "format": "table" } ],
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true }, "renameByName": { "job": "Задача", "instance": "Инстанс", "Value": "Статус" } } } ]
+    }
+  ]
+}
