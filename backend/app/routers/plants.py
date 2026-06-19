@@ -134,6 +134,8 @@ def _plant_summary(p: Plant, uses_count: int = 0) -> dict:
         "photo_url": p.photo_url,
         "photo_attribution": p.photo_attribution,
         "uses_count": uses_count,
+        # genus tier: a list card may be a genus HUB — clients branch on rank.
+        "rank": p.rank,
         # forager-safety badge for list cards (RFC-edible-safety)
         "safety_level": p.safety_level,
         "deadly_twin": p.deadly_twin,
@@ -1100,6 +1102,7 @@ async def get_plant(
         "family_latin": plant.family_latin,
         "description": plant.description,
         "parts_used": plant.parts_used,
+        "rank": plant.rank,
         "is_toxic": plant.is_toxic,
         "safety": _safety_block(plant),
         "kingdom": plant.kingdom,
