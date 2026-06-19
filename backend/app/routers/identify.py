@@ -28,6 +28,17 @@ from app.models.identification import Identification
 from app.models.plant import Plant
 from app.services import minio as minio_svc
 from app.services import plant_id
+from app.services import mushroom_id
+
+# Hard, non-negotiable warning surfaced on EVERY mushroom identification (HANDOFF-
+# identify-improvements Q3): photo-ID has deadly lookalikes (бледная поганка ↔
+# шампиньон). Shown ABOVE the result; the per-card safety block carries the level/twin.
+_MUSHROOM_DISCLAIMER = (
+    "⚠️ Определение грибов по фото НЕ заменяет эксперта. У смертельно ядовитых грибов "
+    "есть съедобные двойники. НИКОГДА не употребляйте гриб, опознанный только по фото. "
+    "Сверяйтесь с уровнем опасности и «опасным двойником» на карточке."
+)
+_MUSHROOM_KINGDOMS = {"fungi", "mushroom", "гриб", "грибы"}
 from app.services.inaturalist import resolve_names_ru
 from app.services.plant_matching import resolve_latin_to_plants
 
@@ -178,6 +189,9 @@ async def identify_plant(
     images: list[UploadFile] = File(...),
     organs: list[str] | None = Form(None),
     limit: int = Form(5),
+    # «это гриб» toggle from the capture screen → route to the fungi engine
+    # (PlantNet is plants-only). Explicit, not guessed. Default = plant.
+    kingdom: str = Form("plant"),
     # Field-capture metadata (all optional). Geolocation is only sent when the
     # user granted the permission; EXIF is read by the client from the ORIGINAL
     # photo (the uploaded frame is recompressed and loses it).
@@ -210,8 +224,12 @@ async def identify_plant(
     plant: card|null}], matched_count, remaining_requests}``. Each matched
     ``plant.id`` is the key for GET /api/plants/{id}."""
     blobs = [await f.read() for f in images]
-    result = await plant_id.identify(blobs, organs=organs, limit=limit)
+    is_mushroom = (kingdom or "").strip().lower() in _MUSHROOM_KINGDOMS
+    engine = mushroom_id if is_mushroom else plant_id
+    result = await engine.identify(blobs, organs=organs, limit=limit)
     result = await _bridge(result, db)
+    if is_mushroom:
+        result["safety_notice"] = _MUSHROOM_DISCLAIMER   # always, even on engine error
     await _archive(
         db, photo=(blobs[0] if blobs else None), result=result, organs=organs,
         lat=lat, lng=lng, geo_accuracy=geo_accuracy, captured_at=captured_at,

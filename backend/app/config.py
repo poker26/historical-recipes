@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     # (tt.begemot26.ru). Empty = direct connection.
     plantnet_proxy: str = ""
 
+    # Kindwise Mushroom.id — the FUNGI identification engine (PlantNet is plants-only).
+    # Paid API; key from kindwise.com. Empty key → the mushroom route returns a clear
+    # error instead of calling the engine. Optional proxy mirrors PlantNet's egress fix.
+    kindwise_api_key: str = ""
+    kindwise_base_url: str = "https://mushroom.kindwise.com/api/v1"
+    kindwise_proxy: str = ""
+
     # n8n
     n8n_base_url: str = "http://n8n:5678"
     n8n_webhook_secret: str = ""
