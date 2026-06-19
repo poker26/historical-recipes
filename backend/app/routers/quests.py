@@ -25,11 +25,32 @@ async def nearby(lat: float = Query(...), lng: float = Query(...),
                  biotope: str | None = Query(None, description="override the point's OSM biotope"),
                  month: int | None = Query(None, ge=1, le=12, description="phenology filter"),
                  limit: int = Query(15, ge=1, le=40, description="how many ranked species to return"),
+                 device_key: str | None = Query(None, description="enables per-item found-state + biotope_progress"),
                  db: AsyncSession = Depends(get_db)):
     """«Растения рядом» — cold-start base (RFC-cold-start-nearby): live iNat near the
     point, ranked so habitat-appropriate corpus species lead. Works anywhere. Returns
-    up to `limit` + `has_more` so the client pages «другие» locally (Q2)."""
-    return await quests.nearby(db, lat, lng, biotope=biotope, month=month, limit=limit)
+    up to `limit` + `has_more` so the client pages «другие» locally (Q2). With
+    `device_key`: each item carries `found` (this device already identified it) +
+    `found_count`, and `biotope_progress` for the point's biotope (RFC-biotope-mastery)."""
+    return await quests.nearby(db, lat, lng, biotope=biotope, month=month, limit=limit,
+                               device_key=device_key)
+
+
+@router.get("/biotope-progress")
+async def biotope_progress(device_key: str = Query(...),
+                           biotope: str = Query(..., description="canonical biotope key, e.g. 'лес'"),
+                           db: AsyncSession = Depends(get_db)):
+    """«Знаток <биотопа>» progress for this device (RFC-biotope-mastery §B): distinct
+    characteristic species found ON LOCATION in the biotope, on the richness-tuned tier
+    ladder. Same shape as place `badge/progress`."""
+    return await quests.biotope_progress(db, device_key, biotope)
+
+
+@router.post("/biotope/claim")
+async def biotope_claim(device_key: str = Query(...), biotope: str = Query(...),
+                        db: AsyncSession = Depends(get_db)):
+    """Claim earned «Знаток <биотопа>» tiers (silent UUID award, cumulative — no window)."""
+    return await quests.claim_biotope_badge(db, device_key, biotope)
 
 
 @router.post("/set/compute")

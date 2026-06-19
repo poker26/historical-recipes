@@ -45,6 +45,22 @@ from app.services.plant_matching import resolve_latin_to_plants
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Auto-routing confidence (HANDOFF-identify-improvements Q3 revision): on kingdom=auto
+# the user just snaps a photo — the backend decides the kingdom. Run the FREE plant
+# engine first; only when it is NOT confident do we spend a PAID Kindwise mushroom
+# call. A plant top-score ≥ _PLANT_CONFIDENT short-circuits (no mushroom call); a
+# mushroom result is accepted only at top-score ≥ _MUSH_CONFIDENT. Tunable.
+_PLANT_CONFIDENT = 0.30
+_MUSH_CONFIDENT = 0.50
+
+
+def _confident(result: dict, threshold: float) -> bool:
+    """A non-error engine result whose TOP candidate scores ≥ threshold."""
+    if not result or result.get("error"):
+        return False
+    cands = result.get("candidates") or []
+    return bool(cands) and (cands[0].get("score") or 0) >= threshold
+
 
 def _plant_card(p: Plant) -> dict:
     """Minimal identity card for a matched plant — enough to display the hit and
@@ -189,9 +205,11 @@ async def identify_plant(
     images: list[UploadFile] = File(...),
     organs: list[str] | None = Form(None),
     limit: int = Form(5),
-    # «это гриб» toggle from the capture screen → route to the fungi engine
-    # (PlantNet is plants-only). Explicit, not guessed. Default = plant.
-    kingdom: str = Form("plant"),
+    # Kingdom routing (HANDOFF-identify-improvements Q3 revision). Default «auto»:
+    # the client no longer asks the user «is it a mushroom?» — the backend tries the
+    # plant engine and falls back to the fungi engine only if plant is weak. «plant»
+    # / «fungi» remain as explicit force-overrides.
+    kingdom: str = Form("auto"),
     # Field-capture metadata (all optional). Geolocation is only sent when the
     # user granted the permission; EXIF is read by the client from the ORIGINAL
     # photo (the uploaded frame is recompressed and loses it).
@@ -224,12 +242,24 @@ async def identify_plant(
     plant: card|null}], matched_count, remaining_requests}``. Each matched
     ``plant.id`` is the key for GET /api/plants/{id}."""
     blobs = [await f.read() for f in images]
-    is_mushroom = (kingdom or "").strip().lower() in _MUSHROOM_KINGDOMS
-    engine = mushroom_id if is_mushroom else plant_id
-    result = await engine.identify(blobs, organs=organs, limit=limit)
+    mode = (kingdom or "auto").strip().lower()
+    if mode in _MUSHROOM_KINGDOMS:                  # forced fungi
+        result = await mushroom_id.identify(blobs, organs=organs, limit=limit)
+        is_mushroom = True
+    elif mode == "plant":                           # forced plant
+        result = await plant_id.identify(blobs, organs=organs, limit=limit)
+        is_mushroom = False
+    else:                                           # auto: plant first, fungi only if plant is weak
+        result = await plant_id.identify(blobs, organs=organs, limit=limit)
+        is_mushroom = False
+        if not _confident(result, _PLANT_CONFIDENT):
+            shroom = await mushroom_id.identify(blobs, organs=organs, limit=limit)
+            if _confident(shroom, _MUSH_CONFIDENT):
+                result, is_mushroom = shroom, True
+            # else keep the (weak/empty) plant result → honest «не определилось»
     result = await _bridge(result, db)
     if is_mushroom:
-        result["safety_notice"] = _MUSHROOM_DISCLAIMER   # always, even on engine error
+        result["safety_notice"] = _MUSHROOM_DISCLAIMER   # always when the verdict is fungi
     await _archive(
         db, photo=(blobs[0] if blobs else None), result=result, organs=organs,
         lat=lat, lng=lng, geo_accuracy=geo_accuracy, captured_at=captured_at,

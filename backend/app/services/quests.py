@@ -106,6 +106,70 @@ _NEAR_TIE = 0.85                # badge credit if a set species scores ≥85% of
                                 # candidate (sibling-species ranking is near-random)
 
 
+def _credit_keys(cands, top_latin, top_score, target: set, target_genera: set) -> tuple[set, set]:
+    """Lenient Q1 match (HANDOFF-identify-improvements) of ONE identification's
+    candidate list against a `target` set of latin_keys. Returns (exact, soft):
+    `exact` = a target species that is the top candidate OR a near-tie (score ≥ 85%
+    of top); `soft` = genus-level «almost» (top candidate's genus = a target member's
+    genus). Single source of truth for badge / found-state / biotope-mastery credit."""
+    exact, soft = set(), set()
+    cands = cands or []
+    if not cands:
+        k = _latin_key(top_latin)
+        if k in target:
+            exact.add(k)
+        return exact, soft
+    ts = top_score or max((c.get("score") or 0) for c in cands) or 1.0
+    for c in cands:
+        ck = _latin_key(c.get("latin"))
+        if ck in target and (c.get("score") or 0) >= ts * _NEAR_TIE:
+            exact.add(ck)
+    top_g = (_latin_key((cands[0] or {}).get("latin")) or " ").split(" ")[0]
+    if top_g and top_g in target_genera:
+        soft |= {k for k in target if k.split(" ")[0] == top_g}
+    return exact, soft
+
+
+def _confident_latins(cands, top_latin, top_score) -> list[str]:
+    """The full latin names this identification confidently asserts — top + near-ties
+    (score ≥ 85% of top). Used by biotope-mastery to credit the species the user
+    actually found (resolved to a plant), independent of any target set."""
+    cands = cands or []
+    if not cands:
+        return [top_latin] if top_latin else []
+    ts = top_score or max((c.get("score") or 0) for c in cands) or 1.0
+    return [c.get("latin") for c in cands
+            if c.get("latin") and (c.get("score") or 0) >= ts * _NEAR_TIE]
+
+
+# «Знаток биотопа» tier ladders (RFC-biotope-mastery §B). Thresholds tuned BY BIOTOPE
+# RICHNESS — a forest/meadow holds far more characteristic species than a bog or a
+# rocky slope, so «мастер» must be heavier where the flora is richer (the scarcity is
+# the feature). Keys are the canonical biotopes a live GPS point can resolve to
+# (worldcover._CLASS_BIOTOPE). Unknown biotope → _DEFAULT_BIOTOPE_TIERS.
+_DEFAULT_BIOTOPE_TIERS = [5, 15, 40]
+_BIOTOPE_TIERS: dict[str, list[int]] = {
+    "лес": [5, 15, 40],
+    "луг": [5, 12, 30],
+    "поле/сорное": [5, 12, 30],
+    "сады/парки": [5, 12, 30],
+    "кустарники/заросли": [4, 10, 24],
+    "водное/прибрежное": [3, 8, 18],
+    "болото/сырое": [3, 8, 18],
+    "каменистые/скалистые склоны": [3, 7, 15],
+    "пески/дюны/обнажения": [3, 7, 15],
+    "горы/предгорья": [3, 7, 15],
+}
+
+
+def _biotope_tier_ladder(biotope: str) -> list[dict]:
+    """The 3-rung Новичок/Любитель/Мастер ladder for a biotope (need-counts by
+    richness), shaped like place-badge tiers so the client renders them identically."""
+    needs = _BIOTOPE_TIERS.get(biotope, _DEFAULT_BIOTOPE_TIERS)
+    return [{"tier": i + 1, "name": _TIER_NAMES[i + 1], "need": n, "points": _TIER_POINTS[i + 1]}
+            for i, n in enumerate(needs)]
+
+
 async def _species_counts(client, lat, lng, radius_km, month=None):
     """iNat species frequency near a point (Plantae, research-grade), count desc."""
     params = {"lat": lat, "lng": lng, "radius": radius_km, "iconic_taxa": "Plantae",
@@ -174,7 +238,8 @@ async def build_walk(db: AsyncSession, lat: float, lng: float,
 
 
 async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None = None,
-                 month: int | None = None, limit: int = 15) -> dict:
+                 month: int | None = None, limit: int = 15,
+                 device_key: str | None = None) -> dict:
     """«Растения рядом» — the cold-start base (RFC-cold-start-nearby): live iNat
     frequency near the point, RANKED so habitat-appropriate corpus species lead. The
     point's biotope (OSM landcover at the GPS, or the explicit `biotope`) fixes the
@@ -231,12 +296,28 @@ async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None =
             "inat_photo": s.get("photo"), "plant_id": str(p.id) if p is not None else None,
             "count": s.get("count"),
             "biotope_match": bool(p is not None and str(p.id) in match_ids),
+            "found": False,
         })
 
     pool = len(items)
+    shown = items[:limit]
+    # found-state + «Знаток биотопа» embed (RFC-biotope-mastery): the card shows «✓
+    # Найдено» for species this device already identified, and «Рядом» surfaces the
+    # point-biotope mastery bar without a second request. Both are device-scoped.
+    found_count = None
+    bio_progress = None
+    if device_key:
+        found = await _device_found_keys(db, device_key, {it["latin_key"] for it in shown})
+        for it in shown:
+            it["found"] = it["latin_key"] in found
+        found_count = sum(1 for it in shown if it["found"])
+        primary = sorted(bios)[0] if bios else None
+        if primary:
+            bio_progress = await biotope_progress(db, device_key, primary)
     return {"kind": "nearby", "near": {"lat": lat, "lng": lng}, "radius_km": used_radius,
-            "biotopes": sorted(bios), "items": items[:limit],
-            "has_more": pool > limit, "pool_size": pool}
+            "biotopes": sorted(bios), "items": shown,
+            "has_more": pool > limit, "pool_size": pool,
+            "found_count": found_count, "biotope_progress": bio_progress}
 
 
 # ----------------------------------------------------------- Phase 4: species-set
@@ -352,20 +433,9 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
     exact: set[str] = set()
     soft: set[str] = set()      # genus-level «almost» (shown as «похоже» on the client)
     for cands, top_latin, top_score in rows:
-        cands = cands or []
-        if not cands:
-            k = _latin_key(top_latin)
-            if k in sset:
-                exact.add(k)
-            continue
-        ts = top_score or max((c.get("score") or 0) for c in cands) or 1.0
-        for c in cands:
-            ck = _latin_key(c.get("latin"))
-            if ck in sset and (c.get("score") or 0) >= ts * _NEAR_TIE:
-                exact.add(ck)
-        top_g = (_latin_key((cands[0] or {}).get("latin")) or " ").split(" ")[0]
-        if top_g and top_g in set_genera:
-            soft |= {k for k in sset if k.split(" ")[0] == top_g}
+        ex, sf = _credit_keys(cands, top_latin, top_score, sset, set_genera)
+        exact |= ex
+        soft |= sf
     soft -= exact
     matched = sorted(exact | soft)
     m = len(matched)
@@ -424,8 +494,18 @@ async def badge_shelf(db: AsyncSession, device_key: str) -> list[dict]:
     out = []
     for b in rows:
         parts = b.badge_id.split(":")
+        if parts and parts[0] == "biotope":      # «Знаток <биотопа>» — cumulative, no place/window
+            out.append({
+                "badge_id": b.badge_id, "kind": "biotope",
+                "biotope": ":".join(parts[1:]) or None,
+                "place_id": None, "window": None, "year": None,
+                "tier": b.tier, "name": _TIER_NAMES.get(b.tier, ""),
+                "points": b.points, "ordinal": b.ordinal,
+                "issued_at": b.issued_at.isoformat(),
+            })
+            continue
         out.append({
-            "badge_id": b.badge_id,
+            "badge_id": b.badge_id, "kind": "place",
             "place_id": parts[0] if parts else None,
             "window": parts[1] if len(parts) > 1 else None,
             "year": int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None,
@@ -434,6 +514,120 @@ async def badge_shelf(db: AsyncSession, device_key: str) -> list[dict]:
             "issued_at": b.issued_at.isoformat(),
         })
     return out
+
+
+# ------------------------------------- found-state + «Знаток биотопа» (RFC-biotope-mastery)
+
+async def _device_found_keys(db, device_key, target_keys: set) -> set:
+    """Of `target_keys` (latin_keys), the subset this device already correctly
+    identified — lenient Q1 credit (near-tie ∪ genus), over ALL its identifications.
+    Powers the «✓ Найдено» state in «Рядом» (RFC-biotope-mastery §A)."""
+    if not target_keys or not device_key:
+        return set()
+    dk = _try_uuid(device_key)
+    if dk is None:
+        return set()
+    rows = (await db.execute(text(
+        "SELECT candidates, top_latin, top_score FROM identifications "
+        "WHERE device_key = CAST(:dk AS uuid)"), {"dk": str(dk)})).all()
+    genera = {k.split(" ")[0] for k in target_keys if k}
+    found: set = set()
+    for cands, tl, ts in rows:
+        ex, sf = _credit_keys(cands, tl, ts, target_keys, genera)
+        found |= ex | sf
+    return found
+
+
+async def _device_biotope_matches(db, device_key) -> dict[str, set]:
+    """{biotope: set(latin_key)} — distinct species this device confidently identified
+    WHILE STANDING in that biotope (geo-gated) AND characteristic of it (plant_biotopes).
+    The geo-attribution IS the reward (RFC-biotope-mastery §B): credit only effortful,
+    on-location finds; an un-geotagged shot moves the naturalist level, not mastery.
+    One WorldCover raster read per geotagged identification (cheap, local)."""
+    from app.services.worldcover import biotope_at
+    dk = _try_uuid(device_key)
+    if dk is None:
+        return {}
+    rows = (await db.execute(text(
+        "SELECT candidates, top_latin, top_score, lat, lng FROM identifications "
+        "WHERE device_key = CAST(:dk AS uuid) AND lat IS NOT NULL AND lng IS NOT NULL"),
+        {"dk": str(dk)})).all()
+    per_row, all_latins = [], set()
+    for cands, tl, ts, lat, lng in rows:
+        lats = _confident_latins(cands, tl, ts)
+        if lats:
+            per_row.append((lats, lat, lng))
+            all_latins.update(lats)
+    if not all_latins:
+        return {}
+    plant_map = await resolve_latin_to_plants(db, list(all_latins))   # {latin: Plant|None}
+    pids = [str(p.id) for p in plant_map.values() if p]
+    pbio: dict[str, set] = {}
+    if pids:
+        for pid, bio in (await db.execute(text(
+            "SELECT plant_id::text, biotope FROM plant_biotopes "
+            "WHERE plant_id = ANY(cast(:ids as uuid[]))"), {"ids": pids})).all():
+            pbio.setdefault(pid, set()).add(bio)
+    out: dict[str, set] = {}
+    for lats, lat, lng in per_row:
+        point_bios = await asyncio.to_thread(biotope_at, lat, lng)
+        if not point_bios:
+            continue
+        for latin in lats:
+            p = plant_map.get(latin)
+            if p is None:
+                continue
+            for bio in point_bios & pbio.get(str(p.id), set()):
+                out.setdefault(bio, set()).add(_latin_key(latin) or latin)
+    return out
+
+
+async def biotope_progress(db: AsyncSession, device_key: str, biotope: str,
+                           _matches: dict | None = None) -> dict:
+    """«Знаток <биотопа>» progress: distinct characteristic species this device found
+    ON LOCATION in `biotope`, on the richness-tuned tier ladder. Same shape as the
+    place badge_progress so the client renders it identically. `_matches` lets a caller
+    (e.g. nearby) reuse a single device-wide pass instead of recomputing."""
+    matches = _matches if _matches is not None else await _device_biotope_matches(db, device_key)
+    keys = matches.get(biotope, set())
+    m = len(keys)
+    badge_id = f"biotope:{biotope}"
+    tiers = _biotope_tier_ladder(biotope)
+    issued = await _issued_tiers(db, badge_id, device_key)
+    earned = [tr for tr in tiers if tr["need"] <= m]
+    current_tier = max((tr["tier"] for tr in earned), default=0)
+    claimable_tier = max((tr["tier"] for tr in earned if tr["tier"] not in issued), default=None)
+    not_earned = [tr for tr in tiers if tr["need"] > m]
+    next_need = not_earned[0]["need"] if not_earned else None
+    return {"badge_id": badge_id, "biotope": biotope, "matched": m, "tiers": tiers,
+            "current_tier": current_tier, "claimable_tier": claimable_tier,
+            "next_need": next_need, "matched_keys": sorted(keys), "examples": sorted(keys)[:8]}
+
+
+async def claim_biotope_badge(db: AsyncSession, device_key: str, biotope: str) -> dict:
+    """Issue every biotope-mastery tier earned-but-unclaimed (silent UUID award, like
+    place badges). No window — mastery is CUMULATIVE, so there is no «window_closed»."""
+    prog = await biotope_progress(db, device_key, biotope)
+    badge_id = prog["badge_id"]
+    issued = await _issued_tiers(db, badge_id, device_key)
+    earned_unissued = [tr for tr in prog["tiers"]
+                       if tr["need"] <= prog["matched"] and tr["tier"] not in issued]
+    if not earned_unissued:
+        return {**prog, "issued": False,
+                "reason": "already" if issued else "below_first_tier"}
+    granted = []
+    for tr in earned_unissued:
+        n = (await db.execute(select(func.count()).select_from(QuestIssuedBadge).where(
+            QuestIssuedBadge.badge_id == badge_id, QuestIssuedBadge.tier == tr["tier"]))).scalar() or 0
+        db.add(QuestIssuedBadge(badge_id=badge_id, device_key=uuid_or(device_key),
+                                tier=tr["tier"], points=tr["points"], ordinal=n + 1,
+                                window_closed=False))
+        granted.append({**tr, "ordinal": n + 1})
+    await db.commit()
+    top = granted[-1]
+    prog = await biotope_progress(db, device_key, biotope)
+    return {**prog, "issued": True, "tier": top["tier"], "name": top["name"],
+            "ordinal": top["ordinal"], "points": top["points"], "granted": granted}
 
 
 # --------------------------------------------------- Phase 6: places (no live iNat)
