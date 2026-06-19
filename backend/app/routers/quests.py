@@ -24,10 +24,12 @@ async def walk(lat: float = Query(...), lng: float = Query(...),
 async def nearby(lat: float = Query(...), lng: float = Query(...),
                  biotope: str | None = Query(None, description="override the point's OSM biotope"),
                  month: int | None = Query(None, ge=1, le=12, description="phenology filter"),
+                 limit: int = Query(15, ge=1, le=40, description="how many ranked species to return"),
                  db: AsyncSession = Depends(get_db)):
-    """«5 растений рядом» — cold-start base (RFC-cold-start-nearby): live iNat near
-    the point, ranked so habitat-appropriate corpus species lead. Works anywhere."""
-    return await quests.nearby(db, lat, lng, biotope=biotope, month=month)
+    """«Растения рядом» — cold-start base (RFC-cold-start-nearby): live iNat near the
+    point, ranked so habitat-appropriate corpus species lead. Works anywhere. Returns
+    up to `limit` + `has_more` so the client pages «другие» locally (Q2)."""
+    return await quests.nearby(db, lat, lng, biotope=biotope, month=month, limit=limit)
 
 
 @router.post("/set/compute")

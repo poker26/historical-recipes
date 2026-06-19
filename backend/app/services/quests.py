@@ -102,6 +102,8 @@ def window_dates(label: str, year: int) -> tuple[date, date]:
 
 _RADII_KM = [2, 5, 10, 25]      # adaptive: expand until enough candidates (RFC §13.6)
 _MIN_CANDIDATES = 15
+_NEAR_TIE = 0.85                # badge credit if a set species scores ≥85% of the top
+                                # candidate (sibling-species ranking is near-random)
 
 
 async def _species_counts(client, lat, lng, radius_km, month=None):
@@ -172,13 +174,17 @@ async def build_walk(db: AsyncSession, lat: float, lng: float,
 
 
 async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None = None,
-                 month: int | None = None, target: int = 5) -> dict:
-    """«5 растений рядом» — the cold-start base (RFC-cold-start-nearby): live iNat
+                 month: int | None = None, limit: int = 15) -> dict:
+    """«Растения рядом» — the cold-start base (RFC-cold-start-nearby): live iNat
     frequency near the point, RANKED so habitat-appropriate corpus species lead. The
     point's biotope (OSM landcover at the GPS, or the explicit `biotope`) fixes the
     «I'm in a field but the radius pulled forest species» problem. Works ANYWHERE —
-    no precomputed place needed. Always returns up to `target` (soft filter: biotope-
-    matching first, then corpus, then the rest, iNat-frequency order within each tier)."""
+    no precomputed place needed.
+
+    Returns up to `limit` ranked species + `has_more` (HANDOFF-identify-improvements
+    Q2: the client shows 5 and pages «другие» locally instead of hitting a 5-item dead
+    end). Soft filter: biotope-matching first, then corpus, then the rest; iNat-
+    frequency order within each tier."""
     from app.services.worldcover import biotope_at
 
     # biotope of the point from the local WorldCover raster (no egress, no Overpass
@@ -226,11 +232,11 @@ async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None =
             "count": s.get("count"),
             "biotope_match": bool(p is not None and str(p.id) in match_ids),
         })
-        if len(items) >= target:
-            break
 
+    pool = len(items)
     return {"kind": "nearby", "near": {"lat": lat, "lng": lng}, "radius_km": used_radius,
-            "biotopes": sorted(bios), "items": items}
+            "biotopes": sorted(bios), "items": items[:limit],
+            "has_more": pool > limit, "pool_size": pool}
 
 
 # ----------------------------------------------------------- Phase 4: species-set
@@ -327,16 +333,41 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
     if not ps:
         return {"error": "no species-set for this place/window"}
     f, t = window_dates(label, year)
+    # Probability match (HANDOFF-identify-improvements Q1): the engine ranks sibling
+    # species almost at random (Achillea millefolium 45% vs nobilis 44% = noise), so
+    # strict top-1 robs a correct find of its badge. Read the FULL candidate list and
+    # credit a set species when it's the top OR a near-tie (score ≥ 85% of top), plus
+    # a generous GENUS match (top candidate's genus = a set member's genus → «you met
+    # a тысячелистник here», the game's goal — not a species exam). User-approved.
     rows = (await db.execute(text("""
-        SELECT top_latin FROM identifications
-        WHERE device_key = CAST(:dk AS uuid) AND top_latin IS NOT NULL
+        SELECT candidates, top_latin, top_score FROM identifications
+        WHERE device_key = CAST(:dk AS uuid)
           AND lat IS NOT NULL AND lng IS NOT NULL
           AND captured_at >= :f AND captured_at < (CAST(:t AS date) + 1)
           AND ST_Contains((SELECT geom FROM quest_places WHERE id=:p),
                           ST_SetSRID(ST_MakePoint(lng, lat), 4326))
     """), {"dk": device_key, "f": f, "t": t, "p": place_id})).all()
     sset = set(ps.species_set or [])
-    matched = sorted({k for (tl,) in rows if (k := _latin_key(tl)) in sset})
+    set_genera = {k.split(" ")[0] for k in sset if k}
+    exact: set[str] = set()
+    soft: set[str] = set()      # genus-level «almost» (shown as «похоже» on the client)
+    for cands, top_latin, top_score in rows:
+        cands = cands or []
+        if not cands:
+            k = _latin_key(top_latin)
+            if k in sset:
+                exact.add(k)
+            continue
+        ts = top_score or max((c.get("score") or 0) for c in cands) or 1.0
+        for c in cands:
+            ck = _latin_key(c.get("latin"))
+            if ck in sset and (c.get("score") or 0) >= ts * _NEAR_TIE:
+                exact.add(ck)
+        top_g = (_latin_key((cands[0] or {}).get("latin")) or " ").split(" ")[0]
+        if top_g and top_g in set_genera:
+            soft |= {k for k in sset if k.split(" ")[0] == top_g}
+    soft -= exact
+    matched = sorted(exact | soft)
     m = len(matched)
     badge_id = f"{place_id}:{label}:{year}"
     tiers = tier_thresholds(ps.target, len(sset))
@@ -348,7 +379,8 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
     next_need = not_earned[0]["need"] if not_earned else None
     return {"badge_id": badge_id, "set_size": len(sset), "matched": m,
             "target": ps.target, "tiers": tiers, "current_tier": current_tier,
-            "claimable_tier": claimable_tier, "next_need": next_need, "matched_keys": matched}
+            "claimable_tier": claimable_tier, "next_need": next_need,
+            "matched_keys": matched, "soft_keys": sorted(soft)}
 
 
 async def claim_badge(db: AsyncSession, device_key: str, place_id: str, label: str, year: int) -> dict:
