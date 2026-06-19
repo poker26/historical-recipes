@@ -60,8 +60,16 @@ plant_id.py`, любой project = флора). Фото гриба → 404 «no
 
 **Изменить (сервер).** Движок явно one-file-swappable (контракт `identify()` → `{candidates:[{latin,
 score,...}]}`). Добавить грибной движок за тем же контрактом:
-- рекомендую **Kindwise Mushroom.id** (профильный, безопасность-aware, отдаёт латынь+score). ⚠️ платный
-  API + ключ — **нужно решение юзера по бюджету**. (iNat открытого CV-API не даёт.)
+- **РЕШЕНО: Kindwise Mushroom.id.** Ключ получен и проверен 2026-06-19 (usage_info → 200, `active:true`,
+  50 кредитов, 1 кредит = 1 определение). **Ключ НЕ в репозитории** — лежит в чате/vault `vds/kindwise`
+  (подставить в backend env `KINDWISE_API_KEY`; юзеру перевыпустить — светился в чате).
+- **API:** base `https://mushroom.kindwise.com/api/v1`, auth заголовок `Api-Key: <key>`. Определение —
+  `POST /api/v1/identification` (body: `images` base64 + опц. `similar_images`, `details`), возвращает
+  `result.classification.suggestions[].{name (латынь), probability}` → маппить в наш контракт
+  `{latin, score}` и дальше в существующий `_bridge` (kingdom разрулит). Баланс — `GET /api/v1/usage_info`
+  (бесплатно). Готовый Python SDK: `flowerchecker/kindwise-api-client` (`pip install kindwise-api-client`).
+- ⚠️ прод-egress к внешним API заблокирован — Pl@ntNet ходит через trusttunnel-прокси; Kindwise пустить
+  через тот же прокси (как `plantnet_proxy`). С локалки/Windows egress к kindwise РАБОТАЕТ (проверено).
 - роутинг v1: явный тумблер «это гриб» на экране съёмки → вызвать грибной движок (дёшево и понятно;
   без угадывания). Бридж не трогать (kingdom разрулит).
 - **SAFETY-ГЕЙТ (критично).** Определение грибов по фото = смертельные двойники (бледная поганка ↔
