@@ -617,6 +617,33 @@ class OsmIngestWorkflow:
 
 
 @workflow.defn
+class CitiesIngestWorkflow:
+    """Durable «quests over a large territory» pipeline: ingest named OSM places for a
+    LIST of city bboxes SEQUENTIALLY (one Overpass stream — fair-use safe, no 4×-
+    concurrent ban), then build species-sets for `window` over every place missing one.
+    Resumable (each step idempotent: osm_id upsert / skip-existing set). Singleton
+    'cities-ingest'. iNat-heavy in the set-build phase — run when iNat is idle."""
+
+    @workflow.run
+    async def run(self, cities: list, window: str) -> dict:
+        ing = {"inserted": 0, "updated": 0, "tiles": 0, "errors": 0}
+        for c in cities:
+            r = await workflow.execute_activity(
+                osm_ingest_region_activity,
+                args=[c["s"], c["w"], c["n"], c["e"], c.get("tile", 0.1)],
+                start_to_close_timeout=timedelta(hours=12),
+                heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+            for k in ing:
+                ing[k] += r.get(k, 0)
+            workflow.logger.info(f"cities-ingest: {c.get('name')} +{r.get('inserted',0)}")
+        sets = await workflow.execute_activity(
+            build_place_sets_activity, window,
+            start_to_close_timeout=timedelta(hours=48),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        return {"ingest": ing, "sets": sets}
+
+
+@workflow.defn
 class QuestSetBuilderWorkflow:
     """Autonomous species-set precompute for all places × a half-month window
     (quests Phase 6). iNat-heavy → run when the cleanup's iNat work is idle."""

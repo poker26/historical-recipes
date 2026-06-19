@@ -32,7 +32,7 @@ from app.temporal.workflows import (
     BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow, BiotopeCanonWorkflow,
     IdentityConflictWorkflow, RecipeRelinkWorkflow, OsmIngestWorkflow, QuestSetBuilderWorkflow,
     ReaderMonographWorkflow, GenusTierWorkflow, EdibleSafetyWorkflow,
-    PlaceBiotopeWorkflow,
+    PlaceBiotopeWorkflow, CitiesIngestWorkflow,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -52,7 +52,8 @@ async def main():
         workflows=[BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow,
                    BiotopeCanonWorkflow, IdentityConflictWorkflow, RecipeRelinkWorkflow,
                    OsmIngestWorkflow, QuestSetBuilderWorkflow, ReaderMonographWorkflow,
-                   GenusTierWorkflow, EdibleSafetyWorkflow, PlaceBiotopeWorkflow],
+                   GenusTierWorkflow, EdibleSafetyWorkflow, PlaceBiotopeWorkflow,
+                   CitiesIngestWorkflow],
         activities=[
             activities.maintain_pool_activity,
             # Autonomous plant-cleanup chain + quests-build + Layer-2 monograph batch.
