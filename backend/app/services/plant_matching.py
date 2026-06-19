@@ -27,7 +27,7 @@ import re
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.recipe import RecipeIngredient
@@ -767,3 +767,121 @@ async def merge_plants_by_latin_key(
         "deleted_qdrant_ids": deleted_ids,
         "plan": plan,
     }
+
+
+async def merge_null_latin_shadows(
+    db: AsyncSession,
+    dry_run: bool = True,
+    commit: bool = True,
+) -> dict:
+    """Merge NULL/OCR-broken-latin DUPLICATE rows into their latin-bearing canonical
+    sibling of the SAME name-identity. Complements :func:`merge_plants_by_latin_key`,
+    which can't catch these (no usable ``_latin_key``): «Чистотел» (no latin) and
+    «ДУБЪ»/«Корень дуба» shadow «Чистотел большой»/«Дуб» (Chelidonium/Quercus).
+
+    Fixes «search lands the user on the bare card»: identify/nearby are latin-keyed
+    (already hit the canonical), but name search surfaced the shadow row — which has
+    no monograph (latin-less → never monographed) and safety_level 0. After the merge
+    the shadow's facts/recipes/identifications repoint to the canonical and it is
+    deleted, so every surface resolves to the rich (distilled, safety-rated) row.
+
+    Conservative: groups by EXACT name-identity (:func:`_identity` noun+epithet sets),
+    survivor = the richest latin-bearing row, losers = ONLY the null-latin shadows in
+    that group (never another latin-bearing row — that's the latin-dedup's job).
+    """
+    plants = (await db.execute(select(Plant).where(Plant.rank == "species"))).scalars().all()
+    lat_rows = [p for p in plants if _latin_key(p.name_latin)]
+    null_rows = [p for p in plants if not _latin_key(p.name_latin)]
+
+    # Index latin-bearing rows by each of their noun stems + cache their identity.
+    noun2lat: dict[str, list[Plant]] = {}
+    lat_identity: dict[uuid.UUID, tuple] = {}
+    for c in lat_rows:
+        nn, aa = _identity(c.name)
+        lat_identity[c.id] = (nn, aa)
+        for n in nn:
+            noun2lat.setdefault(n, []).append(c)
+
+    counts = await _plant_fact_counts(db, [p.id for p in lat_rows])
+
+    # For each null-latin row, find latin-bearing rows it's a SHADOW of: its identity
+    # is a SUBSET of theirs (same_plant_identity — «Чистотел» ⊆ «Чистотел большой»).
+    # Merge ONLY when those candidates resolve to a SINGLE latin species (no genus /
+    # multi-species ambiguity), and the head noun is long enough (≥4) to avoid stem
+    # collisions (бук=Fagus vs «буко»=Diosma). Otherwise HOLD for manual review.
+    by_survivor: dict[uuid.UUID, list[Plant]] = {}
+    survivor_of: dict[uuid.UUID, Plant] = {}
+    def _has_part(name: str | None) -> bool:
+        return any(t in _PART_WORDS for t in normalize(name).split())
+
+    for L in null_rows:
+        Ln, La = _identity(L.name)
+        if not Ln or max((len(n) for n in Ln), default=0) < 4:
+            continue
+        # A part/product phrase is NOT the plant itself — «Овечье масло», «Цветки
+        # ромашки», «Корень дуба», «семена свеклы». Merging it (either side) corrupts
+        # identity / inverts direction. Only clean-name ↔ clean-name variants merge.
+        if _has_part(L.name):
+            continue
+        cand_lists = [noun2lat.get(n) for n in Ln]
+        if not all(cand_lists):
+            continue
+        cands = [C for C in min(cand_lists, key=len)
+                 if Ln <= lat_identity[C.id][0] and La <= lat_identity[C.id][1]]
+        if not cands or len({_latin_key(C.name_latin) for C in cands}) != 1:
+            continue
+        cands = [c for c in cands if not _has_part(c.name)]
+        if not cands:
+            continue
+        survivor = max(cands, key=lambda c: (counts.get(c.id, 0), _latin_token_count(c.name_latin)))
+        # The shadow must share the survivor's PRIMARY (longest) noun, not just an
+        # incidental adjective/part stem — else «Овечье масло» (sheep butter, noun
+        # «овечь») would merge into «Ферула овечья» (Ferula). Kills that class.
+        if max(lat_identity[survivor.id][0], key=len) not in Ln:
+            continue
+        survivor_of[survivor.id] = survivor
+        by_survivor.setdefault(survivor.id, []).append(L)
+
+    plan: list[dict] = []
+    deleted_ids: list[str] = []
+    merged = 0
+    for sid, losers in by_survivor.items():
+        survivor = survivor_of[sid]
+        plan.append({"survivor": {"id": str(survivor.id), "name": survivor.name,
+                                  "name_latin": survivor.name_latin},
+                     "merged": [{"id": str(l.id), "name": l.name} for l in losers]})
+        if dry_run:
+            continue
+
+        loser_ids = [l.id for l in losers]
+        for model in _PLANT_CHILD_MODELS:
+            await db.execute(update(model).where(model.plant_id.in_(loser_ids)).values(plant_id=survivor.id))
+        await db.execute(update(PlantCompatibility).where(PlantCompatibility.plant_a_id.in_(loser_ids)).values(plant_a_id=survivor.id))
+        await db.execute(update(PlantCompatibility).where(PlantCompatibility.plant_b_id.in_(loser_ids)).values(plant_b_id=survivor.id))
+        await db.execute(update(RecipeIngredient).where(RecipeIngredient.plant_id.in_(loser_ids)).values(plant_id=survivor.id))
+        await db.execute(update(Ingredient).where(Ingredient.plant_id.in_(loser_ids)).values(plant_id=survivor.id))
+        # tables without an imported ORM model — repoint by raw SQL so facts/links survive.
+        await db.execute(text("UPDATE plant_biotopes SET plant_id=:s WHERE plant_id = ANY(:l)"),
+                         {"s": survivor.id, "l": loser_ids})
+        await db.execute(text("UPDATE identifications SET matched_plant_id=:s WHERE matched_plant_id = ANY(:l)"),
+                         {"s": survivor.id, "l": loser_ids})
+
+        hist = list(survivor.names_historical or [])
+        for l in losers:
+            for h in (l.names_historical or []):
+                if h and h not in hist:
+                    hist.append(h)
+            if l.name and l.name != survivor.name and l.name not in hist:
+                hist.append(l.name)
+        survivor.names_historical = hist or None
+        for l in losers:
+            if l.qdrant_point_id or l.qdrant_collection:
+                deleted_ids.append(str(l.id))
+            await db.delete(l)
+        merged += len(losers)
+
+    if not dry_run and commit:
+        await db.commit()
+    return {"dry_run": dry_run, "survivors": len(by_survivor),
+            "total_shadows": sum(len(v) for v in by_survivor.values()),
+            "shadows_merged": merged, "deleted_qdrant_ids": deleted_ids, "plan": plan[:50]}
