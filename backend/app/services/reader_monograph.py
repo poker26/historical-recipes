@@ -235,12 +235,14 @@ def publish_gate(mono: dict, distilled: dict) -> list[dict]:
         findings.append({"check": "ungrounded_claim", "severity": "P0",
                          "detail": f"source(s) not in input: {bad_src[:3]}"})
 
-    # P0 identity_conflict — edible+toxic must be RECONCILED in the verdict (Хмель):
-    # the one-sentence verdict has to address BOTH the edible sense and the
-    # caution sense (any reasonable phrasing — «съедобен»/«в кулинарии»/«побеги
-    # едят» on one side, «ядовито»/«осторожно»/«большие дозы» on the other).
+    # P0 identity_conflict — edible+toxic must be RECONCILED in the verdict (Хмель).
+    # SUPERSEDED by the forager-safety block: when a `safety` block is present it
+    # already reconciles edible vs toxic authoritatively (level + edible_parts +
+    # dangerous_parts), so the fragile verdict-keyword check is OFF (it false-blocked
+    # valuable L3 plants like чистотел whose «edible» role came from a несъедобно/
+    # ядовито culinary row). Kept only as a fallback for legacy monographs w/o safety.
     roles = set(mono.get("roles") or [])
-    if "edible" in roles and (mono.get("is_toxic") or "toxic" in roles):
+    if not mono.get("safety") and "edible" in roles and (mono.get("is_toxic") or "toxic" in roles):
         v = (mono.get("verdict") or "").lower()
         edible_sense = any(w in v for w in (
             "съедоб", "кулинар", "едят", "едят", "пищ", "овощ", "салат",
