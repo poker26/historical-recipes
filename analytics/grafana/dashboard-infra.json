@@ -105,6 +105,22 @@
       "options": { "showHeader": true },
       "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "up", "instant": true, "format": "table" } ],
       "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true }, "renameByName": { "job": "Задача", "instance": "Инстанс", "Value": "Статус" } } } ]
+    },
+    {
+      "id": 12, "type": "stat", "title": "Uptime-Kuma — мониторы",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" }, "2": { "text": "PENDING", "color": "orange" }, "3": { "text": "ОБСЛУЖ.", "color": "blue" } } } ], "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": true }, "textMode": "value_and_name", "colorMode": "background", "orientation": "horizontal" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "monitor_status", "instant": true, "legendFormat": "{{monitor_name}}" } ]
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Kuma: время ответа, мс",
+      "datasource": { "type": "prometheus", "uid": "prometheus_s1" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "showLegend": true, "placement": "bottom" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus_s1" }, "expr": "monitor_response_time > 0", "legendFormat": "{{monitor_name}}" } ]
     }
   ]
 }
