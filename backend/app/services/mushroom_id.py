@@ -64,7 +64,10 @@ async def identify(
     if not imgs and not image_urls:
         return {"error": "no images provided"}
 
-    payload: dict = {"similar_images": False}
+    # NOTE: `similar_images` is a query-style modifier on this v1 API and only
+    # `=true` is accepted; we don't want similar-image payloads, so omit it entirely
+    # (sending `false` → HTTP 400 "Unknown modifier").
+    payload: dict = {}
     if imgs:
         payload["images"] = [base64.b64encode(b).decode("ascii") for b in imgs]
     else:
