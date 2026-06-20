@@ -52,6 +52,7 @@ with workflow.unsafe.imports_passed_through():
         build_place_sets_activity,
     )
     from app.temporal.monograph_activities import generate_monographs_activity
+    from app.temporal.taxonomy_activities import cherepanov_ocr_activity
 
 # Generous per-step ceilings: the pre-reform 1M-char book took >60 min on a
 # single LLM step, so long steps get up to 3h.  Retries are bounded and skip
@@ -641,6 +642,30 @@ class CitiesIngestWorkflow:
             start_to_close_timeout=timedelta(hours=48),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         return {"ingest": ing, "sets": sets}
+
+
+@workflow.defn
+class CherepanovOcrWorkflow:
+    """Durable OCR of the Cherepanov 1995 checklist (PDF in MinIO) → taxonomy backbone.
+    Fans the page range over batch activities SEQUENTIALLY (one VL-heavy activity at a
+    time, sem=8 inside). Idempotent per source_page → resume after any interruption just
+    re-runs and skips done pages. Content range = doc pages 7..960 (A..Zygophyllum; the
+    961+ tail is the genus index, not the checklist). Singleton 'cherepanov-ocr'."""
+
+    @workflow.run
+    async def run(self, minio_key: str, page_from: int = 7, page_to: int = 961,
+                  batch: int = 24, force: bool = False) -> dict:
+        tot = {"accepted": 0, "synonyms": 0, "skipped": 0, "failed": 0}
+        for start in range(page_from, page_to, batch):
+            end = min(start + batch, page_to)
+            r = await workflow.execute_activity(
+                cherepanov_ocr_activity, args=[minio_key, start, end, 220, force],
+                start_to_close_timeout=_LONG, heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+            for k in tot:
+                tot[k] += r.get(k, 0)
+            workflow.logger.info(f"cherepanov: pages {start}-{end} +{r.get('accepted',0)}acc "
+                                 f"+{r.get('synonyms',0)}syn (skip {r.get('skipped',0)})")
+        return tot
 
 
 @workflow.defn
