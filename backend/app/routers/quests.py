@@ -55,10 +55,12 @@ async def biotope_claim(device_key: str = Query(...), biotope: str = Query(...),
 
 @router.post("/set/compute")
 async def compute_set(place_id: str = Query(...), window: str = Query(..., description="e.g. 'first-half-06'"),
+                      force: bool = Query(False, description="bypass the density floor (test places in sparse areas)"),
                       db: AsyncSession = Depends(get_db)):
     """Precompute a place×window species-set (the badge target). Admin/backfill;
-    a Temporal workflow will fan this over known places×windows later."""
-    return await quests.compute_species_set(db, place_id, window)
+    a Temporal workflow will fan this over known places×windows later. `force` skips
+    the _MIN_OBS density gate for test places."""
+    return await quests.compute_species_set(db, place_id, window, force=force)
 
 
 @router.get("/badge/progress")

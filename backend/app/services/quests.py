@@ -322,10 +322,15 @@ async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None =
 
 # ----------------------------------------------------------- Phase 4: species-set
 
-async def compute_species_set(db: AsyncSession, place_id: str, label: str) -> dict:
+async def compute_species_set(db: AsyncSession, place_id: str, label: str,
+                              force: bool = False) -> dict:
     """Characteristic species-set of place × half-month window (multi-year iNat
     aggregate over the place bbox). Stores the badge TARGET. v1: iNat month filter
-    (whole month) + bbox; half-month/polygon precision lives in badge progress."""
+    (whole month) + bbox; half-month/polygon precision lives in badge progress.
+
+    `force=True` bypasses the density floor (`_MIN_OBS` / 5-species minimum) — for
+    TEST places in sparse areas where some observations exist but not 50. The set is
+    still corpus-bridged; it just builds from whatever ≥1 corpus species are present."""
     row = (await db.execute(text(
         "SELECT name, ST_YMin(geom), ST_XMin(geom), ST_YMax(geom), ST_XMax(geom) FROM quest_places WHERE id=:p"),
         {"p": place_id})).first()
@@ -375,9 +380,11 @@ async def compute_species_set(db: AsyncSession, place_id: str, label: str) -> di
     plant_map = await resolve_latin_to_plants(db, sset)
     sset = [k for k in sset if plant_map.get(k)]
     meta = [m for m in meta if plant_map.get(m["key"])]
-    if obs_total < _MIN_OBS or len(sset) < 5:
+    min_obs = 0 if force else _MIN_OBS
+    min_species = 1 if force else 5
+    if obs_total < min_obs or len(sset) < min_species:
         return {"place": name, "window": label, "skipped": "low_density", "obs_total": obs_total, "species": len(sset)}
-    target = max(5, min(15, round(0.6 * len(sset))))
+    target = max(1 if force else 5, min(15, round(0.6 * len(sset)) or 1))
     await db.execute(pg_insert(QuestPlaceSet).values(
         place_id=place_id, window_label=label, species_set=sset, species_meta=meta,
         target=target, obs_total=obs_total
