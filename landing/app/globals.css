@@ -80,6 +80,12 @@ a { color: var(--green-dark); }
   gap: 18px;
 }
 
-@media (max-width: 560px) {
-  .hero-cols { grid-template-columns: 1fr !important; }
+.cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.cols-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+@media (max-width: 640px) {
+  .hero-cols { grid-template-columns: 1fr !important; text-align: center; }
+  .cols-3, .cols-2 { grid-template-columns: 1fr; }
+  .hero-grad { padding: 28px 18px !important; }
+  h1 { font-size: 30px !important; }
 }

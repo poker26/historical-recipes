@@ -37,11 +37,11 @@ export default async function Home() {
 
       {/* How it works */}
       <section style={{ marginTop: 40 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
+        <div className="cols-3">
           {[
             ["📷", "Сфотографируй", "Наведи камеру на растение — узнаешь вид за секунды."],
             ["🗺️", "Пройди квест", "В каждом парке свой набор видов сезона. Найди — получи значок."],
-            ["🏅", "Собери значки", "Чем раньше в сезоне — тем реже значок. Поднимайся в рейтинге."],
+            ["🏅", "Собирай значки", "Каждая находка — красивый значок натуралиста. Собери коллекцию и покажи друзьям."],
           ].map(([icon, t, d]) => (
             <div className="card" key={t}>
               <div style={{ fontSize: 30 }}>{icon}</div>
@@ -53,7 +53,7 @@ export default async function Home() {
       </section>
 
       {/* Live social proof: leaderboard teaser + activity feed */}
-      <section style={{ marginTop: 40, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+      <section className="cols-2" style={{ marginTop: 40 }}>
         <div className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
             <h2 className="section-title">🏆 Лучшие натуралисты</h2>
