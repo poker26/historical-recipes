@@ -690,6 +690,34 @@ async def places_near(db: AsyncSession, lat: float, lng: float, device_key=None,
     return {"places": places}
 
 
+async def places_in_bounds(db: AsyncSession, min_lat: float, min_lng: float,
+                           max_lat: float, max_lng: float,
+                           window: str | None = None, limit: int = 300) -> dict:
+    """Quest places whose centroid falls inside the map viewport (bbox) and have a
+    species-set for the window — powers the pan-to-search map (so the user can scroll
+    the map anywhere and see quests there, or pan toward a distant one to travel to).
+    Lightweight: pins only (no per-device progress), DB-only, no live iNat."""
+    win = window or _current_window()
+    rows = (await db.execute(text("""
+        SELECT p.id, p.name, p.kind,
+               ST_Y(ST_Centroid(p.geom)) AS clat, ST_X(ST_Centroid(p.geom)) AS clng,
+               ps.target, COALESCE(array_length(ps.species_set,1),0) AS set_size
+        FROM quest_places p
+        JOIN quest_place_sets ps ON ps.place_id = p.id AND ps.window_label = :win
+        WHERE p.geom IS NOT NULL
+          AND ST_Centroid(p.geom) && ST_MakeEnvelope(:minlng,:minlat,:maxlng,:maxlat,4326)
+        LIMIT :lim
+    """), {"win": win, "minlng": min_lng, "minlat": min_lat,
+           "maxlng": max_lng, "maxlat": max_lat, "lim": limit})).all()
+    places = [{
+        "id": str(pid), "name": name, "kind": kind,
+        "lat": clat, "lng": clng, "distance_km": None,
+        "window": win, "set_size": set_size, "target": target,
+        "matched": 0, "badge_issued": False,
+    } for pid, name, kind, clat, clng, target, set_size in rows]
+    return {"places": places}
+
+
 async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
                     device_key=None, year: int | None = None,
                     biotope: str | None = None) -> dict:

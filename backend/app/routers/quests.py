@@ -95,6 +95,18 @@ async def places_near(lat: float = Query(...), lng: float = Query(...),
                                     radius_km=radius_km, limit=limit, window=window)
 
 
+@router.get("/places/in-bounds")
+async def places_in_bounds(min_lat: float = Query(...), min_lng: float = Query(...),
+                           max_lat: float = Query(...), max_lng: float = Query(...),
+                           window: str | None = Query(None, description="default = current half-month"),
+                           limit: int = Query(300, ge=1, le=1000),
+                           db: AsyncSession = Depends(get_db)):
+    """Quest places inside the map viewport (pan-to-search). Pins only, DB-only —
+    lets the client refetch markers as the user scrolls the map anywhere."""
+    return await quests.places_in_bounds(db, min_lat, min_lng, max_lat, max_lng,
+                                         window=window, limit=limit)
+
+
 @router.get("/place/{place_id}/set")
 async def place_set(place_id: str, window: str | None = Query(None),
                     device_key: str | None = Query(None),
