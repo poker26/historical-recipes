@@ -56,13 +56,25 @@ _INS_SYN = text("INSERT INTO taxon_synonym(id,syn_key,syn_latin,author,accepted_
 
 
 def _parse_arr(out: str):
-    s, e = out.find("["), out.rfind("]")
-    if s < 0 or e < 0:
+    s = out.find("[")
+    if s < 0:
         return None
-    try:
-        return json.loads(out[s:e + 1])
-    except Exception:
-        return None
+    e = out.rfind("]")
+    if e > s:
+        try:
+            return json.loads(out[s:e + 1])
+        except Exception:
+            pass
+    # Salvage a TRUNCATED array (dense page hit max_tokens mid-JSON): close it after
+    # the last complete object so we keep all but the final partial entry.
+    frag = out[s:]
+    last = frag.rfind("}")
+    if last > 0:
+        try:
+            return json.loads(frag[:last + 1] + "]")
+        except Exception:
+            return None
+    return None
 
 
 def _expand(acc: str | None, genus: str) -> str | None:
@@ -81,7 +93,7 @@ async def _ocr_page(img_png: bytes) -> list:
     msgs = [{"role": "user", "content": [
         {"type": "text", "text": _PROMPT},
         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]}]
-    out = await chat_completion(msgs, task="ocr_hard", temperature=0.1, max_tokens=12000)
+    out = await chat_completion(msgs, task="ocr_hard", temperature=0.1, max_tokens=20000)
     return _parse_arr(out) or []
 
 
