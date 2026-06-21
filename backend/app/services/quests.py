@@ -557,6 +557,24 @@ async def create_custom_quest(db: AsyncSession, lat: float, lng: float,
     so the client opens it like any other PlaceQuestScreen."""
     win = window or _current_window()
     rad_m = max(300.0, min(2500.0, radius_km * 1000.0))
+    # Dedup: if a custom quest with a set for this window already exists within ~250 m,
+    # reuse it instead of piling up duplicates when «Заказать» is tapped again.
+    dup = (await db.execute(text("""
+        SELECT p.id::text, p.name, ST_Y(ST_Centroid(p.geom)), ST_X(ST_Centroid(p.geom)),
+               ps.target, COALESCE(array_length(ps.species_set,1),0)
+        FROM quest_places p JOIN quest_place_sets ps ON ps.place_id=p.id AND ps.window_label=:win
+        WHERE p.kind='custom'
+          AND ST_DWithin(ST_Centroid(p.geom)::geography,
+                         ST_SetSRID(ST_MakePoint(:lng,:lat),4326)::geography, 250)
+        ORDER BY ST_Distance(ST_Centroid(p.geom)::geography,
+                             ST_SetSRID(ST_MakePoint(:lng,:lat),4326)::geography)
+        LIMIT 1
+    """), {"win": win, "lng": lng, "lat": lat})).first()
+    if dup:
+        pid, nm, clat, clng, tgt, ss = dup
+        return {"place_id": pid, "name": nm, "lat": clat, "lng": clng, "kind": "custom",
+                "window": win, "radius_km": radius_km, "set_size": ss, "target": tgt,
+                "status": "ok", "reused": True}
     from app.services.worldcover import biotope_at
     bios = await asyncio.to_thread(biotope_at, lat, lng)
     qname = _biotope_quest_name(bios)
