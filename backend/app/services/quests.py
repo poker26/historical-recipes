@@ -10,6 +10,7 @@ import asyncio
 import calendar
 import hashlib
 import logging
+import math
 from datetime import date
 
 import httpx
@@ -18,6 +19,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.inaturalist import INAT_BASE, _HEADERS
+from app.services import gbif
 from app.services.plant_matching import resolve_latin_to_plants, _latin_key
 from app.models.place import QuestPlace, QuestPlaceSet, QuestIssuedBadge
 from app.models.device import Device, QuestFollow
@@ -395,6 +397,177 @@ async def compute_species_set(db: AsyncSession, place_id: str, label: str,
     return {"place": name, "window": label, "set_size": len(sset), "target": target, "obs_total": obs_total}
 
 
+# ------------------------------------------------- custom quests (RFC-custom-quests)
+
+async def _inat_species_bbox(swlat, swlng, nelat, nelng, month=None) -> dict[str, dict]:
+    """{binomial: {count, photo, name}} of recognizable plants (rank species/subsp +
+    photo) from iNat species_counts over the bbox. `month=None` → all-season (custom
+    quests want the full local flora, not just this half-month). Empty {} on iNat failure
+    (a failed call must NOT read as 0 — same lesson as compute_species_set)."""
+    results = None
+    params = {"nelat": nelat, "nelng": nelng, "swlat": swlat, "swlng": swlng,
+              "iconic_taxa": "Plantae", "quality_grade": "research", "per_page": 100, "locale": "ru"}
+    if month:
+        params["month"] = month
+    async with httpx.AsyncClient(timeout=60) as client:
+        for attempt in range(3):
+            try:
+                r = await client.get(f"{INAT_BASE}/observations/species_counts", headers=_HEADERS, params=params)
+                if r.status_code == 200:
+                    results = r.json().get("results", []); break
+                await asyncio.sleep(2 * (attempt + 1))
+            except (httpx.HTTPError, ValueError):
+                await asyncio.sleep(1.5 * (attempt + 1))
+    if results is None:
+        return {}
+    out: dict[str, dict] = {}
+    for x in results:
+        t = x.get("taxon") or {}
+        if t.get("rank") not in ("species", "subspecies") or not t.get("default_photo"):
+            continue
+        latin = t.get("name")
+        if not latin:
+            continue
+        out[latin] = {"count": x.get("count", 0),
+                      "photo": (t.get("default_photo") or {}).get("medium_url"),
+                      "name": t.get("preferred_common_name")}
+    return out
+
+
+def _biotope_quest_name(bios: set) -> str:
+    return f"Квест · {sorted(bios)[0]}" if bios else "Мой квест"
+
+
+def _bbox_around(lat: float, lng: float, km: float) -> tuple[float, float, float, float]:
+    """(swlat, swlng, nelat, nelng) for a box of half-extent `km` around the point."""
+    dlat = km / 111.0
+    dlng = km / (111.0 * max(0.1, math.cos(math.radians(lat))))
+    return lat - dlat, lng - dlng, lat + dlat, lng + dlng
+
+
+async def compute_custom_set(db: AsyncSession, place_id: str, label: str,
+                             point_lat: float, point_lng: float) -> dict:
+    """Species-set for a CUSTOM (user-ordered) quest at a point. Layer-1 «точно растёт»
+    = iNat ∪ GBIF inside the circle (corpus-bridged). Layer-2 «ожидается» (only when
+    Layer-1 is thin) = species characteristic of the point's biotope (plant_biotopes)
+    that are also recorded across the REGION (GBIF). Each species carries a `confidence`
+    flag (confirmed/expected) in species_meta; both count toward the badge (user's call)."""
+    row = (await db.execute(text(
+        "SELECT name, ST_YMin(geom), ST_XMin(geom), ST_YMax(geom), ST_XMax(geom) FROM quest_places WHERE id=:p"),
+        {"p": place_id})).first()
+    if not row:
+        return {"error": "place not found"}
+    name = row[0]
+
+    # --- Layer 1: подтверждённые виды ОКРЕСТНОСТИ (~5 км), весь сезон. Радиус ПОИСКА
+    # шире walkable-круга: в точном 1 км у дачи может быть ~0 находок, а окрестный лес/луг
+    # хорошо отснят — и эти виды почти наверняка растут и в круге (iNat ∪ GBIF). ---
+    s1lat, s1lng, n1lat, n1lng = _bbox_around(point_lat, point_lng, 5.0)
+    inat = await _inat_species_bbox(s1lat, s1lng, n1lat, n1lng, month=None)
+    gbif_local = await gbif.species_in_bbox(s1lat, s1lng, n1lat, n1lng, max_records=1500)
+    confirmed: dict[str, dict] = {}   # latin_key -> {latin, count, photo, name}
+    for latin, info in inat.items():
+        k = _latin_key(latin)
+        if not k:
+            continue
+        e = confirmed.setdefault(k, {"latin": latin, "count": 0, "photo": None, "name": None})
+        e["count"] += info["count"]; e["photo"] = info["photo"]; e["name"] = info["name"]
+    for latin, c in gbif_local.items():
+        k = _latin_key(latin)
+        if not k:
+            continue
+        e = confirmed.setdefault(k, {"latin": latin, "count": 0, "photo": None, "name": None})
+        e["count"] += c
+    obs_total = sum(e["count"] for e in confirmed.values())
+    # Corpus-bridge so every badge species rewards the finder with a monograph.
+    plant_map = await resolve_latin_to_plants(db, list(confirmed.keys()))
+    confirmed = {k: v for k, v in confirmed.items() if plant_map.get(k)}
+
+    # --- Layer 2: «ожидается» (биотоп точки × известные в регионе), если Layer-1 жидкий ---
+    expected: dict[str, str] = {}     # latin_key -> latin
+    if len(confirmed) < 8:
+        from app.services.worldcover import biotope_at
+        bios = await asyncio.to_thread(biotope_at, point_lat, point_lng)
+        if bios:
+            brows = (await db.execute(text(
+                "SELECT DISTINCT p.name_latin FROM plant_biotopes pb JOIN plants p ON p.id = pb.plant_id "
+                "WHERE pb.biotope = ANY(cast(:bios as text[])) AND p.name_latin IS NOT NULL"),
+                {"bios": list(bios)})).all()
+            biotope_keys = {}
+            for (lat_name,) in brows:
+                k = _latin_key(lat_name)
+                if k:
+                    biotope_keys[k] = lat_name
+            # «известные в регионе» — GBIF по широкому боксу (~±0.6° lat / ±0.9° lng).
+            reg = await gbif.species_in_bbox(point_lat - 0.6, point_lng - 0.9,
+                                             point_lat + 0.6, point_lng + 0.9, max_records=2000)
+            region_keys = {kk for kk in (_latin_key(l) for l in reg) if kk}
+            for k, lat_name in biotope_keys.items():
+                if k in region_keys and k not in confirmed:
+                    expected[k] = lat_name
+
+    # --- build set + meta (confirmed first, then expected) ---
+    items: list[dict] = []
+    for k, e in confirmed.items():
+        p = plant_map.get(k)
+        items.append({"key": k, "latin": e["latin"],
+                      "name": e.get("name") or (p.name if p else None),
+                      "photo": e.get("photo"), "confidence": "confirmed"})
+    if expected:
+        exp_plants = await resolve_latin_to_plants(db, list(expected.keys()))
+        for k, lat_name in expected.items():
+            p = exp_plants.get(k)
+            if not p:
+                continue
+            items.append({"key": k, "latin": lat_name, "name": p.name,
+                          "photo": None, "confidence": "expected"})
+    items = items[:30]
+    sset = [it["key"] for it in items]
+    if not sset:
+        return {"place": name, "skipped": "empty", "confirmed": 0, "expected": 0}
+    target = max(5, min(15, round(0.6 * len(sset)) or 5))
+    await db.execute(pg_insert(QuestPlaceSet).values(
+        place_id=place_id, window_label=label, species_set=sset, species_meta=items,
+        target=target, obs_total=obs_total
+    ).on_conflict_do_update(constraint="uq_place_window", set_={
+        "species_set": sset, "species_meta": items, "target": target,
+        "obs_total": obs_total, "computed_at": func.now()}))
+    await db.commit()
+    n_conf = sum(1 for it in items if it["confidence"] == "confirmed")
+    return {"place": name, "window": label, "set_size": len(sset), "target": target,
+            "confirmed": n_conf, "expected": len(sset) - n_conf, "obs_total": obs_total}
+
+
+async def create_custom_quest(db: AsyncSession, lat: float, lng: float,
+                              radius_km: float = 1.0, window: str | None = None) -> dict:
+    """Build a circle quest-place around the point (biotope-themed name), persist it
+    (kind='custom', osm_id NULL), and compute its custom species-set. Returns the place
+    so the client opens it like any other PlaceQuestScreen."""
+    win = window or _current_window()
+    rad_m = max(300.0, min(2500.0, radius_km * 1000.0))
+    from app.services.worldcover import biotope_at
+    bios = await asyncio.to_thread(biotope_at, lat, lng)
+    qname = _biotope_quest_name(bios)
+    row = (await db.execute(text("""
+        INSERT INTO quest_places (id, osm_id, name, kind, geom, area)
+        VALUES (gen_random_uuid(), NULL, :name, 'custom',
+            ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(:lng,:lat),4326)::geography, :rad)::geometry),
+            pi() * :rad * :rad)
+        RETURNING id::text, ST_Y(ST_Centroid(geom)), ST_X(ST_Centroid(geom))
+    """), {"name": qname, "lng": lng, "lat": lat, "rad": rad_m})).first()
+    await db.commit()
+    pid, clat, clng = row
+    res = await compute_custom_set(db, pid, win, lat, lng)
+    out = {"place_id": pid, "name": qname, "lat": clat, "lng": clng, "kind": "custom",
+           "window": win, "radius_km": rad_m / 1000.0,
+           "biotope": (sorted(bios)[0] if bios else None)}
+    for kk in ("set_size", "target", "confirmed", "expected"):
+        if kk in res:
+            out[kk] = res[kk]
+    out["status"] = "ok" if "set_size" in res else res.get("skipped", "error")
+    return out
+
+
 # ----------------------------------------------------------- Phase 5: badges
 
 async def _set_for(db, place_id, label):
@@ -756,6 +929,9 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
             "inat_photo": m.get("photo") or (p.photo_url if p else None),
             "plant_id": str(p.id) if p else None,
             "found": key in found_keys,
+            # custom quests tag each species confirmed/expected (RFC-custom-quests); named
+            # places have no flag → default confirmed.
+            "confidence": m.get("confidence", "confirmed"),
         })
     # GPS→biotope filter: keep only species of the requested habitat (those whose
     # corpus card is tagged with `biotope` in plant_biotopes).

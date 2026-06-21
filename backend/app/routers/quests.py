@@ -95,6 +95,19 @@ async def places_near(lat: float = Query(...), lng: float = Query(...),
                                     radius_km=radius_km, limit=limit, window=window)
 
 
+@router.post("/custom/create")
+async def custom_create(lat: float = Query(...), lng: float = Query(...),
+                        radius_km: float = Query(1.0, ge=0.3, le=2.5),
+                        window: str | None = Query(None, description="default = current half-month"),
+                        device_key: str | None = Query(None),
+                        db: AsyncSession = Depends(get_db)):
+    """«Закажи свой квест» (RFC-custom-quests, premium): build a circle quest around the
+    point (biotope-themed) and compute its species-set — iNat ∪ GBIF inside the circle,
+    plus biotope×region «expected» species when local point-data is sparse. Returns the
+    place so the client opens it like any other quest. (Premium gating is a later phase.)"""
+    return await quests.create_custom_quest(db, lat, lng, radius_km=radius_km, window=window)
+
+
 @router.get("/places/in-bounds")
 async def places_in_bounds(min_lat: float = Query(...), min_lng: float = Query(...),
                            max_lat: float = Query(...), max_lng: float = Query(...),
