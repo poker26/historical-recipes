@@ -653,6 +653,13 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
     if not ps:
         return {"error": "no species-set for this place/window"}
     f, t = window_dates(label, year)
+    # CUSTOM quests = a fresh personal hunt → count only finds made AFTER the quest was
+    # created (Oleg 2026-06-21: «новый квест — новый поиск»; don't auto-credit species
+    # already found earlier in an overlapping area). Place quests keep season-wide credit
+    # (you're documenting the place over the whole window).
+    crow = (await db.execute(text(
+        "SELECT kind, created_at FROM quest_places WHERE id=:p"), {"p": place_id})).first()
+    since = crow[1] if (crow and crow[0] == "custom") else None
     # Probability match (HANDOFF-identify-improvements Q1): the engine ranks sibling
     # species almost at random (Achillea millefolium 45% vs nobilis 44% = noise), so
     # strict top-1 robs a correct find of its badge. Read the FULL candidate list and
@@ -664,9 +671,10 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
         WHERE device_key = CAST(:dk AS uuid)
           AND lat IS NOT NULL AND lng IS NOT NULL
           AND captured_at >= :f AND captured_at < (CAST(:t AS date) + 1)
+          AND (CAST(:since AS timestamptz) IS NULL OR captured_at >= CAST(:since AS timestamptz))
           AND ST_Contains((SELECT geom FROM quest_places WHERE id=:p),
                           ST_SetSRID(ST_MakePoint(lng, lat), 4326))
-    """), {"dk": device_key, "f": f, "t": t, "p": place_id})).all()
+    """), {"dk": device_key, "f": f, "t": t, "p": place_id, "since": since})).all()
     sset = set(ps.species_set or [])
     set_genera = {k.split(" ")[0] for k in sset if k}
     exact: set[str] = set()
