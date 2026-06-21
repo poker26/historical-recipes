@@ -485,8 +485,10 @@ async def compute_custom_set(db: AsyncSession, place_id: str, label: str,
 
     # --- Layer 2: «ожидается» (биотоп точки × известные в регионе), если Layer-1 жидкий ---
     expected: dict[str, str] = {}     # latin_key -> latin
+    pl_src: str | None = None         # plantarium attribution URL when it contributed
     if len(confirmed) < 8:
         from app.services.worldcover import biotope_at
+        from app.services import plantarium
         bios = await asyncio.to_thread(biotope_at, point_lat, point_lng)
         if bios:
             brows = (await db.execute(text(
@@ -498,13 +500,20 @@ async def compute_custom_set(db: AsyncSession, place_id: str, label: str,
                 k = _latin_key(lat_name)
                 if k:
                     biotope_keys[k] = lat_name
-            # «известные в регионе» — GBIF по широкому боксу (~±0.6° lat / ±0.9° lng).
+            # «известные в регионе» — GBIF по широкому боксу (~±0.6° lat / ±0.9° lng) +
+            # plantarium регион-чек-лист (РФ-усиление, on-demand по одному, с атрибуцией).
             reg = await gbif.species_in_bbox(point_lat - 0.6, point_lng - 0.9,
                                              point_lat + 0.6, point_lng + 0.9, max_records=2000)
             region_keys = {kk for kk in (_latin_key(l) for l in reg) if kk}
+            region_name = await plantarium.region_at(point_lat, point_lng)
+            pl_latins, pl_url = await plantarium.region_species(region_name)
+            if pl_latins:
+                region_keys |= {kk for kk in (_latin_key(l) for l in pl_latins) if kk}
             for k, lat_name in biotope_keys.items():
                 if k in region_keys and k not in confirmed:
                     expected[k] = lat_name
+            if expected and pl_url:
+                pl_src = pl_url
 
     # --- build set + meta (confirmed first, then expected) ---
     items: list[dict] = []
@@ -535,7 +544,8 @@ async def compute_custom_set(db: AsyncSession, place_id: str, label: str,
     await db.commit()
     n_conf = sum(1 for it in items if it["confidence"] == "confirmed")
     return {"place": name, "window": label, "set_size": len(sset), "target": target,
-            "confirmed": n_conf, "expected": len(sset) - n_conf, "obs_total": obs_total}
+            "confirmed": n_conf, "expected": len(sset) - n_conf, "obs_total": obs_total,
+            "plantarium_source": pl_src}
 
 
 async def create_custom_quest(db: AsyncSession, lat: float, lng: float,
@@ -561,7 +571,7 @@ async def create_custom_quest(db: AsyncSession, lat: float, lng: float,
     out = {"place_id": pid, "name": qname, "lat": clat, "lng": clng, "kind": "custom",
            "window": win, "radius_km": rad_m / 1000.0,
            "biotope": (sorted(bios)[0] if bios else None)}
-    for kk in ("set_size", "target", "confirmed", "expected"):
+    for kk in ("set_size", "target", "confirmed", "expected", "plantarium_source"):
         if kk in res:
             out[kk] = res[kk]
     out["status"] = "ok" if "set_size" in res else res.get("skipped", "error")
