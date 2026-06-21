@@ -64,15 +64,19 @@ async def register_device(device_key: uuid.UUID = Query(...), db: AsyncSession =
 async def set_nickname(device_key: uuid.UUID, body: NicknameUpdate,
                        db: AsyncSession = Depends(get_db)):
     """Optional badge-shelf nickname (set from settings, never prompted)."""
-    d = await db.get(Device, device_key)
-    if not d:
-        raise HTTPException(status_code=404, detail="device not registered")
     nick = (body.nickname or "").strip() or None
     if nick and is_offensive(nick):
         raise HTTPException(status_code=400, detail="Недопустимое имя — выбери другое.")
-    d.nickname = nick
+    # Auto-register: a rename must persist even if the device never hit /register yet
+    # (e.g. went straight to Профиль) — else it 404'd silently and «имя не менялось на
+    # страницах» (Oleg, 2026-06-21).
+    d = await db.get(Device, device_key)
+    if d:
+        d.nickname = nick
+    else:
+        db.add(Device(device_key=device_key, nickname=nick))
     await db.commit()
-    return {"status": "ok", "nickname": d.nickname}
+    return {"status": "ok", "nickname": nick}
 
 
 @router.patch("/{device_key}/avatar")
@@ -80,15 +84,16 @@ async def set_avatar(device_key: uuid.UUID, body: AvatarUpdate,
                      db: AsyncSession = Depends(get_db)):
     """Pick an avatar from the curated set (or null to clear). Validated against
     the known slugs so the stored value always resolves to an asset."""
-    d = await db.get(Device, device_key)
-    if not d:
-        raise HTTPException(status_code=404, detail="device not registered")
     av = (body.avatar or "").strip() or None
     if av is not None and av not in AVATARS:
         raise HTTPException(status_code=400, detail="unknown avatar")
-    d.avatar = av
+    d = await db.get(Device, device_key)   # auto-register (same fix as nickname)
+    if d:
+        d.avatar = av
+    else:
+        db.add(Device(device_key=device_key, avatar=av))
     await db.commit()
-    return {"status": "ok", "avatar": d.avatar}
+    return {"status": "ok", "avatar": av}
 
 
 @router.patch("/{device_key}/privacy")
