@@ -598,6 +598,35 @@ async def create_custom_quest(db: AsyncSession, lat: float, lng: float,
     return out
 
 
+async def place_participants(db: AsyncSession, place_id: str, window: str | None = None,
+                             year: int | None = None, limit: int = 50) -> dict:
+    """«Кто проходил этот квест» (Oleg 2026-06-21) — devices that EARNED a badge for this
+    place×window×year, to befriend people who did the SAME quest (distinct from the global
+    leaderboard). Public + not-blocked only; highest tier per device. («Проходит сейчас» —
+    in-progress, not yet a badge — is a later, heavier addition.)"""
+    win = window or _current_window()
+    yr = year or date.today().year
+    badge_id = f"{place_id}:{win}:{yr}"
+    rows = (await db.execute(text("""
+        SELECT d.handle, d.nickname, d.avatar, b.device_key, MAX(b.tier) AS tier
+        FROM quest_issued_badges b
+        JOIN quest_devices d ON d.device_key = b.device_key
+        WHERE b.badge_id = :bid
+          AND COALESCE(d.blocked, false) = false
+          AND COALESCE(d.activity_public, true) = true
+        GROUP BY d.handle, d.nickname, d.avatar, b.device_key
+        ORDER BY tier DESC
+        LIMIT :lim
+    """), {"bid": badge_id, "lim": limit})).all()
+    parts = [{
+        "handle": handle or auto_handle(dk),
+        "nick": nick or auto_nick(dk),
+        "avatar": avatar, "tier": tier,
+    } for handle, nick, avatar, dk, tier in rows]
+    return {"place_id": str(place_id), "window": win, "year": yr,
+            "count": len(parts), "participants": parts}
+
+
 # ----------------------------------------------------------- Phase 5: badges
 
 async def _set_for(db, place_id, label):
