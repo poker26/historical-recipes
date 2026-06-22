@@ -10,8 +10,8 @@ cleanup is complete — generating from dirty data = polishing garbage (RFC §10
 """
 import asyncio
 import logging
+import uuid
 
-import httpx
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from temporalio import activity
@@ -36,13 +36,18 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
     cursor = "00000000-0000-0000-0000-000000000000"
     sem = asyncio.Semaphore(6)   # concurrent 235b polish calls (was strictly sequential)
 
-    async def _one(pid: str, client: httpx.AsyncClient) -> None:
+    async def _one(pid: str) -> None:
         nonlocal generated, skipped, blocked, errors
         async with sem:
             try:
-                r = await client.get(f"{_BACKEND}/api/plants/{pid}?view=field&fresh=1")
-                r.raise_for_status()
-                fv = r.json()
+                # IN-PROCESS field-view (NOT an HTTP call to the backend): the HTTP path
+                # holds the BACKEND serving pool's connections for the heavy aggregation
+                # and exhausted it → backend hung 3× (idle-in-tx class). Computing it here
+                # uses the dispatcher's own DB pool, so generation never competes with the
+                # live app's serving pool.
+                from app.routers.plants import get_plant
+                async with async_session() as db:
+                    fv = await get_plant(uuid.UUID(pid), view="field", fresh=True, db=db)
                 distilled = rm.distill(fv)
                 h = rm.input_hash(distilled)
                 async with async_session() as db:
@@ -73,28 +78,27 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
                 errors += 1
                 logger.warning("monograph gen %s failed: %s", pid, str(ex)[:80])
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        while True:
-            async with async_session() as db:
-                rows = (await db.execute(text(
-                    "SELECT id::text FROM plants WHERE name_latin IS NOT NULL "
-                    # species only: a genus row is a HUB with a different field-view
-                    # shape (members/aggregated) that the species distiller can't read;
-                    # вещество/животное are non-plant materia medica, not monographed.
-                    "AND rank = 'species' AND kingdom IN ('растение','гриб') "
-                    # safety-gated: never ship a reader monograph without a forager-
-                    # safety verdict (level + deadly twin shown first). NULL = not yet
-                    # classified → wait for EdibleSafetyWorkflow.
-                    "AND safety_level IS NOT NULL "
-                    "AND id::text > :c ORDER BY id LIMIT :n"), {"c": cursor, "n": batch})).all()
-            if not rows:
-                break
-            cursor = rows[-1][0]
-            seen += len(rows)
-            # process the batch concurrently (sem bounds in-flight LLM calls); the
-            # cursor advanced per-BATCH keeps a worker restart resumable.
-            await asyncio.gather(*[_one(pid, client) for (pid,) in rows])
-            activity.heartbeat({"seen": seen, "generated": generated,
+    while True:
+        async with async_session() as db:
+            rows = (await db.execute(text(
+                "SELECT id::text FROM plants WHERE name_latin IS NOT NULL "
+                # species only: a genus row is a HUB with a different field-view
+                # shape (members/aggregated) that the species distiller can't read;
+                # вещество/животное are non-plant materia medica, not monographed.
+                "AND rank = 'species' AND kingdom IN ('растение','гриб') "
+                # safety-gated: never ship a reader monograph without a forager-
+                # safety verdict (level + deadly twin shown first). NULL = not yet
+                # classified → wait for EdibleSafetyWorkflow.
+                "AND safety_level IS NOT NULL "
+                "AND id::text > :c ORDER BY id LIMIT :n"), {"c": cursor, "n": batch})).all()
+        if not rows:
+            break
+        cursor = rows[-1][0]
+        seen += len(rows)
+        # process the batch concurrently (sem bounds in-flight LLM calls); the
+        # cursor advanced per-BATCH keeps a worker restart resumable.
+        await asyncio.gather(*[_one(pid) for (pid,) in rows])
+        activity.heartbeat({"seen": seen, "generated": generated,
                                 "skipped": skipped, "blocked": blocked, "errors": errors})
     return {"seen": seen, "generated": generated, "skipped": skipped,
             "blocked": blocked, "errors": errors}
