@@ -16,8 +16,9 @@ word-form). Action rules win over the route/meta DROP list, so «наружно�
 
 # (canonical action, group, [keyword substrings]).  ORDER MATTERS — more specific first.
 _RULES: list[tuple[str, str, list[str]]] = [
-    # digestive / appetite — BEFORE «стимулирующее» so «возбуждающее аппетит» → аппетитное
-    ("аппетитное", "пищеварение", ["аппетит"]),
+    # digestive / appetite — BEFORE «стимулирующее». Canon «возбуждающее аппетит» (bitters);
+    # NOT «аппетитное» (that reads as «tasty» in modern Russian — Oleg 2026-06-22).
+    ("возбуждающее аппетит", "пищеварение", ["аппетит"]),
     ("пищеварительное", "пищеварение", ["пищеварен", "пищеварит", "желудочн", "горечи", "горечь"]),
     ("ветрогонное", "пищеварение", ["ветрогон", "карминат"]),
     ("слабительное", "пищеварение", ["слабительн", "послабляющ"]),
