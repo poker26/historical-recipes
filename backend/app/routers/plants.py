@@ -878,7 +878,13 @@ async def _genus_view(db: AsyncSession, genus: Plant) -> dict:
             t = titles.get(str(u.source_book_id)) if u.source_book_id else None
             if t:
                 d["sources"].add(t)
-            d["ind"].extend(u.indications or [])
+            # indications is a free-text STRING (not a list) — append it whole; a bare
+            # extend() would iterate the string into individual characters.
+            if u.indications:
+                if isinstance(u.indications, str):
+                    d["ind"].append(u.indications)
+                else:
+                    d["ind"].extend(u.indications)
     uses = sorted(
         ({"action": a, "n_species": len(d["species"]),
           "species": sorted(d["species"])[:8],
