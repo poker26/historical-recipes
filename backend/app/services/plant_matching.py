@@ -126,6 +126,13 @@ _NON_PLANT_SUBSTANCES = frozenset({
     "сода", "поташ", "мел", "гипс", "глина", "песок", "селитра",
     "деготь", "березовый деготь", "скипидар", "глицерин", "растительный глицерин",
     "камфора", "желатин",
+    # preparation FORMS (not a plant) — a head noun like «сироп крушины» would
+    # otherwise key the row on «сироп» and swallow every «сахарный сироп» /
+    # «малиновый сироп» mention (1428 on one Frangula row). Denied so the row keys
+    # on its real plant noun and bare-form mentions match no plant.
+    "сироп", "сахарный сироп", "простой сироп", "настойка", "настой", "отвар",
+    "экстракт", "вытяжка", "мазь", "тинктура", "эликсир", "бальзам", "примочка",
+    "припарка", "болтушка",
 })
 
 _VOWEL_ENDINGS = "аяоеёыиуюьйъ"
@@ -435,7 +442,10 @@ def _identity(name: str | None) -> tuple[frozenset[str], frozenset[str]]:
                 adjs.add(a)
         else:
             st = _stem(tok)
-            if len(st) >= _MIN_KEY_TOKEN:
+            # A non-plant substance/preparation stem (сироп, настой, соль, …) must
+            # never seed a plant identity — else «сироп крушины» keys on «сироп» and
+            # swallows every «сахарный сироп» mention. Catches all inflections via stem.
+            if len(st) >= _MIN_KEY_TOKEN and st not in _NON_PLANT_STEMS:
                 nouns.add(st)
     return frozenset(nouns), frozenset(adjs)
 
