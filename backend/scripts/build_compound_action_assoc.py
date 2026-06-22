@@ -24,6 +24,7 @@ from sqlalchemy import text
 from app.database import async_session
 from app.services.associations import _hyper_sf
 from app.services.compound_normalize import compound_merge_key
+from app.services.action_normalize import canonicalize_action
 
 MIN_PLANTS = 8     # compound family must occur in ≥8 base plants (Fisher p guards small n)
 SUP = 4            # action support gate
@@ -32,9 +33,9 @@ TOPK = 14          # top actions per compound family
 
 DDL = [
     """CREATE TABLE IF NOT EXISTS compound_action_assoc(
-         compound_key text, compound_display text, action_id uuid, action_name text,
+         compound_key text, compound_display text, action_canon text,
          support int, lift real, p_value double precision, n_compound_plants int,
-         PRIMARY KEY(compound_key, action_id))""",
+         PRIMARY KEY(compound_key, action_canon))""",
     "CREATE INDEX IF NOT EXISTS ix_caa_key ON compound_action_assoc(compound_key, p_value)",
 ]
 
@@ -50,11 +51,15 @@ async def main():
         async def q(s):
             return (await db.execute(text(s))).fetchall()
 
-        pa = defaultdict(set)                              # plant → set(action_id)
-        for pid, aid in await q("SELECT plant_id, action_id FROM plant_medicinal_uses "
-                                "WHERE action_id IS NOT NULL"):
-            pa[pid].add(aid)
-        anames = {aid: nm for aid, nm in await q("SELECT id, name FROM medicinal_actions")}
+        # plant → set(CANONICAL action). Uses BOTH the normalized action_id name and the
+        # 47k unmapped action_raw → canonicalize_action collapses synonyms + drops route/meta.
+        pa = defaultdict(set)
+        for pid, aname, araw in await q(
+                "SELECT u.plant_id, a.name, u.action_raw FROM plant_medicinal_uses u "
+                "LEFT JOIN medicinal_actions a ON a.id=u.action_id"):
+            canon = canonicalize_action(aname or araw)
+            if canon:
+                pa[pid].add(canon)
         base = set(pa)
         N = len(base)
         K = Counter()
@@ -100,10 +105,9 @@ async def main():
             for a, cnt, lift, pv in rows[:TOPK]:
                 await db.execute(text(
                     "INSERT INTO compound_action_assoc"
-                    "(compound_key,compound_display,action_id,action_name,support,lift,p_value,n_compound_plants) "
-                    "VALUES(:k,:d,:a,:an,:s,:l,:p,:n) ON CONFLICT DO NOTHING"),
-                    dict(k=key, d=display.get(key), a=str(a), an=anames.get(a),
-                         s=cnt, l=lift, p=pv, n=n))
+                    "(compound_key,compound_display,action_canon,support,lift,p_value,n_compound_plants) "
+                    "VALUES(:k,:d,:a,:s,:l,:p,:n) ON CONFLICT DO NOTHING"),
+                    dict(k=key, d=display.get(key), a=a, s=cnt, l=lift, p=pv, n=n))
                 ins += 1
         await db.commit()
         print(f"compound_action_assoc rebuilt: {comps} compound families, {ins} assoc rows, "

@@ -932,7 +932,7 @@ async def plant_compound_insights(
     rows = []
     if keys:
         rows = (await db.execute(text(
-            "SELECT compound_key, compound_display, action_id, action_name, "
+            "SELECT compound_key, compound_display, action_canon, "
             "       support, lift, p_value, n_compound_plants "
             "FROM compound_action_assoc "
             "WHERE compound_key = ANY(:keys) AND lift >= 1.5 AND support >= 8 "
@@ -970,12 +970,12 @@ async def plant_compound_insights(
         nm = (r.compound_display or r.compound_key or "").strip()
         if _denied(nm) or _denied(r.compound_key):
             continue
-        if r.action_id in seen_action:        # keep the highest-lift compound per action
+        if r.action_canon in seen_action:     # keep the highest-lift compound per action
             continue
-        seen_action.add(r.action_id)
+        seen_action.add(r.action_canon)
         insights.append({
             "compound": {"key": r.compound_key, "name": nm},
-            "action": {"id": str(r.action_id), "name": r.action_name},
+            "action": {"name": r.action_canon},
             "support": r.support, "lift": round(r.lift, 2), "p_value": r.p_value,
             "strength": _strength(r.p_value), "n_plants_with_compound": r.n_compound_plants,
         })
