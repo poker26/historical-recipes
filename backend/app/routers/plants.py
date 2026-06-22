@@ -254,6 +254,7 @@ async def list_plants(
         stmt = stmt.where(
             Plant.medicinal_uses.any(
                 or_(
+                    PlantMedicinalUse.canon_action.ilike(like),   # canonical (synonyms merged)
                     PlantMedicinalUse.action_raw.ilike(like),
                     PlantMedicinalUse.action_id.in_(action_id_set),
                 )
@@ -348,11 +349,13 @@ async def plant_facets(db: AsyncSession = Depends(get_db)):
         .order_by(group_count.desc())
     )).all()
 
+    # Canonical action facet (action_normalize): ~60 controlled actions over BOTH the
+    # action_id-linked AND the raw uses, synonyms merged — replaces the granular vocab.
     action_count = func.count(func.distinct(PlantMedicinalUse.plant_id))
     actions = (await db.execute(
-        select(MedicinalAction.name, action_count)
-        .join(PlantMedicinalUse, PlantMedicinalUse.action_id == MedicinalAction.id)
-        .group_by(MedicinalAction.name)
+        select(PlantMedicinalUse.canon_action, action_count)
+        .where(PlantMedicinalUse.canon_action.isnot(None))
+        .group_by(PlantMedicinalUse.canon_action)
         .order_by(action_count.desc())
     )).all()
 
@@ -522,9 +525,12 @@ def _field_view(plant, src, recipes: list[dict]) -> dict:
     # ── uses: dedup by action key, merge parts/indications, rank by consensus ─
     use_groups: dict[str, dict] = {}
     for u in plant.medicinal_uses:
-        # A controlled-vocab action is single-valued and carries its concept id;
-        # a free-text blob ("a, b и c") splits into separate (action, no-id) facts.
-        if u.action and u.action.name and u.action.name.strip():
+        # Canonical action (action_normalize) when present — clean, synonyms merged,
+        # route/meta already dropped. Else fall back: controlled-vocab single value, or a
+        # free-text blob ("a, b и c") split into separate (action, no-id) facts.
+        if u.canon_action and u.canon_action.strip():
+            row_actions = [(u.canon_action.strip(), None)]
+        elif u.action and u.action.name and u.action.name.strip():
             row_actions = [(u.action.name.strip(), str(u.action_id) if u.action_id else None)]
         else:
             row_actions = [(a, None) for a in _split_actions(None, u.action_raw)]

@@ -158,6 +158,7 @@ class PlantMedicinalUse(Base):
     part: Mapped[str | None] = mapped_column(String(50))         # лист / корень / цвет / трава / плод ...
     action_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("medicinal_actions.id", ondelete="SET NULL"))
     action_raw: Mapped[str | None] = mapped_column(Text)         # action as written, before normalization to action_id
+    canon_action: Mapped[str | None] = mapped_column(Text)       # canonical action (action_normalize); NULL = route/meta dropped or untranslated tail
     indications: Mapped[str | None] = mapped_column(Text)        # what it treats: "лихорадка, кашель"
     indication_ids: Mapped[list[uuid.UUID] | None] = mapped_column(ARRAY(UUID(as_uuid=True)))  # normalized concepts (free text → Indication ids)
     preparation: Mapped[str | None] = mapped_column(String(50))  # настой / отвар / настойка / мазь / припарка / сок
