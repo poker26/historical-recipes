@@ -20,7 +20,7 @@ import re
 from datetime import datetime, timezone
 
 import httpx
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -235,6 +235,50 @@ async def resolve_names_ru(db: AsyncSession, latins: list[str]) -> dict[str, dic
         out[lat] = cache.get(key) if key else None
         if out[lat] is None:
             out[lat] = {"name_ru": None, "taxon_id": None}
+    return out
+
+
+async def resolve_registry_photos(db: AsyncSession, latins: list[str]) -> dict[str, dict]:
+    """License-clean iNat photo + attribution for REGISTRY species (recognised via the
+    Cherepanov backbone but with no Plant monograph). Lazy + cached in ``inat_photo_cache``
+    (keyed on the genus+species latin_key) — only fetched when such a species actually
+    surfaces in an identify result, then reused. Returns ``{input_latin: {photo_url,
+    photo_attribution, common_name}}`` for the ones iNat has a reusable photo for. Never
+    raises (transient iNat failure → just no photo this call)."""
+    keys = {lat: _latin_key(lat) for lat in latins}
+    wanted = {k for k in keys.values() if k}
+    if not wanted:
+        return {}
+    await db.execute(text(
+        "CREATE TABLE IF NOT EXISTS inat_photo_cache (latin_key text PRIMARY KEY, "
+        "photo_url text, photo_attribution text, common_name text, checked_at timestamptz DEFAULT now())"))
+    rows = (await db.execute(text(
+        "SELECT latin_key, photo_url, photo_attribution, common_name FROM inat_photo_cache "
+        "WHERE latin_key = ANY(:ks)"), {"ks": list(wanted)})).all()
+    cache = {lk: {"photo_url": pu, "photo_attribution": at, "common_name": cn} for lk, pu, at, cn in rows}
+    misses = [k for k in wanted if k not in cache]
+    if misses:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                results = await asyncio.gather(*(resolve_taxon_photo(client, k) for k in misses))
+        except Exception:
+            results = [None] * len(misses)
+        for k, res in zip(misses, results):
+            if res is None:
+                continue                                    # transient — leave uncached
+            entry = {"photo_url": res.get("photo_url"),
+                     "photo_attribution": res.get("photo_attribution"),
+                     "common_name": res.get("common_name")}
+            cache[k] = entry
+            await db.execute(text(
+                "INSERT INTO inat_photo_cache (latin_key, photo_url, photo_attribution, common_name) "
+                "VALUES (:k, :u, :a, :c) ON CONFLICT (latin_key) DO NOTHING"),
+                {"k": k, "u": entry["photo_url"], "a": entry["photo_attribution"], "c": entry["common_name"]})
+        await db.commit()
+    out: dict[str, dict] = {}
+    for lat, key in keys.items():
+        if key and key in cache and cache[key].get("photo_url"):
+            out[lat] = cache[key]
     return out
 
 

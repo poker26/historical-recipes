@@ -39,7 +39,7 @@ _MUSHROOM_DISCLAIMER = (
     "Сверяйтесь с уровнем опасности и «опасным двойником» на карточке."
 )
 _MUSHROOM_KINGDOMS = {"fungi", "mushroom", "гриб", "грибы"}
-from app.services.inaturalist import resolve_names_ru
+from app.services.inaturalist import resolve_names_ru, resolve_registry_photos
 from app.services.plant_matching import resolve_latin_to_plants, resolve_latin_to_spine
 
 logger = logging.getLogger(__name__)
@@ -113,10 +113,22 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
         # pending» — not «not in corpus». Attach `registry` {status, accepted_latin,
         # family_latin} so the client says so instead of a dead end.
         spine = await resolve_latin_to_spine(db, unmatched_latins)
+        # Enrich the registry hit with a license-clean iNat photo + RU name (lazy, cached)
+        # — no LLM, no invented facts: just «known species, here's how it looks».
+        registry_latins = [c["latin"] for c in candidates
+                           if c.get("plant") is None and c["latin"] in spine]
+        photos = await resolve_registry_photos(db, registry_latins) if registry_latins else {}
         registry = 0
         for c in candidates:
             if c.get("plant") is None and c["latin"] in spine:
-                c["registry"] = spine[c["latin"]]
+                reg = dict(spine[c["latin"]])
+                ph = photos.get(c["latin"])
+                if ph:
+                    reg["photo_url"] = ph.get("photo_url")
+                    reg["photo_attribution"] = ph.get("photo_attribution")
+                    if not c.get("name_ru") and ph.get("common_name"):
+                        c["name_ru"] = ph.get("common_name")
+                c["registry"] = reg
                 registry += 1
         if registry:
             result["registry_count"] = registry
