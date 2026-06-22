@@ -899,6 +899,77 @@ async def plant_pairings(
             "category": category, "categories": cats, "items": items}
 
 
+_INSIGHT_DISCLAIMER = (
+    "Гипотеза по составу: растения с этим веществом в нашем корпусе статистически чаще "
+    "обладают таким действием. Это АССОЦИАЦИЯ через состав, а не доказательство и не "
+    "медицинский совет — связь объясняется через растения, причинность не установлена."
+)
+
+
+@router.get("/{plant_id}/compound_insights")
+async def plant_compound_insights(
+    plant_id: uuid.UUID,
+    limit: int = 10,
+    db: AsyncSession = Depends(get_db),
+):
+    """«Почему может работать» — состав→действие гипотезы (precomputed
+    ``compound_action_assoc``). Для веществ растения берём действия, с которыми
+    растения-носители этого вещества статистически связаны (гипергеометрический
+    p-value, не raw lift — гасит малосэмпловые флуки). Каждая = «содержит {вещество}
+    → ассоциировано с {действие}», с p/lift/support. ГИПОТЕЗА, не медсовет
+    (``disclaimer``). Дедуп по действию (сильнейшее вещество-драйвер). Zero-LLM."""
+    limit = max(1, min(limit, 25))
+    # Nutritional generics carry no mechanistic signal («витамины→всё» drowns the
+    # interesting drivers) — drop them. Rank by lift (specificity); rows are already
+    # significance-gated (p<0.01, support≥5) at precompute, so high-lift is the
+    # surprising/mechanistic «удиви меня» driver, not a fluke.
+    rows = (await db.execute(text(
+        "SELECT caa.compound_id, c.name AS comp_name, caa.action_id, caa.action_name, "
+        "       caa.support, caa.lift, caa.p_value, caa.n_compound_plants "
+        "FROM plant_compounds pc "
+        "JOIN compound_action_assoc caa ON caa.compound_id = pc.compound_id "
+        "JOIN compounds c ON c.id = pc.compound_id "
+        "WHERE pc.plant_id = :pid AND caa.lift >= 1.5 AND caa.support >= 12 "
+        "ORDER BY caa.lift DESC"), {"pid": str(plant_id)})).all()
+    # Non-mechanistic «compounds» that carry no action signal — nutritional generics,
+    # minerals, solvents and placeholders. They dominate (high coverage) and produce
+    # vague/junk drivers («натрий → похудение»). Real functional classes (дубильные,
+    # эфирное масло, горечи, слизь, смолы…) are kept. NOTE: deeper fix is the compound-
+    # domain cleanup + phytochemistry reference data (see corpus-coverage backlog).
+    _DENY = {
+        "витамины", "витамин", "витамины группы в", "минеральные вещества", "минеральные соли",
+        "макроэлементы", "микроэлементы", "макро- и микроэлементы", "зольные вещества", "зола",
+        "клетчатка", "пищевые волокна", "вода", "белки", "жиры", "углеводы", "крахмал",
+        "сахара", "сахар", "спирт", "натрий", "кальций", "калий", "железо", "магний", "фосфор",
+        "биологически активные вещества", "экстрактивные вещества", "действующие вещества",
+    }
+
+    def _strength(p: float) -> str:
+        if p < 1e-10:
+            return "сильная"
+        if p < 1e-5:
+            return "заметная"
+        return "умеренная"
+
+    seen_action: set = set()
+    insights = []
+    for r in rows:
+        if (r.comp_name or "").strip().lower() in _DENY:
+            continue
+        if r.action_id in seen_action:        # keep the highest-lift compound per action
+            continue
+        seen_action.add(r.action_id)
+        insights.append({
+            "compound": {"id": str(r.compound_id), "name": r.comp_name},
+            "action": {"id": str(r.action_id), "name": r.action_name},
+            "support": r.support, "lift": round(r.lift, 2), "p_value": r.p_value,
+            "strength": _strength(r.p_value), "n_plants_with_compound": r.n_compound_plants,
+        })
+        if len(insights) >= limit:
+            break
+    return {"plant_id": str(plant_id), "disclaimer": _INSIGHT_DISCLAIMER, "insights": insights}
+
+
 async def _genus_view(db: AsyncSession, genus: Plant) -> dict:
     """Hub view of a genus row: its member species + their facts AGGREGATED with
     per-species attribution (no invented genus-level facts), plus the generic
