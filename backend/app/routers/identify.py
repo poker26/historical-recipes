@@ -40,7 +40,7 @@ _MUSHROOM_DISCLAIMER = (
 )
 _MUSHROOM_KINGDOMS = {"fungi", "mushroom", "гриб", "грибы"}
 from app.services.inaturalist import resolve_names_ru
-from app.services.plant_matching import resolve_latin_to_plants
+from app.services.plant_matching import resolve_latin_to_plants, resolve_latin_to_spine
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -108,6 +108,18 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
             if info:
                 c["name_ru"] = info.get("name_ru")
                 c["inat_taxon_id"] = info.get("taxon_id")
+        # Registry-as-completeness (no stub Plant rows): a candidate we lack a monograph
+        # for but that IS in the Cherepanov backbone is «known FSU flora, monograph
+        # pending» — not «not in corpus». Attach `registry` {status, accepted_latin,
+        # family_latin} so the client says so instead of a dead end.
+        spine = await resolve_latin_to_spine(db, unmatched_latins)
+        registry = 0
+        for c in candidates:
+            if c.get("plant") is None and c["latin"] in spine:
+                c["registry"] = spine[c["latin"]]
+                registry += 1
+        if registry:
+            result["registry_count"] = registry
     result["matched_count"] = matched
     return result
 

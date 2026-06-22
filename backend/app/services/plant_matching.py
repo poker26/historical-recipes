@@ -238,6 +238,60 @@ async def resolve_latin_to_plants(
     return out
 
 
+async def resolve_latin_to_spine(
+    db: AsyncSession,
+    latin_names: list[str],
+) -> dict[str, dict]:
+    """For latin binomials NOT in our corpus, recognise the ones that ARE in the
+    Cherepanov backbone (`taxon_backbone` / `taxon_synonym`) — the «registry as
+    completeness» layer (no stub Plant rows). Returns ``{input_latin: {status,
+    accepted_latin, family_latin}}`` where ``status`` is ``accepted`` (a current
+    accepted FSU species) or ``synonym`` (resolves to ``accepted_latin``). Lets the
+    identify/nearby bridge label a hit «known FSU flora, monograph pending» instead of
+    «not in corpus». Missing taxonomy tables → empty dict (degrades gracefully)."""
+    keys: dict[str, str] = {}
+    for n in latin_names:
+        k = _latin_key(n)
+        if k:
+            keys.setdefault(k, n)
+    if not keys:
+        return {}
+    kl = list(keys)
+    try:
+        acc_rows = (await db.execute(text(
+            "SELECT accepted_key, genus, species, family FROM taxon_backbone "
+            "WHERE accepted_key = ANY(:ks)"), {"ks": kl})).all()
+    except Exception:
+        return {}                                  # tables absent → no registry
+    acc_info: dict[str, dict] = {}
+    for ak, g, s, fam in acc_rows:
+        acc_info.setdefault(ak, {"status": "accepted",
+                                 "accepted_latin": f"{g} {s}".strip(), "family_latin": fam})
+    rest = [k for k in kl if k not in acc_info]
+    syn_target: dict[str, str] = {}
+    tinfo: dict[str, tuple] = {}
+    if rest:
+        for sk, ak in (await db.execute(text(
+            "SELECT syn_key, accepted_key FROM taxon_synonym WHERE syn_key = ANY(:ks)"),
+                {"ks": rest})).all():
+            syn_target.setdefault(sk, ak)
+        tk = list({ak for ak in syn_target.values() if ak})
+        if tk:
+            for ak, g, s, fam in (await db.execute(text(
+                "SELECT accepted_key, genus, species, family FROM taxon_backbone "
+                "WHERE accepted_key = ANY(:ks)"), {"ks": tk})).all():
+                tinfo.setdefault(ak, (f"{g} {s}".strip(), fam))
+    out: dict[str, dict] = {}
+    for k, orig in keys.items():
+        if k in acc_info:
+            out[orig] = acc_info[k]
+        elif k in syn_target:
+            ak = syn_target[k]
+            nm, fam = tinfo.get(ak, (None, None))
+            out[orig] = {"status": "synonym", "accepted_latin": nm, "family_latin": fam}
+    return out
+
+
 def _stem(token: str) -> str:
     """Crude single-ending stemmer: drop one trailing inflection vowel/й/ь/ъ.
 
