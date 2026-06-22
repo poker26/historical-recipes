@@ -235,19 +235,59 @@ export interface PlantOilRef {
   uses_count: number;
 }
 
+export interface SafetyBlock {
+  level?: number | null;
+  label?: string | null;
+  edible_parts?: string[] | null;
+  dangerous_parts?: string[] | null;
+  deadly_twin?: string | null;
+  rationale?: string | null;
+  note?: string | null;
+  dangerous_members?: { id: string; name: string; level: number }[];
+}
+
+// A rank='genus' hub aggregates facts across its member species (RFC-reference-
+// granularity). Its GET /plants/{id} payload is a DIFFERENT shape from a species —
+// these fields are present, the per-species arrays below are not.
+export interface GenusUse {
+  action: string;
+  n_species: number;
+  species: string[];
+  indications: string[];
+  sources: string[];
+}
+export interface GenusCompound {
+  compound: string;
+  n_species: number;
+  species: string[];
+}
+export interface GenusMember {
+  id: string;
+  name: string;
+  name_latin: string | null;
+}
+
 export interface PlantDetail extends Plant {
   description: string | null;
   photo_license: string | null;
   photo_source: string | null;
   inat_taxon_id: number | null;
-  medicinal_uses: PlantMedicinalUse[];
-  compounds: PlantCompound[];
-  harvests: PlantHarvest[];
-  habitats: PlantHabitat[];
-  toxicities: PlantToxicity[];
-  mentions: PlantMention[];
-  recipes: PlantRecipeRef[];
-  essential_oils: PlantOilRef[];
+  rank?: string | null;
+  safety?: SafetyBlock | null;
+  // species shape (absent on a genus hub):
+  medicinal_uses?: PlantMedicinalUse[];
+  compounds?: PlantCompound[];
+  harvests?: PlantHarvest[];
+  habitats?: PlantHabitat[];
+  toxicities?: PlantToxicity[];
+  mentions?: PlantMention[];
+  recipes?: PlantRecipeRef[];
+  essential_oils?: PlantOilRef[];
+  // genus-hub shape (absent on a species):
+  member_count?: number;
+  members?: GenusMember[];
+  uses?: GenusUse[];
+  note?: string | null;
 }
 
 export interface Compound {

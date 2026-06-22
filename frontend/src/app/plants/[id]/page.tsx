@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { api, PlantDetail } from "@/lib/api";
+import { api, PlantDetail, GenusCompound } from "@/lib/api";
 
 function Section({ title, count, children }: { title: string; count?: number; children: ReactNode }) {
   return (
@@ -35,6 +35,120 @@ function Original({ text }: { text: string | null }) {
   );
 }
 
+function RecipesSection({ recipes }: { recipes: NonNullable<PlantDetail["recipes"]> }) {
+  return (
+    <Section title="Used in recipes" count={recipes.length}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {recipes.map((r) => (
+          <div key={r.id} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 14 }}>
+            <Link href={`/recipes/${r.id}`} style={{ fontWeight: 500 }}>{r.name}</Link>
+            {r.category && <span className="badge badge-blue">{r.category}</span>}
+            {r.book && (
+              <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                {r.book}{r.year ? ` · ${r.year}` : ""}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// A rank='genus' hub renders a DIFFERENT layout (aggregated across member species) —
+// the species response shape (medicinal_uses/toxicities/harvests/…) is absent here, so
+// the species view would crash on it. RFC-reference-granularity.
+function GenusView({ plant }: { plant: PlantDetail }) {
+  const members = plant.members || [];
+  const uses = plant.uses || [];
+  const compounds = (plant.compounds as unknown as GenusCompound[]) || [];
+  const recipes = plant.recipes || [];
+  const safety = plant.safety;
+  return (
+    <>
+      <div className="page-header">
+        <div>
+          <Link href="/plants" style={{ color: "var(--text-muted)", fontSize: 13 }}>Herbarium /</Link>
+          <h1 style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {plant.name}
+            <span className="badge badge-blue">род</span>
+          </h1>
+          <div style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 2 }}>
+            {plant.name_latin && <em>{plant.name_latin}</em>} · {plant.member_count ?? members.length} видов
+          </div>
+        </div>
+      </div>
+
+      {plant.note && (
+        <div className="card" style={{ marginBottom: 20, fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5 }}>
+          {plant.note}
+        </div>
+      )}
+
+      {safety?.label && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <span style={{ color: "var(--text-muted)" }}>Безопасность (по роду):</span>{" "}
+          <strong>{safety.label}</strong>
+          {safety.note && <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>{safety.note}</div>}
+          {!!safety.dangerous_members?.length && (
+            <div style={{ fontSize: 13, marginTop: 6 }}>
+              Опасные виды:{" "}
+              {safety.dangerous_members.map((m) => (
+                <Link key={m.id} href={`/plants/${m.id}`} className="badge badge-red" style={{ marginRight: 4, textDecoration: "none" }}>{m.name}</Link>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <Section title="Виды рода" count={members.length}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {members.map((m) => (
+            <Link key={m.id} href={`/plants/${m.id}`} className="badge badge-green" style={{ padding: "6px 10px", textDecoration: "none" }}>
+              {m.name}{m.name_latin && <em style={{ opacity: 0.7 }}> · {m.name_latin}</em>}
+            </Link>
+          ))}
+        </div>
+      </Section>
+
+      {uses.length > 0 && (
+        <Section title="Применения (по роду)" count={uses.length}>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Действие</th><th>Видов</th><th>Показания</th><th>Источники</th></tr></thead>
+              <tbody>
+                {uses.map((u, i) => (
+                  <tr key={i}>
+                    <td>{u.action}</td>
+                    <td>{u.n_species}</td>
+                    <td>{u.indications?.join(", ") || "—"}</td>
+                    <td style={{ fontSize: 11, color: "var(--text-muted)" }}>{u.sources?.join("; ") || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      )}
+
+      {compounds.length > 0 && (
+        <Section title="Химический состав (по роду)" count={compounds.length}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {compounds.map((c, i) => (
+              <span key={i} className="badge badge-green" style={{ padding: "6px 10px" }}
+                title={`${c.n_species} видов: ${c.species?.join(", ") || ""}`}>
+                {c.compound} <span style={{ opacity: 0.7 }}>×{c.n_species}</span>
+              </span>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {recipes.length > 0 && <RecipesSection recipes={recipes} />}
+    </>
+  );
+}
+
 export default function PlantDetailPage() {
   const params = useParams();
   const id = params.id as string;
@@ -47,6 +161,16 @@ export default function PlantDetailPage() {
 
   if (loading) return <div className="empty"><span className="spinner" /></div>;
   if (!plant) return <div className="empty">Plant not found</div>;
+  if ((plant.rank || "species") === "genus") return <GenusView plant={plant} />;
+
+  const medicinalUses = plant.medicinal_uses || [];
+  const compounds = plant.compounds || [];
+  const harvests = plant.harvests || [];
+  const habitats = plant.habitats || [];
+  const toxicities = plant.toxicities || [];
+  const mentions = plant.mentions || [];
+  const recipes = plant.recipes || [];
+  const oils = plant.essential_oils || [];
 
   return (
     <>
@@ -110,29 +234,13 @@ export default function PlantDetailPage() {
       </div>
 
       {/* Cross-domain link: recipes that use this plant */}
-      {plant.recipes && plant.recipes.length > 0 && (
-        <Section title="Used in recipes" count={plant.recipes.length}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {plant.recipes.map((r) => (
-              <div key={r.id} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 14 }}>
-                <Link href={`/recipes/${r.id}`} style={{ fontWeight: 500 }}>{r.name}</Link>
-                {r.category && <span className="badge badge-blue">{r.category}</span>}
-                {r.book && (
-                  <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                    {r.book}{r.year ? ` · ${r.year}` : ""}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </Section>
-      )}
+      {recipes.length > 0 && <RecipesSection recipes={recipes} />}
 
       {/* Cross-pillar link: essential oils derived from this plant */}
-      {plant.essential_oils && plant.essential_oils.length > 0 && (
-        <Section title="Essential oils from this plant" count={plant.essential_oils.length}>
+      {oils.length > 0 && (
+        <Section title="Essential oils from this plant" count={oils.length}>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {plant.essential_oils.map((o) => (
+            {oils.map((o) => (
               <div key={o.id} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 14 }}>
                 <Link href={`/oils/${o.id}`} style={{ fontWeight: 500 }}>{o.name}</Link>
                 {o.name_latin && (
@@ -150,9 +258,9 @@ export default function PlantDetailPage() {
       )}
 
       {/* Toxicity — surfaced first when present */}
-      {plant.toxicities.length > 0 && (
-        <Section title="⚠ Toxicity" count={plant.toxicities.length}>
-          {plant.toxicities.map((t) => (
+      {toxicities.length > 0 && (
+        <Section title="⚠ Toxicity" count={toxicities.length}>
+          {toxicities.map((t) => (
             <div key={t.id} style={{ padding: "10px 0", borderTop: "1px solid var(--border)" }}>
               <div style={{ fontSize: 14 }}>
                 <Field label="Severity" value={t.severity} />
@@ -168,8 +276,8 @@ export default function PlantDetailPage() {
       )}
 
       {/* Medicinal uses */}
-      <Section title="Medicinal uses" count={plant.medicinal_uses.length}>
-        {plant.medicinal_uses.length === 0 ? (
+      <Section title="Medicinal uses" count={medicinalUses.length}>
+        {medicinalUses.length === 0 ? (
           <div className="empty">No medicinal uses extracted yet</div>
         ) : (
           <div className="table-wrap">
@@ -185,7 +293,7 @@ export default function PlantDetailPage() {
                 </tr>
               </thead>
               <tbody>
-                {plant.medicinal_uses.map((u) => (
+                {medicinalUses.map((u) => (
                   <tr key={u.id}>
                     <td>
                       {u.action || "—"}
@@ -205,10 +313,10 @@ export default function PlantDetailPage() {
       </Section>
 
       {/* Chemical composition */}
-      {plant.compounds.length > 0 && (
-        <Section title="Chemical composition" count={plant.compounds.length}>
+      {compounds.length > 0 && (
+        <Section title="Chemical composition" count={compounds.length}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {plant.compounds.map((c) => {
+            {compounds.map((c) => {
               const title = [c.compound_group, c.part, c.notes].filter(Boolean).join(" · ");
               const inner = (
                 <>
@@ -237,9 +345,9 @@ export default function PlantDetailPage() {
       )}
 
       {/* Harvest */}
-      {plant.harvests.length > 0 && (
-        <Section title="Collection & harvest" count={plant.harvests.length}>
-          {plant.harvests.map((h) => (
+      {harvests.length > 0 && (
+        <Section title="Collection & harvest" count={harvests.length}>
+          {harvests.map((h) => (
             <div key={h.id} style={{ padding: "10px 0", borderTop: "1px solid var(--border)", fontSize: 14 }}>
               <Field label="Part" value={h.part} />
               <Field label="Season" value={h.season} />
@@ -252,9 +360,9 @@ export default function PlantDetailPage() {
       )}
 
       {/* Habitat */}
-      {plant.habitats.length > 0 && (
-        <Section title="Habitat & range" count={plant.habitats.length}>
-          {plant.habitats.map((h) => (
+      {habitats.length > 0 && (
+        <Section title="Habitat & range" count={habitats.length}>
+          {habitats.map((h) => (
             <div key={h.id} style={{ padding: "10px 0", borderTop: "1px solid var(--border)", fontSize: 14 }}>
               <Field label="Region" value={h.region} />
               <Field label="Biotope" value={h.biotope} />
@@ -267,10 +375,10 @@ export default function PlantDetailPage() {
       )}
 
       {/* Sources */}
-      {plant.mentions.length > 0 && (
-        <Section title="Sources" count={plant.mentions.length}>
+      {mentions.length > 0 && (
+        <Section title="Sources" count={mentions.length}>
           <div style={{ fontSize: 14 }}>
-            {plant.mentions.map((m) => (
+            {mentions.map((m) => (
               <div key={m.id} style={{ padding: "6px 0" }}>
                 {m.book || "—"}
                 {m.original_name && <span style={{ color: "var(--text-muted)" }}> · as “{m.original_name}”</span>}
