@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
+from app.services.compound_normalize import compound_merge_key
 from app.models.book import Book
 from app.models.recipe import Recipe, RecipeIngredient
 from app.models.plant import (
@@ -919,18 +920,23 @@ async def plant_compound_insights(
     → ассоциировано с {действие}», с p/lift/support. ГИПОТЕЗА, не медсовет
     (``disclaimer``). Дедуп по действию (сильнейшее вещество-драйвер). Zero-LLM."""
     limit = max(1, min(limit, 25))
-    # Nutritional generics carry no mechanistic signal («витамины→всё» drowns the
-    # interesting drivers) — drop them. Rank by lift (specificity); rows are already
-    # significance-gated (p<0.01, support≥5) at precompute, so high-lift is the
-    # surprising/mechanistic «удиви меня» driver, not a fluke.
-    rows = (await db.execute(text(
-        "SELECT caa.compound_id, c.name AS comp_name, caa.action_id, caa.action_name, "
-        "       caa.support, caa.lift, caa.p_value, caa.n_compound_plants "
-        "FROM plant_compounds pc "
-        "JOIN compound_action_assoc caa ON caa.compound_id = pc.compound_id "
-        "JOIN compounds c ON c.id = pc.compound_id "
-        "WHERE pc.plant_id = :pid AND caa.lift >= 1.5 AND caa.support >= 12 "
-        "ORDER BY caa.lift DESC"), {"pid": str(plant_id)})).all()
+    # The plant's compound FAMILIES (merge-key normalises OCR-Greek/plural fragments and
+    # drops %/number/garble), joined to the precomputed associations. Rank by lift
+    # (specificity); rows are significance-gated (p<0.01) at precompute, so high-lift is
+    # the «удиви меня» driver. Lowered support floor — the Fisher p-value already guards
+    # small samples, so specific molecules (sparse by nature) can surface.
+    comp_texts = [r[0] for r in (await db.execute(text(
+        "SELECT compound FROM plant_compounds WHERE plant_id=:pid AND compound IS NOT NULL"),
+        {"pid": str(plant_id)})).all()]
+    keys = sorted({k for c in comp_texts if (k := compound_merge_key(c))})
+    rows = []
+    if keys:
+        rows = (await db.execute(text(
+            "SELECT compound_key, compound_display, action_id, action_name, "
+            "       support, lift, p_value, n_compound_plants "
+            "FROM compound_action_assoc "
+            "WHERE compound_key = ANY(:keys) AND lift >= 1.5 AND support >= 8 "
+            "ORDER BY lift DESC"), {"keys": keys})).all()
     # Non-mechanistic «compounds» that carry no action signal — nutritional generics,
     # minerals, solvents and placeholders. They dominate (high coverage) and produce
     # vague/junk drivers («натрий → похудение»). Real functional classes (дубильные,
@@ -940,9 +946,16 @@ async def plant_compound_insights(
         "витамины", "витамин", "витамины группы в", "минеральные вещества", "минеральные соли",
         "макроэлементы", "микроэлементы", "макро- и микроэлементы", "зольные вещества", "зола",
         "клетчатка", "пищевые волокна", "вода", "белки", "жиры", "углеводы", "крахмал",
-        "сахара", "сахар", "спирт", "натрий", "кальций", "калий", "железо", "магний", "фосфор",
+        "сахара", "сахар", "спирт", "натрий", "кальций", "калий", "магний", "фосфор",
         "биологически активные вещества", "экстрактивные вещества", "действующие вещества",
+        # named vitamins + the class-descriptor «антиоксиданты» (tautology with the action)
+        "никотиновая кислота", "фолиевая кислота", "аскорбиновая кислота", "пантотеновая кислота",
+        "рибофлавин", "тиамин", "антиоксиданты",
     }
+
+    def _denied(nm: str) -> bool:
+        n = (nm or "").strip().lower()
+        return n in _DENY or n.startswith("витамин") or n.startswith("провитамин")
 
     def _strength(p: float) -> str:
         if p < 1e-10:
@@ -954,13 +967,14 @@ async def plant_compound_insights(
     seen_action: set = set()
     insights = []
     for r in rows:
-        if (r.comp_name or "").strip().lower() in _DENY:
+        nm = (r.compound_display or r.compound_key or "").strip()
+        if _denied(nm) or _denied(r.compound_key):
             continue
         if r.action_id in seen_action:        # keep the highest-lift compound per action
             continue
         seen_action.add(r.action_id)
         insights.append({
-            "compound": {"id": str(r.compound_id), "name": r.comp_name},
+            "compound": {"key": r.compound_key, "name": nm},
             "action": {"id": str(r.action_id), "name": r.action_name},
             "support": r.support, "lift": round(r.lift, 2), "p_value": r.p_value,
             "strength": _strength(r.p_value), "n_plants_with_compound": r.n_compound_plants,
