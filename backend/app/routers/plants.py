@@ -3,7 +3,7 @@ import uuid
 from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -842,6 +842,61 @@ async def plant_observations(
         lat=lat, lng=lng, radius_km=radius_km,
         place=place, place_id=place_id, limit=limit,
     )
+
+
+@router.get("/{plant_id}/pairings")
+async def plant_pairings(
+    plant_id: uuid.UUID,
+    category: str | None = None,
+    limit: int = 15,
+    db: AsyncSession = Depends(get_db),
+):
+    """«С чем дружит» — grounded co-occurrence pairings from the recipe corpus
+    (precomputed ``plant_pairings``). Ranked by support·ln(lift): common companions
+    lead, with ``specific=true`` flagging high-lift (≥6) special affinities. Each
+    pairing carries evidence recipes (book + year). ``category`` slices by recipe form
+    (настойка/отвар/чай/…); omit for overall. Genus rollup — a species resolves to its
+    genus hub. Zero-LLM, instant (one indexed read). The flagship «сочетаемость» surface."""
+    limit = max(1, min(limit, 40))
+    canon = (await db.execute(text(
+        "SELECT CASE WHEN par.rank='genus' THEN par.id ELSE p.id END "
+        "FROM plants p LEFT JOIN plants par ON par.id=p.parent_id WHERE p.id=:i"),
+        {"i": str(plant_id)})).scalar()
+    if canon is None:
+        raise HTTPException(status_code=404, detail="Plant not found")
+    cat = category or "__all__"
+    rows = (await db.execute(text(
+        "SELECT pp.plant_b, pp.support, pp.lift, pp.conf_ab, pp.sample_recipe_ids, "
+        "       pb.name, pb.name_latin, pb.photo_url, pb.safety_level, pb.rank "
+        "FROM plant_pairings pp JOIN plants pb ON pb.id=pp.plant_b "
+        "WHERE pp.plant_a=:a AND pp.category=:c AND pp.lift>1.2 "
+        "ORDER BY pp.support*ln(pp.lift) DESC LIMIT :lim"),
+        {"a": str(canon), "c": cat, "lim": limit})).all()
+
+    # evidence recipes (book + year) for the sampled recipe ids
+    rids = [str(r) for row in rows for r in (row.sample_recipe_ids or [])]
+    rmeta: dict[str, dict] = {}
+    if rids:
+        for rid, rname, btitle, byear in (await db.execute(text(
+            "SELECT r.id::text, r.name, b.title, b.year FROM recipes r "
+            "LEFT JOIN books b ON b.id=r.book_id WHERE r.id = ANY(CAST(:ids AS uuid[]))"),
+            {"ids": rids})).all():
+            rmeta[rid] = {"id": rid, "name": rname, "book": btitle, "year": byear}
+
+    items = []
+    for row in rows:
+        recs = [rmeta[str(rid)] for rid in (row.sample_recipe_ids or [])[:3] if str(rid) in rmeta]
+        items.append({
+            "plant": {"id": str(row.plant_b), "name": row.name, "name_latin": row.name_latin,
+                      "photo_url": row.photo_url, "safety_level": row.safety_level, "rank": row.rank},
+            "support": row.support, "lift": round(row.lift, 1),
+            "specific": (row.lift or 0) >= 6.0, "recipes": recs,
+        })
+    cats = [c for (c,) in (await db.execute(text(
+        "SELECT DISTINCT category FROM plant_pairings WHERE plant_a=:a AND category<>'__all__' "
+        "ORDER BY category"), {"a": str(canon)})).all()]
+    return {"plant_id": str(plant_id), "canon_id": str(canon),
+            "category": category, "categories": cats, "items": items}
 
 
 async def _genus_view(db: AsyncSession, genus: Plant) -> dict:
