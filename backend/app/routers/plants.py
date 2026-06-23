@@ -906,6 +906,56 @@ async def plant_pairings(
             "category": category, "categories": cats, "items": items}
 
 
+@router.get("/{plant_id}/recipes")
+async def plant_recipes(
+    plant_id: uuid.UUID,
+    kind: str | None = None,
+    limit: int = 12,
+    db: AsyncSession = Depends(get_db),
+):
+    """«Что приготовить из этого растения» — only REAL, HOME-DOABLE recipes (recipe_triage:
+    industrial procedures / monographs-as-recipe / fragments excluded), grounded in the
+    verbatim source. Matches recipes using this plant, its genus hub, OR its member species
+    (genus-family). Ranked simplest-first (the plant is more central in a short recipe).
+    `kind` filters (medicinal/food/cosmetic/other). Each carries the readable text + source
+    (book + year). The «сделай это» surface (vs the knowledge engines)."""
+    limit = max(1, min(limit, 40))
+    fam = [r[0] for r in (await db.execute(text(
+        "SELECT id::text FROM plants WHERE id=:p OR parent_id=:p "
+        "OR id=(SELECT parent_id FROM plants WHERE id=:p)"), {"p": str(plant_id)})).all()]
+    if not fam:
+        raise HTTPException(status_code=404, detail="Plant not found")
+    rows = (await db.execute(text(
+        "SELECT r.id::text, r.name, r.category, r.recipe_kind, r.original_text, "
+        "       b.title, b.year, COALESCE(r.procedure_score,0), "
+        "       (SELECT count(*) FROM recipe_ingredients ri2 WHERE ri2.recipe_id=r.id) n_ing "
+        "FROM recipes r "
+        "LEFT JOIN books b ON b.id=r.book_id "
+        "WHERE r.home_doable IS TRUE AND (CAST(:kind AS text) IS NULL OR r.recipe_kind=:kind) "
+        "  AND EXISTS (SELECT 1 FROM recipe_ingredients ri WHERE ri.recipe_id=r.id "
+        "              AND ri.plant_id = ANY(CAST(:pids AS uuid[]))) "
+        # real step-by-step recipes (qty+prep) lead; then plant-central (fewer ingredients);
+        # then meatier text. Demotes the «Сибири» action/dosing dumps (score 0-1).
+        "ORDER BY COALESCE(r.procedure_score,0) DESC, n_ing ASC, length(r.original_text) DESC "
+        "LIMIT :lim"),
+        {"pids": fam, "kind": kind, "lim": limit})).all()
+    items = []
+    for rid, name, cat, rkind, txt, book, year, score, n_ing in rows:
+        t = (txt or "").strip()
+        items.append({
+            "id": rid, "name": name, "category": cat, "kind": rkind,
+            "n_ingredients": n_ing, "book": book, "year": year,
+            "step_by_step": score >= 2,   # qty + prep verb → a real do-able recipe (vs dosing dump)
+            "text": t[:700], "truncated": len(t) > 700,   # full via /api/recipes/{id}
+        })
+    kinds = [k for (k,) in (await db.execute(text(
+        "SELECT DISTINCT r.recipe_kind FROM recipes r "
+        "JOIN recipe_ingredients ri ON ri.recipe_id=r.id AND ri.plant_id = ANY(CAST(:pids AS uuid[])) "
+        "WHERE r.home_doable IS TRUE AND r.recipe_kind IS NOT NULL ORDER BY 1"),
+        {"pids": fam})).all()]
+    return {"plant_id": str(plant_id), "kinds": kinds, "items": items}
+
+
 _INSIGHT_DISCLAIMER = (
     "Вот какие выводы о действии можно сделать, изучая нашу базу знаний. "
     "Это не медицинская рекомендация."
