@@ -926,9 +926,11 @@ async def plant_recipes(
     if not fam:
         raise HTTPException(status_code=404, detail="Plant not found")
     rows = (await db.execute(text(
-        "SELECT r.id::text, r.name, r.category, r.recipe_kind, r.original_text, "
+        "SELECT r.id::text, r.name, r.category, r.recipe_kind, "
+        "       COALESCE(NULLIF(trim(r.normalized_text),''), r.original_text), "  # decoupled span if any
         "       b.title, b.year, COALESCE(r.procedure_score,0), "
-        "       (SELECT count(*) FROM recipe_ingredients ri2 WHERE ri2.recipe_id=r.id) n_ing "
+        "       (SELECT count(*) FROM recipe_ingredients ri2 WHERE ri2.recipe_id=r.id) n_ing, "
+        "       (NULLIF(trim(r.normalized_text),'') IS NOT NULL) decoupled "
         "FROM recipes r "
         "LEFT JOIN books b ON b.id=r.book_id "
         "WHERE r.home_doable IS TRUE AND (CAST(:kind AS text) IS NULL OR r.recipe_kind=:kind) "
@@ -941,8 +943,8 @@ async def plant_recipes(
         # small over-fetch as a safety buffer for the (rare) genuine name+text clone dedup below.
         {"pids": fam, "kind": kind, "lim": limit * 2})).all()
     items, seen = [], set()
-    for rid, name, cat, rkind, txt, book, year, score, n_ing in rows:
-        t = (txt or "").strip()
+    for rid, name, cat, rkind, txt, book, year, score, n_ing, decoupled in rows:
+        t = (txt or "").strip()            # already the decoupled span when one exists
         # dedup on NAME+text, not text alone: many encyclopedic books store the whole source
         # PASSAGE as each recipe's original_text, so distinct remedies («Зола перьев коршуна» vs
         # «Мозг коршуна») share one text — keying on text alone would wrongly hide them.
@@ -954,6 +956,7 @@ async def plant_recipes(
             "id": rid, "name": name, "category": cat, "kind": rkind,
             "n_ingredients": n_ing, "book": book, "year": year,
             "step_by_step": score >= 2,   # qty + prep verb → a real do-able recipe (vs dosing dump)
+            "decoupled": bool(decoupled),  # text is this card's specific remedy span (Phase A)
             "text": t[:700], "truncated": len(t) > 700,   # full via /api/recipes/{id}
         })
         if len(items) >= limit:
