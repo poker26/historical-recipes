@@ -40,6 +40,15 @@ _MEDICINAL_CAT = {"настой", "отвар", "настойка", "мазь", 
                   "сок", "масло", "водка", "эссенция"}
 
 
+def _garble_ratio(s: str) -> float:
+    """Fraction of homoglyph-garble letters — Latin Extended-B / IPA / Latin Extended-C
+    (ɉ ɪ ɢ Ɂ Ⱦ …) that OCR substitutes for Cyrillic. Clean RU/DE text has ~none; a fully
+    garbled recipe («Ɂɚɩɨɥɧɢɬɶ…») is mostly these. The grounding audit found 185 such rows."""
+    s = s or ""
+    weird = sum(1 for ch in s if "ƀ" <= ch <= "ʯ" or "Ⱡ" <= ch <= "Ɀ")
+    return weird / max(len(s), 1)
+
+
 def classify_recipe(name: str | None, category: str | None,
                     original_text: str | None, n_ingredients: int = 0) -> dict:
     """Returns {kind, is_recipe, home_doable, procedure_score}.
@@ -52,6 +61,10 @@ def classify_recipe(name: str | None, category: str | None,
     tl = t.lower()
     nm = (name or "").strip().lower()
     cat = (category or "").strip().lower()
+
+    # OCR-homoglyph garbage text is unreadable — not a usable recipe (out of the flagship).
+    if _garble_ratio(t) > 0.05:
+        return {"kind": "garbled", "is_recipe": False, "home_doable": False, "procedure_score": 0}
 
     has_qty = bool(_QTY.search(tl))
     has_prep = bool(_PREP.search(tl))
