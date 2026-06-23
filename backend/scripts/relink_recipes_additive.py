@@ -38,8 +38,10 @@ DRY = bool(os.environ.get("DRY_RUN"))
 # reachable via its own token («масло герани» → «геран» → Герань). Word-boundary space-suffix
 # so single-word real plants are spared (Бальзамин ≠ «бальзам », Чайот, басбас=Myristica).
 _PREP_FORM = re.compile(
-    r"^(сироп|масло|настойк\w*|насто[йя]\w*|отвар|сбор|экстракт|вытяжк\w*|тинктур\w*|"
+    r"^(сироп|масло|настойк\w*|насто[йя](?!щ)\w*|отвар|сбор|экстракт|вытяжк\w*|тинктур\w*|"
     r"эликсир|порошок|капли|эссенц\w*|мазь|припарк\w*|примочк\w*|компресс|бальзам)\s+\S", re.I)
+# NB: насто[йя](?!щ) excludes «настоящий» (rattan «настоящий ротанг», fungus «Настоящий
+# трутовик» are real organisms, not prep forms).
 
 
 async def main():
