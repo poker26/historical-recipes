@@ -938,15 +938,17 @@ async def plant_recipes(
         # then meatier text. Demotes the «Сибири» action/dosing dumps (score 0-1).
         "ORDER BY COALESCE(r.procedure_score,0) DESC, n_ing ASC, length(r.original_text) DESC "
         "LIMIT :lim"),
-        # over-fetch so text-clone dedup (overlapping book ingestions repeat the same recipe)
-        # still leaves `limit` real items.
-        {"pids": fam, "kind": kind, "lim": limit * 3})).all()
+        # small over-fetch as a safety buffer for the (rare) genuine name+text clone dedup below.
+        {"pids": fam, "kind": kind, "lim": limit * 2})).all()
     items, seen = [], set()
     for rid, name, cat, rkind, txt, book, year, score, n_ing in rows:
         t = (txt or "").strip()
-        fp = " ".join(t.lower().split())[:300]   # whitespace-normalised text fingerprint
-        if fp and fp in seen:
-            continue                              # exact / whitespace-variant clone — skip
+        # dedup on NAME+text, not text alone: many encyclopedic books store the whole source
+        # PASSAGE as each recipe's original_text, so distinct remedies («Зола перьев коршуна» vs
+        # «Мозг коршуна») share one text — keying on text alone would wrongly hide them.
+        fp = (name or "").strip().lower() + "|" + " ".join(t.lower().split())[:300]
+        if fp in seen:
+            continue                              # genuine name+text clone — skip
         seen.add(fp)
         items.append({
             "id": rid, "name": name, "category": cat, "kind": rkind,
