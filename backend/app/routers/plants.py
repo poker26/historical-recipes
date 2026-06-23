@@ -938,16 +938,24 @@ async def plant_recipes(
         # then meatier text. Demotes the «Сибири» action/dosing dumps (score 0-1).
         "ORDER BY COALESCE(r.procedure_score,0) DESC, n_ing ASC, length(r.original_text) DESC "
         "LIMIT :lim"),
-        {"pids": fam, "kind": kind, "lim": limit})).all()
-    items = []
+        # over-fetch so text-clone dedup (overlapping book ingestions repeat the same recipe)
+        # still leaves `limit` real items.
+        {"pids": fam, "kind": kind, "lim": limit * 3})).all()
+    items, seen = [], set()
     for rid, name, cat, rkind, txt, book, year, score, n_ing in rows:
         t = (txt or "").strip()
+        fp = " ".join(t.lower().split())[:300]   # whitespace-normalised text fingerprint
+        if fp and fp in seen:
+            continue                              # exact / whitespace-variant clone — skip
+        seen.add(fp)
         items.append({
             "id": rid, "name": name, "category": cat, "kind": rkind,
             "n_ingredients": n_ing, "book": book, "year": year,
             "step_by_step": score >= 2,   # qty + prep verb → a real do-able recipe (vs dosing dump)
             "text": t[:700], "truncated": len(t) > 700,   # full via /api/recipes/{id}
         })
+        if len(items) >= limit:
+            break
     kinds = [k for (k,) in (await db.execute(text(
         "SELECT DISTINCT r.recipe_kind FROM recipes r "
         "JOIN recipe_ingredients ri ON ri.recipe_id=r.id AND ri.plant_id = ANY(CAST(:pids AS uuid[])) "
