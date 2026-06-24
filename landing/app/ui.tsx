@@ -1,7 +1,7 @@
 // Shared visual components for the landing — all server components (no client JS).
 import Link from "next/link";
 import {
-  Badge, LeaderRow, tierColors, cap, seasonEmoji, seasonAdj,
+  Badge, LeaderRow, tierColors, cap, seasonEmoji, seasonAdj, badgeLabel,
   windowLabelRu, RUSTORE_URL, APPSTORE_URL,
 } from "./lib";
 
@@ -26,15 +26,16 @@ export function Medallion({ tier, size = 64, earned = true }: { tier: number; si
   );
 }
 
-/** One earned-badge tile (medallion + place + tier + ordinal). */
+/** One earned-badge tile (medallion + «тир · место/биотоп» + ordinal). */
 export function BadgeTile({ b }: { b: Badge }) {
+  const sub = b.kind === "biotope"
+    ? "значок мастерства"
+    : `${seasonEmoji(b.window)} ${seasonAdj(b.window).toLowerCase()} сезон`;
   return (
-    <div style={{ width: 116, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+    <div style={{ width: 124, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
       <Medallion tier={b.tier} />
-      <div style={{ fontWeight: 600, fontSize: 13, lineHeight: 1.2 }}>{b.place || "Место"}</div>
-      <div style={{ fontSize: 12, color: "#6b7280" }}>
-        {seasonEmoji(b.window)} {cap(b.name)}
-      </div>
+      <div style={{ fontWeight: 600, fontSize: 13, lineHeight: 1.2 }}>{badgeLabel(b)}</div>
+      <div style={{ fontSize: 12, color: "#6b7280" }}>{sub}</div>
       {b.ordinal ? <div style={{ fontSize: 11, color: "#9ca3af" }}>№ {b.ordinal}</div> : null}
     </div>
   );

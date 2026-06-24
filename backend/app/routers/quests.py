@@ -113,11 +113,14 @@ async def places_in_bounds(min_lat: float = Query(...), min_lng: float = Query(.
                            max_lat: float = Query(...), max_lng: float = Query(...),
                            window: str | None = Query(None, description="default = current half-month"),
                            limit: int = Query(300, ge=1, le=1000),
+                           device_key: str | None = Query(None, description="mark this device's passed/started status"),
                            db: AsyncSession = Depends(get_db)):
     """Quest places inside the map viewport (pan-to-search). Pins only, DB-only —
-    lets the client refetch markers as the user scrolls the map anywhere."""
+    lets the client refetch markers as the user scrolls the map anywhere. With
+    `device_key`, each place also carries `top_tier`/`started` so the list can show
+    «✓ пройден» / «в процессе»."""
     return await quests.places_in_bounds(db, min_lat, min_lng, max_lat, max_lng,
-                                         window=window, limit=limit)
+                                         window=window, limit=limit, device_key=device_key)
 
 
 @router.get("/place/{place_id}/set")

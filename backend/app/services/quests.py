@@ -760,6 +760,12 @@ async def badge_shelf(db: AsyncSession, device_key: str) -> list[dict]:
             "points": b.points, "ordinal": b.ordinal,
             "issued_at": b.issued_at.isoformat(),
         })
+    # Resolve place display names here so EVERY caller (own /quests/badges AND the
+    # public profile) gets «Мастер · Нескучный сад» — not just the bare tier name.
+    names = await _place_names(db, [b.get("place_id") for b in out])
+    for b in out:
+        if b.get("kind") == "place":
+            b["place"] = names.get(b.get("place_id"))
     return out
 
 
@@ -932,11 +938,15 @@ async def places_near(db: AsyncSession, lat: float, lng: float, device_key=None,
 
 async def places_in_bounds(db: AsyncSession, min_lat: float, min_lng: float,
                            max_lat: float, max_lng: float,
-                           window: str | None = None, limit: int = 300) -> dict:
+                           window: str | None = None, limit: int = 300,
+                           device_key: str | None = None) -> dict:
     """Quest places whose centroid falls inside the map viewport (bbox) and have a
     species-set for the window — powers the pan-to-search map (so the user can scroll
     the map anywhere and see quests there, or pan toward a distant one to travel to).
-    Lightweight: pins only (no per-device progress), DB-only, no live iNat."""
+    When ``device_key`` is given, each place carries this device's LIGHT status so the
+    list can mark «✓ пройден» / «в процессе» (item 3): `top_tier` = highest issued tier
+    here (0 = none), `started` = has any geotagged find inside the polygon. Status is
+    two cheap aggregate queries — NOT 300× badge_progress."""
     win = window or _current_window()
     rows = (await db.execute(text("""
         SELECT p.id, p.name, p.kind,
@@ -949,11 +959,39 @@ async def places_in_bounds(db: AsyncSession, min_lat: float, min_lng: float,
         LIMIT :lim
     """), {"win": win, "minlng": min_lng, "minlat": min_lat,
            "maxlng": max_lng, "maxlat": max_lat, "lim": limit})).all()
+    ids = [str(r[0]) for r in rows]
+    top_tier: dict[str, int] = {}     # place_id -> highest issued tier
+    started: set[str] = set()         # place_id -> has a geotagged find inside
+    dk = _try_uuid(device_key) if device_key else None
+    if dk is not None and ids:
+        # Passed: highest issued tier per place (badge_id = "<place_id>:<window>:<year>").
+        brows = (await db.execute(select(QuestIssuedBadge.badge_id, QuestIssuedBadge.tier)
+                                  .where(QuestIssuedBadge.device_key == dk))).all()
+        for bid, tier in brows:
+            pid = bid.split(":")[0]
+            if pid in set(ids):
+                top_tier[pid] = max(top_tier.get(pid, 0), tier)
+        # Started: any geotagged identification of this device that lands in a visible
+        # polygon (one spatial join over the device's bounded finds). A cheap proxy for
+        # «начал проходить» — exact matched-count stays on the quest page.
+        srows = (await db.execute(text("""
+            SELECT qp.id::text
+            FROM identifications i
+            JOIN quest_places qp ON qp.id = ANY(CAST(:ids AS uuid[]))
+              AND ST_Contains(qp.geom, ST_SetSRID(ST_MakePoint(i.lng, i.lat), 4326))
+            WHERE i.device_key = CAST(:dk AS uuid) AND i.lat IS NOT NULL AND i.lng IS NOT NULL
+            GROUP BY qp.id
+        """), {"ids": ids, "dk": str(dk)})).all()
+        started = {r[0] for r in srows}
     places = [{
         "id": str(pid), "name": name, "kind": kind,
         "lat": clat, "lng": clng, "distance_km": None,
         "window": win, "set_size": set_size, "target": target,
-        "matched": 0, "badge_issued": False,
+        "matched": 0,
+        "badge_issued": top_tier.get(str(pid), 0) > 0,
+        "top_tier": top_tier.get(str(pid), 0),
+        "top_tier_name": _TIER_NAMES.get(top_tier.get(str(pid), 0)) if top_tier.get(str(pid), 0) else None,
+        "started": str(pid) in started,
     } for pid, name, kind, clat, clng, target, set_size in rows]
     return {"places": places}
 

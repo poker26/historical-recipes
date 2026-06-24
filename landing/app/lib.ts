@@ -36,7 +36,26 @@ export type Badge = {
   ordinal?: number | null;
   issued_at?: string | null;
   nick?: string; // present in the recent-badges feed
+  kind?: string | null;     // "place" | "biotope"
+  biotope?: string | null;  // biotope key when kind === "biotope"
 };
+
+const BIOTOPE_GENITIVE: Record<string, string> = {
+  лес: "леса", луг: "луга", поле: "поля", парк: "парков", парки: "парков",
+  заросли: "зарослей", вода: "побережья", болото: "болота", скалы: "скал",
+  пески: "песков", горы: "гор",
+};
+
+/** «Мастер · Нескучный сад» / «Новичок · Знаток леса» — mirrors the app's badgeLabel. */
+export function badgeLabel(b: Badge): string {
+  const tier = cap(b.name || "Значок");
+  if (b.kind === "biotope" && b.biotope) {
+    const g = BIOTOPE_GENITIVE[b.biotope.toLowerCase()] || b.biotope;
+    return `${tier} · Знаток ${g}`;
+  }
+  if (b.place) return `${tier} · ${b.place}`;
+  return tier;
+}
 
 export type Profile = {
   device_key: string;
