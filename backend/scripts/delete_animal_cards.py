@@ -65,7 +65,9 @@ def is_animal(name: str) -> bool:
 
 async def main():
     async with async_session() as db:
-        plants = (await db.execute(select(Plant).where(Plant.name_latin.is_(None)))).scalars().all()
+        # exact-animal / «<part> <animal>» names are unambiguous regardless of latin (no real plant
+        # is named «мясо»/«собака»; a zoological latin like Canis/Araneae only confirms animal).
+        plants = (await db.execute(select(Plant))).scalars().all()
         animal = [p for p in plants if is_animal(p.name)]
         print(f"confirmed ANIMAL cards (latin-less, exact/multiword): {len(animal)}")
         for p in sorted(animal, key=lambda p: p.name or ""):
