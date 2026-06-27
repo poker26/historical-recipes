@@ -440,6 +440,28 @@ def _biotope_quest_name(bios: set) -> str:
     return f"Квест · {sorted(bios)[0]}" if bios else "Мой квест"
 
 
+def _custom_quest_name(topo: dict | None, bios: set) -> str:
+    """Auto-name a custom quest from the nearest OSM toponym (no user input → no
+    moderation): a named park/forest wins outright; otherwise pair the biotope with the
+    nearest locality («Лес · Сосновка») so each quest is distinct, not all «лес»."""
+    bio = sorted(bios)[0] if bios else None
+    bio_cap = (bio[:1].upper() + bio[1:]) if bio else None
+    green = (topo or {}).get("green")
+    loc = (topo or {}).get("locality")
+    name = None
+    if green:
+        name = green
+    elif loc and bio_cap:
+        name = f"{bio_cap} · {loc}"
+    elif loc:
+        name = loc
+    elif bio:
+        name = f"Квест · {bio}"
+    else:
+        name = "Мой квест"
+    return name.strip()[:60]
+
+
 def _bbox_around(lat: float, lng: float, km: float) -> tuple[float, float, float, float]:
     """(swlat, swlng, nelat, nelng) for a box of half-extent `km` around the point."""
     dlat = km / 111.0
@@ -576,8 +598,12 @@ async def create_custom_quest(db: AsyncSession, lat: float, lng: float,
                 "window": win, "radius_km": radius_km, "set_size": ss, "target": tgt,
                 "status": "ok", "reused": True}
     from app.services.worldcover import biotope_at
+    from app.services import plantarium
     bios = await asyncio.to_thread(biotope_at, lat, lng)
-    qname = _biotope_quest_name(bios)
+    # Auto-name from the nearest OSM toponym (no user free-text → no profanity moderation);
+    # fall back to the biotope name if the reverse-geocode fails.
+    topo = await plantarium.toponym_at(lat, lng)
+    qname = _custom_quest_name(topo, bios)
     row = (await db.execute(text("""
         INSERT INTO quest_places (id, osm_id, name, kind, geom, area)
         VALUES (gen_random_uuid(), NULL, :name, 'custom',

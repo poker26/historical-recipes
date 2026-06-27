@@ -96,3 +96,49 @@ async def region_at(lat: float, lng: float) -> str | None:
     except (httpx.HTTPError, ValueError):
         pass
     return None
+
+
+# Address keys that name a walkable green destination (use as the quest name as-is) vs
+# a nearby locality (combined with the biotope: «Лес · Сосновка»). OSM names — no
+# moderation needed (they're real place names, not user free-text). `county` is the
+# rural fallback (Nominatim gives only county/state in the middle of fields/taiga).
+_GREEN_KEYS = ("leisure", "park", "garden", "forest", "wood",
+               "nature_reserve", "protected_area")
+_LOCALITY_KEYS = ("neighbourhood", "suburb", "quarter", "city_district", "residential",
+                  "hamlet", "village", "town", "municipality", "city", "county")
+# Admin boilerplate to strip so «городской округ Серпухов» → «Серпухов».
+_ADMIN_NOISE = re.compile(
+    r"\b(городской округ|муниципальный округ|муниципальный район|городское поселение|"
+    r"сельское поселение|сельский округ|городской район|район)\b", re.IGNORECASE)
+
+
+def _clean_locality(s: str) -> str:
+    return re.sub(r"\s+", " ", _ADMIN_NOISE.sub("", s)).strip(" -·,")
+
+
+async def toponym_at(lat: float, lng: float) -> dict | None:
+    """Nearest meaningful place name at the point (OSM Nominatim reverse) for auto-naming
+    a custom quest. Returns {green, locality} (either may be None) — `green` = a named
+    park/forest to use directly, `locality` = nearest settlement/neighbourhood (admin
+    boilerplate stripped) to pair with the biotope. None on failure (caller falls back to
+    the biotope name)."""
+    try:
+        async with httpx.AsyncClient(timeout=20, headers={"User-Agent": _UA}) as client:
+            r = await client.get("https://nominatim.openstreetmap.org/reverse", params={
+                "lat": lat, "lon": lng, "format": "jsonv2", "accept-language": "ru", "zoom": 16})
+            if r.status_code != 200:
+                return None
+            j = r.json() or {}
+            a = j.get("address", {}) or {}
+            green = next((a[k] for k in _GREEN_KEYS if a.get(k)), None)
+            # The matched feature itself may be the named green spot (a forest/park polygon),
+            # but NOT an admin boundary or a street — those aren't walk destinations.
+            if not green and j.get("category") in ("leisure", "natural") and j.get("name"):
+                green = j["name"]
+            loc_raw = next((a[k] for k in _LOCALITY_KEYS if a.get(k)), None)
+            locality = _clean_locality(loc_raw) if loc_raw else None
+            if green or locality:
+                return {"green": green, "locality": locality or None}
+    except (httpx.HTTPError, ValueError):
+        pass
+    return None
