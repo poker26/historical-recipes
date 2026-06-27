@@ -440,11 +440,25 @@ def _biotope_quest_name(bios: set) -> str:
     return f"Квест · {sorted(bios)[0]}" if bios else "Мой квест"
 
 
+# Friendly one-word biotope labels for quest NAMES (the raw keys are slash-compounds like
+# «поле/сорное» — «сорное» reads badly). Default: take the part before the slash.
+_BIOTOPE_NAME = {
+    "лес": "лес", "луг": "луг", "поле/сорное": "поле", "сады/парки": "парк",
+    "кустарники/заросли": "кустарники", "водное/прибрежное": "берег",
+    "болото/сырое": "болото", "каменистые/скалистые склоны": "скалы",
+    "пески/дюны/обнажения": "пески", "горы/предгорья": "горы",
+}
+
+
+def _biotope_label(bio: str) -> str:
+    return _BIOTOPE_NAME.get(bio, bio.split("/")[0])
+
+
 def _custom_quest_name(topo: dict | None, bios: set) -> str:
     """Auto-name a custom quest from the nearest OSM toponym (no user input → no
     moderation): a named park/forest wins outright; otherwise pair the biotope with the
     nearest locality («Лес · Сосновка») so each quest is distinct, not all «лес»."""
-    bio = sorted(bios)[0] if bios else None
+    bio = _biotope_label(sorted(bios)[0]) if bios else None
     bio_cap = (bio[:1].upper() + bio[1:]) if bio else None
     green = (topo or {}).get("green")
     loc = (topo or {}).get("locality")
