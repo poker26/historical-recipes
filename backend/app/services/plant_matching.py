@@ -319,6 +319,27 @@ _NON_PLANT_STEMS = frozenset(
     _stem(w) for w in _NON_PLANT_SUBSTANCES if " " not in w
 )
 
+# Open-ended NON-PLANT ingredient patterns the exact set can't enumerate: an animal body part of
+# a NAMED animal («мясо ежа», «кровь оленя»), dairy in any word order («коровье масло» vs «масло
+# коровье»), and mineral/chemical materia («соляная кислота», «свинцовые белила», «киноварь»).
+# These were homonym-matched onto plant cards (the grass «Ежа сборная»=Dactylis, «Льнянка» which
+# carries the folk-alias «Коровье масло»). Checked in match() so a relink can't re-create them.
+# PRECISE to spare plant-derived materia: cow = «коровь\w*» (с ь) NOT «коровяк» (mullein, →«масло
+# коровяка»); lead substance forms NOT the colour «свинцово-серый» (Пороховка mushroom); salt
+# word-bounded so «солодка»/«солянка» pass; дёготь/смола/скипидар/камфора/«масло <plant>» untouched.
+_NONPLANT_RE = re.compile(
+    r"(?:^|\s)(?:мясо|сал[оа]|жир|мозг\w*|кров[ьи]|желч\w*|печен\w*|почк\w*|желудок|кост[ьи]|"
+    r"рог\w*|копыт\w*|шкур\w*|шерст\w*|пер[оья]|помёт|помет|навоз|игл\w*|панцир\w*|сухожил\w*|"
+    r"селезён\w*|член)\s+\w*\s*(?:ежа|летучей мыши|осла|осл\w*|коня|конск\w*|собак\w*|кошк\w*|"
+    r"волка|лисиц\w*|зайца|зайч\w*|быка|коров\w+|буйвол\w*|свин\w*|барана|овц\w*|козл\w*|оленя|"
+    r"олен\w*|медвед\w*|тигр\w*|льв\w*|слона|верблюд\w*|змеи|лягушк\w*|рыб\w*|птиц\w*|курицы|"
+    r"кур\w*|петуха|петух\w*|гуся|гус\w*|утк\w*|ворон\w*|воробь\w*|скорпион\w*|паука|лошади|мыши)"
+    r"|коровь\w*\s+масло|масло\s+коровь\w*|сливочн\w*\s+масло|масло\s+сливочн\w*|топлё?н\w*\s+масло|"
+    r"сметан\w*|простокваш\w*|\bтворог|козье\s+молоко|кобылье\s+молоко|\bпахта\b"
+    r"|\bсол[ьяи]\b|квасц\w*|купорос\w*|\bсвинец\b|\bсвинца\b|свинцов\w*\s+белил|\bртут[ьи]\b|"
+    r"ртутн\w*|нашатыр\w*|\bмышьяк\w*|сурьм\w*|селитр\w*|солян\w*\s+кислот|серн\w*\s+кислот|"
+    r"азотн\w*\s+кислот|\bмумиё\b|киновар\w*|\bаммиак", re.IGNORECASE)
+
 
 # Relational ("denominal") adjective endings: X-ов-/X-ев- = "made of / from X".
 # A recipe names a plant material this way ("лавандовые цветы", "розовое масло",
@@ -577,7 +598,8 @@ class PlantMatcher:
         # minerals…) are ingredients, not species — never resolve them to a
         # plant card, whatever a junk folk alias calls them. Dropping them here
         # AND excluding their keys/stems above makes the block survive a relink.
-        clean = [n for n in names if n and normalize(n) not in _NON_PLANT_SUBSTANCES]
+        clean = [n for n in names if n and normalize(n) not in _NON_PLANT_SUBSTANCES
+                 and not _NONPLANT_RE.search(n)]
         # Tier 1: exact normalized full-name match.
         for n in clean:
             nn = normalize(n)
