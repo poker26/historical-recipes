@@ -185,8 +185,15 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
 
         candidates = result.get("candidates") or []
         top = candidates[0] if candidates else {}
+        top_score = top.get("score") or 0
+        # matched_plant_id = the card of the TOP candidate, or a NEAR-TIE (score ≥ 85% of
+        # top) — NEVER a low-score also-ran. A 0.002 sibling once hijacked matched_plant_id:
+        # a Буквица shot (top = Stachys officinalis, no card) got mislinked to the carded
+        # «Вероника колосистая» further down the list.
         matched_plant_id = next(
-            (c["plant"]["id"] for c in candidates if c.get("plant")), None
+            (c["plant"]["id"] for c in candidates
+             if c.get("plant") and (c.get("score") or 0) >= top_score * 0.85),
+            None,
         )
         exif = None
         if exif_json:
