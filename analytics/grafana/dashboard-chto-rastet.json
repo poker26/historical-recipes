@@ -109,7 +109,7 @@
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": { "showHeader": true },
       "targets": [ { "refId": "A", "format": "table", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-        "rawQuery": true, "rawSql": "SELECT coalesce(top_latin,'(не определено)') AS \"Вид\", count(*) AS \"Определений\", count(*) FILTER (WHERE matched_plant_id IS NOT NULL) AS \"В корпусе\" FROM identifications WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 2 DESC LIMIT 25" } ]
+        "rawQuery": true, "rawSql": "SELECT coalesce(p.name, i.top_latin, '(не определено)') AS \"Вид\", count(*) AS \"Определений\", count(*) FILTER (WHERE i.matched_plant_id IS NOT NULL) AS \"В корпусе\" FROM identifications i LEFT JOIN plants p ON p.id = i.matched_plant_id WHERE $__timeFilter(i.created_at) GROUP BY 1 ORDER BY 2 DESC LIMIT 25" } ]
     },
     {
       "id": 11, "type": "geomap", "title": "География определений",
@@ -120,11 +120,13 @@
         "view": { "id": "coords", "lat": 55, "lon": 50, "zoom": 3 },
         "basemap": { "type": "default", "name": "Layer 0" },
         "layers": [ { "type": "markers", "name": "Определения", "location": { "mode": "auto" },
-          "config": { "showLegend": false, "style": { "size": { "fixed": 5 }, "color": { "fixed": "green" }, "opacity": 0.5 } } } ],
+          "config": { "showLegend": false, "style": { "size": { "fixed": 5 }, "color": { "fixed": "green" }, "opacity": 0.5,
+            "text": { "field": "Растение", "fixed": "" }, "textConfig": { "fontSize": 11, "offsetY": -8, "textAlign": "center", "textBaseline": "bottom" } } } } ],
+        "tooltip": { "mode": "details" },
         "controls": { "showZoom": true, "mouseWheelZoom": true, "showAttribution": true }
       },
       "targets": [ { "refId": "A", "format": "table", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-        "rawQuery": true, "rawSql": "SELECT lat, lng AS lon FROM identifications WHERE lat IS NOT NULL AND lng IS NOT NULL AND $__timeFilter(created_at) LIMIT 5000" } ]
+        "rawQuery": true, "rawSql": "SELECT i.lat, i.lng AS lon, coalesce(p.name, i.top_latin, '(не определено)') AS \"Растение\" FROM identifications i LEFT JOIN plants p ON p.id = i.matched_plant_id WHERE i.lat IS NOT NULL AND i.lng IS NOT NULL AND $__timeFilter(i.created_at) LIMIT 5000" } ]
     }
   ]
 }
