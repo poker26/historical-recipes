@@ -40,7 +40,9 @@ _MUSHROOM_DISCLAIMER = (
 )
 _MUSHROOM_KINGDOMS = {"fungi", "mushroom", "гриб", "грибы"}
 from app.services.inaturalist import resolve_names_ru, resolve_registry_photos
-from app.services.plant_matching import resolve_latin_to_plants, resolve_latin_to_spine
+from app.services.plant_matching import (
+    resolve_latin_to_plants, resolve_latin_to_spine, synonym_map, canonical_key, _latin_key,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -88,11 +90,15 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
     if not candidates:
         return result
     by_latin = await resolve_latin_to_plants(db, [c["latin"] for c in candidates])
+    syn = await synonym_map(db)
     matched = 0
     unmatched_latins: list[str] = []
     for c in candidates:
         p = by_latin.get(c["latin"])
         c["plant"] = _plant_card(p) if p is not None else None
+        # Canonical accepted-name key, so the client can tell «same species» even across
+        # genus synonyms (Betonica↔Stachys officinalis) or duplicate corpus cards.
+        c["species_key"] = canonical_key(_latin_key(c["latin"]), syn)
         if p is not None:
             matched += 1
         else:

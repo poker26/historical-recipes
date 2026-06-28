@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.inaturalist import INAT_BASE, _HEADERS
 from app.services import gbif
-from app.services.plant_matching import resolve_latin_to_plants, _latin_key, synonym_map
+from app.services.plant_matching import resolve_latin_to_plants, _latin_key, synonym_map, canonical_key
 from app.models.place import QuestPlace, QuestPlaceSet, QuestIssuedBadge
 from app.models.device import Device, QuestFollow
 from app.models.identification import Identification
@@ -300,6 +300,7 @@ async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None =
             return 1          # in corpus (tap → monograph)
         return 2              # iNat-only, no monograph
 
+    syn = await synonym_map(db)
     items, seen = [], set()
     for s in sorted(recognizable, key=_tier):   # stable → iNat-frequency order kept within tier
         k = _latin_key(s["latin"])
@@ -309,6 +310,7 @@ async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None =
         p = plant_map.get(s["latin"])
         items.append({
             "latin_key": k, "name": s.get("name_ru") or s["latin"], "latin": s["latin"],
+            "species_key": canonical_key(k, syn),   # accepted-name key for the verdict
             "inat_photo": s.get("photo"), "plant_id": str(p.id) if p is not None else None,
             "count": s.get("count"),
             "biotope_match": bool(p is not None and str(p.id) in match_ids),
@@ -1074,6 +1076,7 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
     meta = ps.species_meta or [{"key": k} for k in (ps.species_set or [])]
     # Resolve corpus cards for fallback name/photo + the plant_id bridge.
     plant_map = await resolve_latin_to_plants(db, [m["key"] for m in meta])
+    syn = await synonym_map(db)
     items = []
     for m in meta:
         key = m["key"]
@@ -1083,6 +1086,9 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
             "latin_key": key,
             "name": m.get("name") or (p.name if p else None) or latin,
             "latin": latin,
+            # Canonical accepted-name key — lets the client verdict say «same species»
+            # across synonyms / duplicate cards (a Stachys shot vs a Betonica set card).
+            "species_key": canonical_key(key, syn),
             "inat_photo": m.get("photo") or (p.photo_url if p else None),
             "plant_id": str(p.id) if p else None,
             "found": key in found_keys,
