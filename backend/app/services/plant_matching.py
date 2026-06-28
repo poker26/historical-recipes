@@ -218,6 +218,34 @@ def _latin_key(name_latin: str | None) -> str | None:
     return f"{toks[0]} {toks[1]}"
 
 
+# Process-level cache of the Cherepanov synonym map (syn_key → accepted_key). The taxon
+# tables are static between deploys, so loading the ~14k rows once is plenty. Lets the
+# matcher + badge credit treat an OLD synonym (our card «Betonica officinalis») and the
+# ACCEPTED name engines return («Stachys officinalis») as the same species.
+_SYN_CACHE: dict[str, str] | None = None
+
+
+async def synonym_map(db: AsyncSession) -> dict[str, str]:
+    """{syn_key → accepted_key} from `taxon_synonym` (excludes self-maps). Cached for the
+    process; empty dict if the table is absent (degrades to plain latin-key matching)."""
+    global _SYN_CACHE
+    if _SYN_CACHE is None:
+        try:
+            rows = (await db.execute(text(
+                "SELECT syn_key, accepted_key FROM taxon_synonym"))).all()
+            _SYN_CACHE = {s: a for s, a in rows if s and a and s != a}
+        except Exception:
+            _SYN_CACHE = {}
+    return _SYN_CACHE
+
+
+def canonical_key(latin_key: str | None, syn: dict[str, str]) -> str | None:
+    """Accepted-name key for a latin_key via the synonym map (identity if not a synonym)."""
+    if not latin_key:
+        return None
+    return syn.get(latin_key, latin_key)
+
+
 async def resolve_latin_to_plants(
     db: AsyncSession,
     latin_names: list[str],
@@ -230,18 +258,24 @@ async def resolve_latin_to_plants(
     the key→plant index once from all plants with a latin name; when two of our rows
     share a key (shouldn't after dedupe) the richest-named one wins deterministically.
     """
+    syn = await synonym_map(db)
     rows = (await db.execute(select(Plant).where(Plant.name_latin.isnot(None)))).scalars().all()
     index: dict[str, Plant] = {}
     for p in rows:
         key = _latin_key(p.name_latin)
         if not key:
             continue
-        cur = index.get(key)
-        if cur is None or _latin_token_count(p.name_latin) > _latin_token_count(cur.name_latin):
-            index[key] = p
+        # Index under the card's own key AND its accepted-name key, so a card filed under an
+        # OLD synonym is reachable by the ACCEPTED name an engine returns (and vice-versa).
+        for kk in {key, canonical_key(key, syn)}:
+            cur = index.get(kk)
+            if cur is None or _latin_token_count(p.name_latin) > _latin_token_count(cur.name_latin):
+                index[kk] = p
     out: dict[str, Plant | None] = {}
     for name in latin_names:
-        out[name] = index.get(_latin_key(name) or "")
+        k = _latin_key(name) or ""
+        # Direct key first (preserves every current exact match), then accepted-key fallback.
+        out[name] = index.get(k) or index.get(canonical_key(k, syn) or "")
     return out
 
 

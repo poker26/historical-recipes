@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.inaturalist import INAT_BASE, _HEADERS
 from app.services import gbif
-from app.services.plant_matching import resolve_latin_to_plants, _latin_key
+from app.services.plant_matching import resolve_latin_to_plants, _latin_key, synonym_map
 from app.models.place import QuestPlace, QuestPlaceSet, QuestIssuedBadge
 from app.models.device import Device, QuestFollow
 from app.models.identification import Identification
@@ -110,27 +110,39 @@ _NEAR_TIE = 0.85                # badge credit if a set species scores ≥85% of
                                 # candidate (sibling-species ranking is near-random)
 
 
-def _credit_keys(cands, top_latin, top_score, target: set, target_genera: set) -> tuple[set, set]:
+def _credit_keys(cands, top_latin, top_score, target: set, syn: dict | None = None) -> tuple[set, set]:
     """Lenient Q1 match (HANDOFF-identify-improvements) of ONE identification's
-    candidate list against a `target` set of latin_keys. Returns (exact, soft):
-    `exact` = a target species that is the top candidate OR a near-tie (score ≥ 85%
-    of top); `soft` = genus-level «almost» (top candidate's genus = a target member's
-    genus). Single source of truth for badge / found-state / biotope-mastery credit."""
+    candidate list against a `target` set of latin_keys. Returns (exact, soft) ORIGINAL
+    target keys: `exact` = a target species that is the top candidate OR a near-tie
+    (score ≥ 85% of top); `soft` = genus-level «almost». Comparison is in CANONICAL
+    (accepted-name) space via `syn` (syn_key→accepted_key), so an old synonym in the set
+    and the accepted name from the engine (Betonica↔Stachys officinalis) still credit.
+    Single source of truth for badge / found-state credit."""
+    syn = syn or {}
+
+    def canon(k):
+        return syn.get(k, k) if k else k
+
+    # accepted-key → original target key (so we return the ORIGINAL key for counting)
+    target_canon: dict[str, str] = {}
+    for k in target:
+        target_canon.setdefault(canon(k), k)
+    target_genera = {ck.split(" ")[0] for ck in target_canon if ck}
     exact, soft = set(), set()
     cands = cands or []
     if not cands:
-        k = _latin_key(top_latin)
-        if k in target:
-            exact.add(k)
+        ck = canon(_latin_key(top_latin))
+        if ck in target_canon:
+            exact.add(target_canon[ck])
         return exact, soft
     ts = top_score or max((c.get("score") or 0) for c in cands) or 1.0
     for c in cands:
-        ck = _latin_key(c.get("latin"))
-        if ck in target and (c.get("score") or 0) >= ts * _NEAR_TIE:
-            exact.add(ck)
-    top_g = (_latin_key((cands[0] or {}).get("latin")) or " ").split(" ")[0]
+        ck = canon(_latin_key(c.get("latin")))
+        if ck in target_canon and (c.get("score") or 0) >= ts * _NEAR_TIE:
+            exact.add(target_canon[ck])
+    top_g = (canon(_latin_key((cands[0] or {}).get("latin"))) or " ").split(" ")[0]
     if top_g and top_g in target_genera:
-        soft |= {k for k in target if k.split(" ")[0] == top_g}
+        soft |= {k for k in target if canon(k).split(" ")[0] == top_g}
     return exact, soft
 
 
@@ -716,11 +728,11 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
                           ST_SetSRID(ST_MakePoint(lng, lat), 4326))
     """), {"dk": device_key, "f": f, "t": t, "p": place_id, "since": since})).all()
     sset = set(ps.species_set or [])
-    set_genera = {k.split(" ")[0] for k in sset if k}
+    syn = await synonym_map(db)   # synonym-aware credit (Betonica↔Stachys officinalis)
     exact: set[str] = set()
     soft: set[str] = set()      # genus-level «almost» (shown as «похоже» on the client)
     for cands, top_latin, top_score in rows:
-        ex, sf = _credit_keys(cands, top_latin, top_score, sset, set_genera)
+        ex, sf = _credit_keys(cands, top_latin, top_score, sset, syn)
         exact |= ex
         soft |= sf
     soft -= exact
@@ -823,10 +835,10 @@ async def _device_found_keys(db, device_key, target_keys: set) -> set:
     rows = (await db.execute(text(
         "SELECT candidates, top_latin, top_score FROM identifications "
         "WHERE device_key = CAST(:dk AS uuid)"), {"dk": str(dk)})).all()
-    genera = {k.split(" ")[0] for k in target_keys if k}
+    syn = await synonym_map(db)   # synonym-aware found-state
     found: set = set()
     for cands, tl, ts in rows:
-        ex, sf = _credit_keys(cands, tl, ts, target_keys, genera)
+        ex, sf = _credit_keys(cands, tl, ts, target_keys, syn)
         found |= ex | sf
     return found
 
