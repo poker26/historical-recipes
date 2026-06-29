@@ -47,8 +47,13 @@ mcp = FastMCP(
         "SEPARATE pillar from the herbarium — use search_oils / oils_for_condition to "
         "discover them and get_oil for the full aromatherapy monograph (each oil is "
         "bridged to its source plant; aromatherapy evidence is weak — relay as "
-        "attested usage, not medical advice). find_observations_nearby adds live "
-        "iNaturalist sightings near a coordinate. See AGENTS.md for the full tool guide."
+        "attested usage, not medical advice). For a specific plant: plant_recipes "
+        "gives the curated, triaged, do-able recipes that USE it (not raw extractions — "
+        "monograph-dumps/industrial/fragments are filtered out; pass home_doable=True to "
+        "search_recipes for the same filter); plant_pairings gives the plants it "
+        "historically combines with (grounded co-occurrence, NOT efficacy). "
+        "find_observations_nearby adds live iNaturalist sightings near a coordinate. "
+        "See AGENTS.md for the full tool guide."
     ),
     host="0.0.0.0",
     port=8200,
@@ -133,6 +138,8 @@ async def search_recipes(
     category: str | None = None,
     domain: str | None = None,
     book_id: str | None = None,
+    home_doable: bool | None = None,
+    kind: str | None = None,
 ) -> list | dict:
     """Search recipes by free text and/or filters.
 
@@ -145,12 +152,18 @@ async def search_recipes(
             herbals. This is the only way to separate culinary from medicinal,
             since a recipe inherits its domain from its source book.
         book_id: restrict to one source book (UUID).
+        home_doable: True → only REAL, home-doable recipes; the triage drops
+            monograph-dumps, industrial/lab procedures, fragments and OCR-garbled
+            entries. Pass True for "give me actual recipes", not raw extractions.
+        kind: recipe kind — "medicinal" | "food" | "cosmetic" | "other"
+            (industrial/monograph/fragment/garbled are excluded by home_doable).
 
-    Returns a list (id, name, category, book title/author/year, original_text).
-    Fetch full detail with get_recipe(id)."""
+    Returns a list (id, name, category, recipe_kind, home_doable, step_by_step,
+    book title/author/year, original_text). Fetch full detail with get_recipe(id)."""
     _record_usage("search_recipes", "discovery")
     return await _request("GET", "/api/recipes/", params={
         "q": q, "category": category, "domain": domain, "book_id": book_id,
+        "home_doable": home_doable, "kind": kind,
     })
 
 
@@ -512,6 +525,49 @@ async def get_recipe(recipe_id: str) -> dict:
         recipe_id: UUID from search_recipes / semantic_search."""
     _record_usage("get_recipe", "full")
     return await _request("GET", f"/api/recipes/{recipe_id}")
+
+
+@mcp.tool()
+async def plant_recipes(plant_id: str, kind: str | None = None, limit: int = 12) -> dict:
+    """«What can I make from this plant» — the curated, source-grounded set of REAL,
+    HOME-DOABLE recipes that use a given plant (incl. its genus hub and member species).
+    Unlike search_recipes(q=...), this is triaged and RANKED: monograph-dumps, industrial/
+    lab procedures, fragments and OCR-garbage are excluded; genuine step-by-step recipes
+    lead; each item carries its verbatim text + source book/year. The "do this" surface.
+
+    Args:
+        plant_id: UUID from search_plants / get_plant.
+        kind: filter — "medicinal" | "food" | "cosmetic" | "other" (omit for all).
+        limit: max recipes (1-40).
+
+    Returns {plant_id, kinds[], items:[{id, name, category, kind, n_ingredients,
+    step_by_step, decoupled, book, year, text, truncated}]}. step_by_step=quantities+
+    steps (a real recipe vs a dosing note); full text via get_recipe(id)."""
+    _record_usage("plant_recipes", "full")
+    return await _request("GET", f"/api/plants/{plant_id}/recipes",
+                          params={"kind": kind, "limit": limit})
+
+
+@mcp.tool()
+async def plant_pairings(plant_id: str, category: str | None = None, limit: int = 15) -> dict:
+    """«What this plant historically COMBINES with» — plants it co-occurs with across the
+    digitised recipe corpus, ranked, each with proof-recipes. GROUNDED co-occurrence, NOT
+    a causal/efficacy claim: it counts how often two plants appear in the same recipe. Use
+    after identification or on a plant card to suggest companion plants.
+
+    Args:
+        plant_id: UUID from search_plants / get_plant.
+        category: restrict to one preparation form from the returned `categories`
+            (e.g. "настойка", "отвар", "чай") — omit for overall.
+        limit: max pairings.
+
+    Returns {plant_id, canon_id, categories[], items:[{plant:{id,name,name_latin,
+    photo_url,safety_level,rank}, support, lift, specific, recipes:[{id,name,book,year}]}]}.
+    `support`=# of co-occurring recipes; `specific:true`=a high-lift special affinity. A
+    pair's safety_level≥3 → flag caution. Empty items = not enough data (show softly)."""
+    _record_usage("plant_pairings", "discovery")
+    return await _request("GET", f"/api/plants/{plant_id}/pairings",
+                          params={"category": category, "limit": limit})
 
 
 # ─────────────────────────── Identification tier (photo → species) ───────────────

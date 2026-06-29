@@ -21,6 +21,8 @@ async def list_recipes(
     book_id: uuid.UUID | None = None,
     domain: str | None = None,
     q: str | None = None,
+    home_doable: bool | None = None,
+    kind: str | None = None,
     limit: int | None = None,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
@@ -46,6 +48,10 @@ async def list_recipes(
         stmt = stmt.where(Recipe.book_id == book_id)
     if domain:
         stmt = stmt.where(Book.domain == domain.strip())
+    if home_doable is not None:
+        stmt = stmt.where(Recipe.home_doable.is_(home_doable))   # real, do-able recipes (vs junk)
+    if kind:
+        stmt = stmt.where(Recipe.recipe_kind == kind.strip())
     if q:
         pattern = f"%{q}%"
         stmt = stmt.where(
@@ -74,6 +80,9 @@ async def list_recipes(
             "book_year": book_year,
             "name": r.name,
             "category": r.category,
+            "recipe_kind": r.recipe_kind,
+            "home_doable": r.home_doable,
+            "step_by_step": (r.procedure_score or 0) >= 2,
             "original_text": r.original_text,
             "normalized_text": r.normalized_text,
             "year": r.year,

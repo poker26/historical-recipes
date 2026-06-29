@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Integer, Text, DateTime, ForeignKey
+from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -21,6 +21,11 @@ class Recipe(Base):
     normalized_text: Mapped[str | None] = mapped_column(Text)
     year: Mapped[int | None] = mapped_column(Integer)
     quality: Mapped[str | None] = mapped_column(Text)
+    # recipe triage (materialize_recipe_triage.py): is this a REAL, home-doable recipe, and what kind
+    recipe_kind: Mapped[str | None] = mapped_column(String(20))   # medicinal|food|cosmetic|industrial|monograph|fragment|garbled|other
+    is_recipe: Mapped[bool | None] = mapped_column(Boolean)
+    home_doable: Mapped[bool | None] = mapped_column(Boolean)
+    procedure_score: Mapped[int | None] = mapped_column(Integer)  # 0-2: qty + prep verb (2 = step-by-step)
     qdrant_point_id: Mapped[str | None] = mapped_column(String(100))
     qdrant_collection: Mapped[str | None] = mapped_column(String(50))
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
