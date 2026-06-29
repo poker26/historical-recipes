@@ -61,13 +61,15 @@ it via a `get_*` call rather than answering from a search card alone.
 | `plants_for_condition(condition, kingdom, toxic, limit)` | **The medical entry point.** Give a symptom / disease / archaic name / action as a user would say it; it resolves across BOTH the indication and action axes and unions the plants. | `get_plant`, `find_indication` |
 | `search_oils(q, limit)` | Search the **essential-oils pillar** (эфирные масла) — separate from the herbarium. Free text over oil/Latin/source-plant name. Each oil is bridged to its source plant. | `get_oil`, `get_plant` |
 | `oils_for_condition(condition, limit)` | **Aromatherapy medical entry point** — the oil analog of `plants_for_condition`. Resolves across BOTH indication (archaic→modern bridge) and action axes; cards add `matched_uses`. Aromatherapy evidence is weak — relay as attested usage, not advice. | `get_oil` |
-| `search_recipes(q, category, domain, book_id)` | Find recipes. `domain=recipes` (culinary) vs `domain=herbalism` (medicinal preparations) is the only culinary/medicinal split. | `get_recipe` |
+| `search_recipes(q, category, domain, book_id, home_doable, kind)` | Find recipes. `domain=recipes` (culinary) vs `domain=herbalism` (medicinal preparations) is the only culinary/medicinal split. **`home_doable=True`** drops the junk (monograph-dumps, industrial/lab procedures, fragments, OCR-garbled) — pass it for actual recipes; **`kind`** = medicinal\|food\|cosmetic\|other. | `get_recipe` |
 | `semantic_search(query, collection, limit)` | Natural-language questions whose answer is in prose, not a field ("чем лечили лихорадку в банях"). Collections: recipes_v2 \| plants_v2 \| sections_v1. | `get_plant`, `get_recipe` |
+| `plant_pairings(plant_id, category, limit)` | **What a plant historically COMBINES with** — companion plants ranked by recipe co-occurrence, each with proof-recipes. GROUNDED co-occurrence, NOT efficacy. `specific:true` = a high-lift special affinity; `category` slices by preparation form. | `get_plant`, `get_recipe` |
 
 ### Grounding — full source-backed documents
 | Tool | Returns |
 |---|---|
 | `get_plant(plant_id)` | Full monograph: identity + ALL layered facts (uses, compounds, harvests, habitats, toxicity, culinary), each with verbatim `original_text` + book/year, plus cross-linked recipes. |
+| `plant_recipes(plant_id, kind, limit)` | **«What can I make from this plant»** — the curated, triaged, RANKED, home-doable recipes that use it (genus-family rollup), each with verbatim text + source. The «do this» surface, vs `search_recipes(q=)` which returns raw unranked extractions. `step_by_step`=real recipe vs dosing note. |
 | `get_recipe(recipe_id)` | Verbatim + normalized text, ingredient list linked to herbarium plants, source author/year. |
 | `get_indication(indication_id)` | One concept (modern + archaic names, hierarchy) + the plants that treat it (concept + descendants). |
 | `get_compound(compound_id)` | One compound (class, synonyms, hierarchy) + the plants that contain it. |
