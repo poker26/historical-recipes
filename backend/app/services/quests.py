@@ -90,8 +90,10 @@ def auto_handle(device_key) -> str:
 
 
 def window_label(month: int, day: int) -> str:
-    """Half-month machine label, e.g. 'first-half-05'."""
-    return f"{'first-half' if day <= 15 else 'second-half'}-{month:02d}"
+    """Monthly machine label, e.g. 'month-05' (was half-monthly 'first-half-05' — too
+    short a cadence; quests/badges are now per-month, named «… — июль»). `day` kept in
+    the signature for call-site compatibility but no longer used."""
+    return f"month-{month:02d}"
 
 
 def _window_month(label: str) -> int:
@@ -100,9 +102,12 @@ def _window_month(label: str) -> int:
 
 def window_dates(label: str, year: int) -> tuple[date, date]:
     m = _window_month(label)
-    if label.startswith("first-half"):
+    last = calendar.monthrange(year, m)[1]
+    if label.startswith("month-"):          # monthly window = whole month
+        return date(year, m, 1), date(year, m, last)
+    if label.startswith("first-half"):       # legacy half-month (historical badges)
         return date(year, m, 1), date(year, m, 15)
-    return date(year, m, 16), date(year, m, calendar.monthrange(year, m)[1])
+    return date(year, m, 16), date(year, m, last)
 
 _RADII_KM = [2, 5, 10, 25]      # adaptive: expand until enough candidates (RFC §13.6)
 _MIN_CANDIDATES = 15
@@ -684,8 +689,16 @@ async def place_participants(db: AsyncSession, place_id: str, window: str | None
 # ----------------------------------------------------------- Phase 5: badges
 
 async def _set_for(db, place_id, label):
-    return (await db.execute(select(QuestPlaceSet).where(
+    """The set for this window, else — gap-proof fallback — the most recently computed set
+    for the place (so a place never «disappears» at a window rollover before the new
+    month's set is built, and an old custom quest keeps working)."""
+    hit = (await db.execute(select(QuestPlaceSet).where(
         QuestPlaceSet.place_id == place_id, QuestPlaceSet.window_label == label))).scalar_one_or_none()
+    if hit:
+        return hit
+    return (await db.execute(select(QuestPlaceSet).where(
+        QuestPlaceSet.place_id == place_id).order_by(
+            QuestPlaceSet.computed_at.desc()).limit(1))).scalar_one_or_none()
 
 
 async def _issued_tiers(db, badge_id: str, device_key) -> dict:
@@ -1002,12 +1015,20 @@ async def places_in_bounds(db: AsyncSession, min_lat: float, min_lng: float,
     here (0 = none), `started` = has any geotagged find inside the polygon. Status is
     two cheap aggregate queries — NOT 300× badge_progress."""
     win = window or _current_window()
+    # LATERAL fallback: prefer the current window's set, else the most recently computed
+    # one — so a place never drops off the map at a window rollover (and old custom quests
+    # persist). `eff_win` is the window actually used, echoed back for the client's calls.
     rows = (await db.execute(text("""
         SELECT p.id, p.name, p.kind,
                ST_Y(ST_Centroid(p.geom)) AS clat, ST_X(ST_Centroid(p.geom)) AS clng,
-               ps.target, COALESCE(array_length(ps.species_set,1),0) AS set_size
+               ps.target, COALESCE(array_length(ps.species_set,1),0) AS set_size, ps.window_label AS eff_win
         FROM quest_places p
-        JOIN quest_place_sets ps ON ps.place_id = p.id AND ps.window_label = :win
+        JOIN LATERAL (
+            SELECT target, species_set, window_label FROM quest_place_sets s
+            WHERE s.place_id = p.id
+            ORDER BY (s.window_label = :win) DESC, s.computed_at DESC
+            LIMIT 1
+        ) ps ON true
         WHERE p.geom IS NOT NULL
           AND ST_Centroid(p.geom) && ST_MakeEnvelope(:minlng,:minlat,:maxlng,:maxlat,4326)
         LIMIT :lim
@@ -1040,13 +1061,13 @@ async def places_in_bounds(db: AsyncSession, min_lat: float, min_lng: float,
     places = [{
         "id": str(pid), "name": name, "kind": kind,
         "lat": clat, "lng": clng, "distance_km": None,
-        "window": win, "set_size": set_size, "target": target,
+        "window": eff_win, "set_size": set_size, "target": target,
         "matched": 0,
         "badge_issued": top_tier.get(str(pid), 0) > 0,
         "top_tier": top_tier.get(str(pid), 0),
         "top_tier_name": _TIER_NAMES.get(top_tier.get(str(pid), 0)) if top_tier.get(str(pid), 0) else None,
         "started": str(pid) in started,
-    } for pid, name, kind, clat, clng, target, set_size in rows]
+    } for pid, name, kind, clat, clng, target, set_size, eff_win in rows]
     return {"places": places}
 
 
