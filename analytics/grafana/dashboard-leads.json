@@ -1,0 +1,172 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "tags": ["nastoiki", "leads"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Supabase Health", "value": "Supabase Health" },
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "name": "DS_SUPABASE_HEALTH",
+        "options": [],
+        "query": "postgres",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-90d", "to": "now" },
+  "timepicker": {},
+  "timezone": "Europe/Moscow",
+  "refresh": "5m",
+  "schemaVersion": 39,
+  "version": 1,
+  "uid": "nastoiki-leads",
+  "title": "Настойки.pro — Лиды и агент",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Всего лидов",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "options": { "colorMode": "value", "graphMode": "none", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT count(*) AS value FROM leads;" } ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Получили книгу",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "options": { "colorMode": "value", "graphMode": "none", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "super-light-orange" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT count(*) AS value FROM leads WHERE gift IS NOT NULL;" } ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "За 7 дней",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT count(*) AS value FROM leads WHERE created_at > now() - interval '7 days';" } ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "За 24 часа",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "options": { "colorMode": "value", "graphMode": "none", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "purple" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT count(*) AS value FROM leads WHERE created_at > now() - interval '24 hours';" } ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Новые лиды в день (по источнику)",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars", "fillOpacity": 70, "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" }, "axisLabel": "", "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [ { "refId": "A", "format": "time_series", "rawSql": "SELECT date_trunc('day', created_at) AS time, source AS metric, count(*) AS value FROM leads WHERE $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 1;" } ]
+    },
+    {
+      "id": 6,
+      "type": "piechart",
+      "title": "Лиды по источнику",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 4 },
+      "options": { "legend": { "displayMode": "list", "placement": "right", "showLegend": true }, "pieType": "donut", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT source, count(*) AS value FROM leads GROUP BY source ORDER BY value DESC;" } ]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Последние лиды",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 13 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT created_at AS \"Дата\", source AS \"Источник\", COALESCE(NULLIF(tg_username,''), name, tg_id::text, '—') AS \"Контакт\", COALESCE(email,'—') AS \"Email\", COALESCE(gift,'—') AS \"Подарок\", COALESCE(payload,'—') AS \"Откуда\" FROM leads ORDER BY created_at DESC LIMIT 100;" } ]
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Вопросы к агенту",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Вопросов всего",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 25 },
+      "options": { "colorMode": "value", "graphMode": "none", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT count(*) AS value FROM agent_queries;" } ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "За 7 дней",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 25 },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT count(*) AS value FROM agent_queries WHERE created_at > now() - interval '7 days';" } ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Уникальных устройств",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 25 },
+      "options": { "colorMode": "value", "graphMode": "none", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "purple" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT count(DISTINCT device_key) AS value FROM agent_queries;" } ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Вопросов в день",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 29 },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "fixed", "fixedColor": "orange" }, "custom": { "drawStyle": "bars", "fillOpacity": 70, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }, "tooltip": { "mode": "single", "sort": "none" } },
+      "targets": [ { "refId": "A", "format": "time_series", "rawSql": "SELECT date_trunc('day', created_at) AS time, count(*) AS value FROM agent_queries WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1;" } ]
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Последние вопросы",
+      "datasource": { "type": "postgres", "uid": "${DS_SUPABASE_HEALTH}" },
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 36 },
+      "options": { "showHeader": true, "cellHeight": "sm" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT created_at AS \"Когда\", question AS \"Вопрос\", left(answer, 220) AS \"Ответ (начало)\" FROM agent_queries ORDER BY created_at DESC LIMIT 200;" } ]
+    }
+  ]
+}

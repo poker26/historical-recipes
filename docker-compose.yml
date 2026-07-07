@@ -40,6 +40,20 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # === Consumer agent site (nastoiki.pro) ===
+  # Mobile-first selling page for the master-classes with the embedded «Мастер
+  # настоек» chat agent. The browser calls /api/agent/chat SAME-ORIGIN, so the
+  # HOST nginx vhost for nastoiki.pro proxies /api → the compose nginx (which
+  # routes to backend) and / → this container. Bound to 127.0.0.1 only.
+  nastoiki:
+    build: ./nastoiki
+    ports:
+      - "127.0.0.1:8128:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
   backend:
     build: ./backend
     env_file: .env

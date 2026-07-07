@@ -1159,6 +1159,41 @@ async def _genus_view(db: AsyncSession, genus: Plant) -> dict:
     }
 
 
+# Keys the LLM-agent view drops from the field aggregation: pipeline internals,
+# rollup counters, the full source list (each fact already carries its own
+# source inline) and photo provenance the chat never renders. Filed as
+# docs/RFC-mcp-agent-fit.md by the nastoiki.pro agent, the first tool consumer.
+# Keys the LLM-agent view drops at ANY depth: pipeline internals, rollup counters,
+# photo provenance the chat never renders, and — crucially — the per-fact ``quotes``
+# dump (the field client's "show every source" array; one fact can carry 100+ quotes,
+# 25 KB). The agent keeps each fact's single representative ``quote`` (text + source),
+# which is enough to cite a grounded book + year.
+_AGENT_DROP_KEYS = frozenset({
+    "model", "reviewed", "generated_from_hash",
+    "uses_total", "compounds_total", "recipes_total",
+    "sources", "mentions", "quotes",
+    "photo_source", "photo_license", "photo_attribution",
+})
+_AGENT_LIST_CAP = 8
+_AGENT_STR_CAP = 600
+
+
+def _agent_slim(node):
+    """Recursively shape a field-view / genus-view into the lean, valid-JSON monograph
+    the conversational agent consumes: drop noise keys and the full ``quotes`` dumps at
+    any depth, cap every list to 8, trim long strings. Small enough to re-enter an LLM
+    context without truncation, yet still source-grounded (each fact keeps its single
+    ``quote`` + source). Author-side tool fix, not consumer-side truncation — see
+    docs/RFC-mcp-agent-fit.md."""
+    if isinstance(node, dict):
+        return {k: _agent_slim(v) for k, v in node.items() if k not in _AGENT_DROP_KEYS}
+    if isinstance(node, list):
+        return [_agent_slim(v) for v in node[:_AGENT_LIST_CAP]]
+    if isinstance(node, str) and len(node) > _AGENT_STR_CAP:
+        return node[:_AGENT_STR_CAP] + "…"
+    return node
+
+
 @router.get("/{plant_id}")
 async def get_plant(
     plant_id: uuid.UUID,
@@ -1172,6 +1207,8 @@ async def get_plant(
     the MCP ``get_plant`` tool and the web monograph — kept byte-for-byte stable.
     ``?view=field`` returns a compact, deduped + ranked aggregation for the
     low-bandwidth field client (see docs/HANDOFF-monograph-aggregation.md).
+    ``?view=agent`` slims that field aggregation further for the LLM agent
+    (drops the source dump + pipeline internals, caps lists; see RFC-mcp-agent-fit).
     """
     load_options = [
         selectinload(Plant.medicinal_uses).selectinload(PlantMedicinalUse.action),
@@ -1183,8 +1220,8 @@ async def get_plant(
         selectinload(Plant.culinary_uses),
         selectinload(Plant.mentions),
     ]
-    if view == "field":
-        # field view surfaces each compound's vocabulary definition; eager-load
+    if view in ("field", "agent"):
+        # field/agent views surface each compound's vocabulary definition; eager-load
         # the Compound ref so we don't N+1. Default view never touches it.
         load_options.append(
             selectinload(Plant.compounds).selectinload(PlantCompound.compound_ref)
@@ -1198,7 +1235,8 @@ async def get_plant(
     # facts — it aggregates its member species (with per-species attribution) and
     # owns the generic «вишня»-style recipe mentions. Same shape for default+field.
     if (plant.rank or "species") == "genus":
-        return await _genus_view(db, plant)
+        gv = await _genus_view(db, plant)
+        return _agent_slim(gv) if view == "agent" else gv
 
     # Layer 2: if a vetted reader-monograph exists, serve it (humans get the
     # precomputed prose; recipes/sources are baked in at generation time). Falls
@@ -1275,10 +1313,10 @@ async def get_plant(
 
     # Opt-in compact aggregation for the field client. Returned BEFORE the
     # essential-oil query so the default (raw) path is wholly untouched.
-    if view == "field":
+    if view in ("field", "agent"):
         fv = _field_view(plant, src, recipes)
         fv["parent"] = parent
-        return fv
+        return _agent_slim(fv) if view == "agent" else fv
 
     # Cross-pillar link: essential oils distilled/pressed from this plant. The
     # aroma pillar bridges each oil to its source plant via EssentialOil.plant_id;

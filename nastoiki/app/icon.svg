@@ -1,0 +1,12 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <rect width="64" height="64" rx="14" fill="#16281c"/>
+  <g fill="none" stroke="#d8ab53" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
+    <!-- pot -->
+    <path d="M16 40 Q16 28 27 27 Q38 28 38 40 Q38 51 27 51 Q16 51 16 40 Z"/>
+    <!-- onion capital -->
+    <path d="M20 27 Q19 15 27 12 Q35 15 34 27"/>
+    <!-- swan-neck condenser -->
+    <path d="M35 22 Q50 22 50 36 Q50 43 45 46"/>
+  </g>
+  <circle cx="49" cy="50" r="2.2" fill="#d8ab53"/>
+</svg>

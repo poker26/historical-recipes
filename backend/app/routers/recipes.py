@@ -53,9 +53,22 @@ async def list_recipes(
     if kind:
         stmt = stmt.where(Recipe.recipe_kind == kind.strip())
     if q:
+        # Two matchers OR'd together:
+        #  1. ILIKE substring on name + original_text — the historical behaviour
+        #     (prefixes, partial words, content matches).
+        #  2. Russian stemmed full-text on the NAME — tolerant to declension and
+        #     word order, so «Ночные стражи» (nominative) still finds «Водка ночных
+        #     стражей» (genitive). Name-only keeps it cheap (no scan over the long
+        #     original_text). Fixes named-recipe recall when the query's grammar
+        #     differs from the stored title.
         pattern = f"%{q}%"
+        name_tsv = func.to_tsvector("russian", func.coalesce(Recipe.name, ""))
         stmt = stmt.where(
-            or_(Recipe.name.ilike(pattern), Recipe.original_text.ilike(pattern))
+            or_(
+                Recipe.name.ilike(pattern),
+                Recipe.original_text.ilike(pattern),
+                name_tsv.op("@@")(func.plainto_tsquery("russian", q)),
+            )
         )
 
     # Total matching rows (before pagination) → header, so the UI can render

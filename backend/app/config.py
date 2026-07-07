@@ -40,9 +40,17 @@ class Settings(BaseSettings):
     # IP; set BGE_M3_VERIFY_SSL=false there so httpx doesn't reject the cert.
     bge_m3_verify_ssl: bool = True
 
-    # OpenRouter (LLM gateway)
+    # OpenRouter (LLM gateway) — wizard/OCR/pipeline tasks
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+
+    # OpenAI — consumer agent on nastoiki.pro (direct API, not OpenRouter).
+    # Prod routes via trusttunnel; see agent_llm_proxy / plantnet_proxy.
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    agent_llm_proxy: str = ""
+    agent_answer_model: str = "gpt-4.1"
+    agent_tool_model: str = "gpt-4.1-mini"
 
     # LLM models per task
     llm_model_default: str = "qwen/qwen3-235b-a22b"
@@ -95,8 +103,14 @@ class Settings(BaseSettings):
     # in the routers. Override via env on prod if the service name differs.
     internal_api_url: str = "http://backend:8000"
 
-    # CORS
-    cors_origins: list[str] = ["http://localhost:3000", "http://frontend:3000"]
+    # CORS. nastoiki.pro (consumer agent site) is served same-origin in prod
+    # (nginx proxies /api → backend under the domain), so CORS isn't strictly
+    # needed there, but the origins are whitelisted for safety and for calling
+    # the API cross-origin from localhost during development.
+    cors_origins: list[str] = [
+        "http://localhost:3000", "http://frontend:3000",
+        "https://nastoiki.pro", "https://www.nastoiki.pro",
+    ]
 
     # OCR
     tesseract_lang: str = "rus"
