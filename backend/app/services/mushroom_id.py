@@ -1,18 +1,22 @@
-"""Photo → mushroom identification via Kindwise Mushroom.id (engine layer, swappable).
+"""Photo → mushroom identification via OUR OWN engine (BioCLIP-2 kNN on server 2).
 
-Pl@ntNet (``plant_id.py``) is plants-only — a mushroom photo returns 404 / garbage
-flora, never reaching the (correct) fungi bridge. This engine covers fungi behind the
-SAME contract as ``plant_id.identify`` → ``{engine, candidates:[{latin, score, …}]}``,
-so the router's ``_bridge`` (engine-neutral, keyed on the latin binomial via
-``_latin_key``) attaches our гриб-monograph and ``kingdom='гриб'`` flows through.
+История: ветка стартовала на Kindwise Mushroom.id (тест-ключ), но платный-за-вызов
+движок — неверная модель для бесплатного приложения, а тест-кредиты кончились и
+каждый вызов стал 429 (грибной сезон 2026-08 юзеры провели с мёртвой веткой).
+Заменён СВОИМ бесплатным движком (решение Олега 2026-08-24): BioCLIP-2 (MIT) + kNN
+по индексу 841 вида (546 корпусных + топ снимаемых в РФ), сервис `fungi-engine` на
+server 2 (:8977, контейнер из id-shadow-стека). Пилот-замер на 2460 полевых фото:
+**top-1 76.5%, top-5 95.7%** — класс Kindwise, цена 0.
+
+Контракт тот же, что у ``plant_id.identify`` → ``{engine, candidates:[{latin, score,
+…}]}``; мост ``_bridge`` (по ``_latin_key``) прикрепляет гриб-монографы, safety-блок
+и жёсткий «не употреблять по фото» дисклеймер живут в роутере как раньше.
 
 ⚠️ SAFETY: photo-ID of mushrooms has DEADLY lookalikes (бледная поганка ↔ шампиньон).
-The router attaches the forager-safety block (level + deadly_twin) and a hard
-«не употреблять по фото» disclaimer for the mushroom path — fungi are safety-classified.
+Никаких изменений в safety-слое: дисклеймер несъёмный, deadly_twin из корпуса.
 
 Like the other engine layers this never raises: every failure returns an ``error`` dict.
 """
-import base64
 import logging
 
 import httpx
@@ -21,31 +25,14 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Kindwise accepts up to 5 images per identification.
-MAX_IMAGES = 5
+# Косинус → сопоставимая с вероятностью уверенность (см. калибровку ниже).
+_CAL_LO, _CAL_HI = 0.78, 0.95
 
 
-def _normalize(body: dict, *, limit: int) -> list[dict]:
-    """Shape Kindwise suggestions into our engine-neutral candidate contract:
-    ``latin`` (binomial — the bridge key), ``score`` (0–1), ``common_names``, …."""
-    sugg = (((body.get("result") or {}).get("classification") or {}).get("suggestions") or [])
-    out: list[dict] = []
-    for s in sugg[:limit]:
-        latin = s.get("name")
-        if not latin:
-            continue
-        det = s.get("details") or {}
-        out.append({
-            "latin": latin,
-            "latin_author": latin,
-            "score": s.get("probability"),
-            "common_names": det.get("common_names") or [],
-            "genus": None,
-            "family": None,
-            "gbif_id": det.get("gbif_id"),
-            "powo_id": None,
-        })
-    return out
+def _calibrate(sim: float | None) -> float:
+    if sim is None:
+        return 0.0
+    return round(min(1.0, max(0.0, (float(sim) - _CAL_LO) / (_CAL_HI - _CAL_LO))), 4)
 
 
 async def identify(
@@ -55,34 +42,49 @@ async def identify(
     limit: int = 5,
     **_ignore,
 ) -> dict:
-    """Identify a mushroom from photos (raw ``images`` bytes, or remote ``image_urls``).
-    Returns ``{engine, candidates:[…]}`` on success, ``{error: …}`` on any failure
-    (no key, transport error, non-200, bad body). Never raises."""
-    if not settings.kindwise_api_key:
-        return {"error": "Kindwise API key not configured (set KINDWISE_API_KEY)"}
-    imgs = images[:MAX_IMAGES]
-    if not imgs and not image_urls:
-        return {"error": "no images provided"}
-
-    # NOTE: `similar_images` is a query-style modifier on this v1 API and only
-    # `=true` is accepted; we don't want similar-image payloads, so omit it entirely
-    # (sending `false` → HTTP 400 "Unknown modifier").
-    payload: dict = {}
-    if imgs:
-        payload["images"] = [base64.b64encode(b).decode("ascii") for b in imgs]
-    else:
-        payload["images"] = (image_urls or [])[:MAX_IMAGES]
-    params = {"details": "common_names,gbif_id", "language": "ru"}
+    """Identify a mushroom from a photo (первое из ``images``; ``image_urls`` — через
+    скачивание). Returns ``{engine, candidates:[…]}`` on success, ``{error: …}`` on
+    any failure. Never raises."""
+    if not settings.fungi_engine_url:
+        return {"error": "fungi engine not configured (set FUNGI_ENGINE_URL)"}
     try:
-        async with httpx.AsyncClient(timeout=60, proxy=settings.kindwise_proxy or None) as client:
+        async with httpx.AsyncClient(timeout=45) as client:
+            jpeg = images[0] if images else None
+            if jpeg is None and image_urls:
+                r0 = await client.get(image_urls[0])
+                if r0.status_code == 200:
+                    jpeg = r0.content
+            if not jpeg:
+                return {"error": "no images provided"}
             r = await client.post(
-                f"{settings.kindwise_base_url}/identification",
-                params=params, json=payload,
-                headers={"Api-Key": settings.kindwise_api_key, "Content-Type": "application/json"})
-        if r.status_code not in (200, 201):
-            return {"error": f"Kindwise Mushroom.id {r.status_code}: {r.text[:160]}"}
+                f"{settings.fungi_engine_url.rstrip('/')}/identify",
+                content=jpeg,
+                headers={"X-Engine-Token": settings.fungi_engine_token,
+                         "Content-Type": "image/jpeg"})
+        if r.status_code != 200:
+            return {"error": f"fungi engine {r.status_code}: {r.text[:160]}"}
         body = r.json()
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("mushroom.id transport error: %s", str(e)[:100])
-        return {"error": f"Kindwise transport error: {str(e)[:120]}"}
-    return {"engine": "mushroom.id", "candidates": _normalize(body, limit=limit)}
+        logger.warning("fungi engine transport error: %s", str(e)[:100])
+        return {"error": f"fungi engine transport error: {str(e)[:120]}"}
+    cands = [{
+        "latin": c.get("latin"),
+        "latin_author": c.get("latin"),
+        # Движок отдаёт КОСИНУСНУЮ БЛИЗОСТЬ, а не вероятность: у любого фото она
+        # лежит в 0.75–0.96, и показывать её как «91% уверенности» — враньё.
+        # Калибровка на реальных фото (2026-08-25, 120 грибов vs 120 растений):
+        # грибы медиана 0.888 / p10 0.824; растения медиана 0.752 / p90 0.826.
+        # Линейно растягиваем рабочий диапазон 0.78–0.95 в 0–1.
+        "score": _calibrate(c.get("score")),
+        "raw_similarity": c.get("score"),
+        "common_names": [],
+        "genus": (c.get("latin") or "").split(" ")[0] or None,
+        "family": None,
+        "gbif_id": None,
+        "powo_id": None,
+    } for c in (body.get("candidates") or [])[:limit] if c.get("latin")]
+    # p_fungus — вероятность «это гриб» от классификатора царства на ТОМ ЖЕ
+    # эмбеддинге (см. router: он решает, чей ответ показывать). None, если движок
+    # старой версии или веса не загрузились — тогда роутер падает на пороги.
+    return {"engine": body.get("engine") or "bioclip-fungi", "candidates": cands,
+            "p_fungus": body.get("p_fungus")}

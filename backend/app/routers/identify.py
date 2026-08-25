@@ -13,6 +13,7 @@ The engine is the only swappable part; everything below the candidate list is
 engine-neutral.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -20,6 +21,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -29,6 +31,7 @@ from app.models.plant import Plant
 from app.services import minio as minio_svc
 from app.services import plant_id
 from app.services import mushroom_id
+from app.services import quests as quests_svc
 
 # Hard, non-negotiable warning surfaced on EVERY mushroom identification (HANDOFF-
 # identify-improvements Q3): photo-ID has deadly lookalikes (бледная поганка ↔
@@ -53,7 +56,57 @@ router = APIRouter()
 # call. A plant top-score ≥ _PLANT_CONFIDENT short-circuits (no mushroom call); a
 # mushroom result is accepted only at top-score ≥ _MUSH_CONFIDENT. Tunable.
 _PLANT_CONFIDENT = 0.30
-_MUSH_CONFIDENT = 0.50
+# КАЛИБРОВАННЫЙ порог для нашего движка (mushroom_id._calibrate). 0.41 = косинус
+# 0.85 по замеру 2026-08-25 (120 фото грибов vs 120 полевых фото растений):
+# принимает 78% настоящих грибов и лишь 3% растений. Старое значение 0.50 было
+# унаследовано от Kindwise, где score = ВЕРОЯТНОСТЬ; у косинуса же оно проходило
+# ВСЕГДА — и любое не опознанное PlantNet растение объявлялось грибом (баг,
+# найденный Олегом). Порог поднимать = меньше ложных грибов, но больше пропусков.
+_MUSH_CONFIDENT = 0.41
+
+# Границы КЛАССИФИКАТОРА ЦАРСТВА (логрегрессия на эмбеддинге BioCLIP-2, отдаётся
+# движком как p_fungus). Замер на отложенных реальных фото 2026-08-25: на 0.5 —
+# 94.7% грибов и 94.7% растений верно. Мы не берём одну границу, а оставляем
+# «полосу сомнения»: выше _KINGDOM_FUNGI — точно гриб (96% растений сюда не
+# попадают), ниже _KINGDOM_PLANT — точно растение (98% грибов сюда не попадают),
+# между ними решает уверенность самих движков. Это заменяет прежнюю лестницу
+# «сначала растение, если слабо — гриб», которая на косинусе давала ложные грибы.
+_KINGDOM_FUNGI = 0.70
+_KINGDOM_PLANT = 0.30
+
+
+async def _auto_route(blobs, *, organs, limit) -> tuple[dict, bool]:
+    """kingdom=auto: спросить ОБА движка разом и показать ответ того царства,
+    которое назвал классификатор.
+
+    Раньше здесь была лестница: сначала PlantNet, и только если он не уверен —
+    грибной движок, чей ответ принимался по порогу уверенности. Порог оказался
+    хрупким (косинус против вероятности — баг «все растения стали грибами»), да и
+    сама постановка неверна: «растение не опознано» ≠ «это гриб». Теперь царство
+    определяется отдельно и до кандидатов, по эмбеддингу того же снимка.
+
+    Оба вызова идут параллельно, поэтому ответ не медленнее прежнего. В полосе
+    сомнения (0.30–0.70) решает уверенность движков — при равных грибной ответ
+    принимается только с порога _MUSH_CONFIDENT, как и раньше."""
+    plant, shroom = await asyncio.gather(
+        plant_id.identify(blobs, organs=organs, limit=limit),
+        mushroom_id.identify(blobs, organs=organs, limit=limit),
+    )
+    p_fungus = shroom.get("p_fungus") if isinstance(shroom, dict) else None
+
+    if p_fungus is None:                       # движок без классификатора → старая лестница
+        if _confident(plant, _PLANT_CONFIDENT):
+            return plant, False
+        return (shroom, True) if _confident(shroom, _MUSH_CONFIDENT) else (plant, False)
+
+    if p_fungus >= _KINGDOM_FUNGI:
+        return (shroom, True) if (shroom.get("candidates") or []) else (plant, False)
+    if p_fungus <= _KINGDOM_PLANT:
+        return plant, False
+    # полоса сомнения: верим тому, кто увереннее в своём царстве
+    if _confident(plant, _PLANT_CONFIDENT):
+        return plant, False
+    return (shroom, True) if _confident(shroom, _MUSH_CONFIDENT) else (plant, False)
 
 
 def _confident(result: dict, threshold: float) -> bool:
@@ -228,6 +281,14 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
             remaining_requests=result.get("remaining_requests"),
             candidates=candidates or None,
         ))
+        # Touch quest_devices.last_seen: register is called once per install, so
+        # without this «active devices» undercounts ~2× (146 identifying devices
+        # vs 80 by last_seen over the same 30 days, measured 2026-08-24).
+        dk = _parse_uuid(device_key)
+        if dk is not None:
+            await db.execute(
+                sa_text("UPDATE quest_devices SET last_seen = now() "
+                        "WHERE device_key = CAST(:dk AS uuid)"), {"dk": str(dk)})
         await db.commit()
     except Exception as e:
         logger.warning(f"identification archive failed: {type(e).__name__}: {e}")
@@ -286,14 +347,8 @@ async def identify_plant(
     elif mode == "plant":                           # forced plant
         result = await plant_id.identify(blobs, organs=organs, limit=limit)
         is_mushroom = False
-    else:                                           # auto: plant first, fungi only if plant is weak
-        result = await plant_id.identify(blobs, organs=organs, limit=limit)
-        is_mushroom = False
-        if not _confident(result, _PLANT_CONFIDENT):
-            shroom = await mushroom_id.identify(blobs, organs=organs, limit=limit)
-            if _confident(shroom, _MUSH_CONFIDENT):
-                result, is_mushroom = shroom, True
-            # else keep the (weak/empty) plant result → honest «не определилось»
+    else:                                           # auto: царство решает классификатор
+        result, is_mushroom = await _auto_route(blobs, organs=organs, limit=limit)
     result = await _bridge(result, db)
     if is_mushroom:
         result["safety_notice"] = _MUSHROOM_DISCLAIMER   # always when the verdict is fungi
@@ -304,6 +359,20 @@ async def identify_plant(
         device_manufacturer=device_manufacturer, os_version=os_version,
         os_sdk=os_sdk, app_version=app_version, device_key=device_key,
     )
+    # Quest credit for THIS shot (place quest containing the point, current window):
+    # ties the shooting moment to the game — most identifying devices never open the
+    # quests tab, so progress made in-place must be visible right on the result
+    # screen. Optional field; old clients ignore it (ignoreUnknownKeys).
+    if device_key and lat is not None and lng is not None and result.get("candidates"):
+        try:
+            cands = result["candidates"]
+            qc = await quests_svc.quest_credit_for_shot(
+                db, device_key, lat, lng, cands,
+                cands[0].get("latin"), cands[0].get("score"))
+            if qc:
+                result["quest_credit"] = qc
+        except Exception as e:
+            logger.warning(f"quest_credit skipped: {type(e).__name__}: {e}")
     return result
 
 
