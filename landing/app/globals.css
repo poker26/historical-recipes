@@ -1,8 +1,18 @@
+/* Дизайн-язык приложения v2.0 «Living Collection» (docs/design-v2/DECISION.md):
+   тёплая бумага, бутылочная зелень, Literata для заголовков + Golos Text для текста.
+   Лендинг обязан выглядеть как продолжение приложения, а не как чужая страница. */
 :root {
-  --green: #2e7d32;
-  --green-dark: #1b5e20;
-  --cream: #faf7ef;
-  --ink: #1f2a24;
+  --paper: #fff8ec;
+  --cream: #fffdf8;
+  --ink: #25231f;
+  --forest: #2d5e48;
+  --moss: #6f8661;
+  --leaf: #e4edd8;
+  --lime: #f2d36c;
+  --mist: #eee9e1;
+  --clay: #d78ca5;
+  --danger: #a9362a;
+  --muted: #6b7368;
 }
 
 * { box-sizing: border-box; }
@@ -10,82 +20,131 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: var(--cream);
+  background: var(--paper);
   color: var(--ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
-    Arial, sans-serif;
+  font-family: var(--font-golos), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+  font-size: 16px;
+  line-height: 1.5;
 }
 
-a { color: var(--green-dark); }
-
-.container {
-  max-width: 920px;
-  margin: 0 auto;
-  padding: 0 20px;
+h1, h2, h3, .serif {
+  font-family: var(--font-literata), Georgia, "Times New Roman", serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
+
+a { color: var(--forest); }
+
+.container { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+/* ——— секции ——— */
+.section { margin: 64px 0; }
+.section-title { font-size: 30px; line-height: 1.2; margin: 0 0 8px; }
+.section-lead { color: var(--muted); margin: 0 0 24px; max-width: 620px; }
 
 .card {
-  background: #fff;
-  border: 1px solid #eef0ea;
-  border-radius: 16px;
-  padding: 20px;
-  box-shadow: 0 1px 3px rgba(27, 94, 32, 0.04);
+  background: var(--cream);
+  border: none;
+  border-radius: 24px;
+  padding: 22px;
+  box-shadow: 0 2px 10px rgba(37, 35, 31, 0.05);
 }
 
-.section-title {
-  font-size: 20px;
-  font-weight: 700;
-  margin: 0 0 12px;
+/* ——— герой ——— */
+.hero {
+  background: linear-gradient(155deg, var(--leaf) 0%, #f3f7ea 55%, var(--paper) 100%);
+  border-radius: 32px;
+  padding: 52px 40px;
+  margin-top: 12px;
+  position: relative;
+  overflow: hidden;
+}
+.hero h1 { font-size: 46px; line-height: 1.08; margin: 16px 0 14px; }
+.hero p { font-size: 18px; color: #3f4a43; max-width: 480px; margin: 0; }
+.hero-cols { display: grid; grid-template-columns: 1.25fr 1fr; gap: 28px; align-items: center; }
+.hero-plates { display: flex; justify-content: center; align-items: flex-end; gap: 6px; }
+.hero-plates img { width: 33%; max-width: 190px; height: auto; filter: drop-shadow(0 6px 16px rgba(37,35,31,.12)); }
+
+.chip {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--cream);
+  color: var(--forest);
+  font-size: 13px;
+  font-weight: 600;
 }
 
+/* ——— кнопки ——— */
 .btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 12px 20px;
-  border-radius: 12px;
+  gap: 8px;
+  padding: 14px 22px;
+  border-radius: 999px;
   font-weight: 600;
   font-size: 15px;
   text-decoration: none;
   border: 1px solid transparent;
   cursor: pointer;
+  transition: background .15s ease, transform .15s ease;
 }
-.btn-primary { background: var(--green); color: #fff; }
-.btn-primary:hover { background: var(--green-dark); }
-.btn-ghost { background: #fff; color: var(--green-dark); border-color: #cfe3cf; }
-.btn-disabled { background: #f1f1ee; color: #9ca3af; }
+.btn-primary { background: var(--forest); color: #fff; }
+.btn-primary:hover { background: #24503c; transform: translateY(-1px); }
+.btn-ghost { background: var(--cream); color: var(--forest); border-color: #cfdcc6; }
+.btn-ghost:hover { background: #fff; }
+.btn-disabled { background: var(--mist); color: #9ca3af; }
 
 .navlink { text-decoration: none; color: var(--ink); font-weight: 500; }
-.navlink-cta { color: var(--green); font-weight: 700; }
+.navlink-cta { color: var(--forest); font-weight: 700; text-decoration: none; }
 
-.hero-grad {
-  background: linear-gradient(160deg, #eaf3de 0%, #f6fbef 60%, var(--cream) 100%);
-  border-radius: 24px;
+/* ——— сетки ——— */
+.cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.cols-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.cols-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+/* ——— шаги «как это работает» ——— */
+.step { text-align: left; }
+.step img { width: 100%; max-width: 150px; height: auto; margin-bottom: 6px; }
+.step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 999px;
+  background: var(--forest); color: #fff; font-size: 13px; font-weight: 700;
 }
 
-.chip {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: #e8f5e9;
-  color: var(--green-dark);
-  font-size: 12px;
-  font-weight: 600;
+/* ——— цифры базы ——— */
+.stat { text-align: center; padding: 20px 12px; }
+.stat-num { font-family: var(--font-literata), Georgia, serif; font-size: 34px; font-weight: 600; color: var(--forest); line-height: 1.1; }
+.stat-cap { font-size: 14px; color: var(--muted); margin-top: 4px; }
+
+/* ——— карточка растения-примера ——— */
+.plant-row { display: grid; grid-template-columns: 132px 1fr; gap: 18px; align-items: center; }
+.plant-row img { width: 100%; height: auto; }
+.plant-latin { font-family: var(--font-literata), Georgia, serif; font-style: italic; color: var(--muted); font-size: 15px; }
+.tag {
+  display: inline-block; padding: 4px 12px; border-radius: 999px;
+  font-size: 13px; font-weight: 500; margin-right: 6px; margin-top: 8px;
+  background: var(--leaf); color: var(--forest);
 }
+.tag-warn { background: #fbe4e0; color: var(--danger); }
 
-.grid-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-}
+.feed-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--mist); }
+.feed-row:last-child { border-bottom: none; }
 
-.cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-.cols-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.grid-badges { display: flex; flex-wrap: wrap; gap: 18px; }
 
-@media (max-width: 640px) {
-  .hero-cols { grid-template-columns: 1fr !important; text-align: center; }
-  .cols-3, .cols-2 { grid-template-columns: 1fr; }
-  .hero-grad { padding: 28px 18px !important; }
-  h1 { font-size: 30px !important; }
+.footnote { color: var(--muted); font-size: 13px; }
+
+@media (max-width: 760px) {
+  .hero { padding: 32px 20px; }
+  .hero h1 { font-size: 32px; }
+  .hero-cols { grid-template-columns: 1fr; }
+  .hero p { max-width: none; }
+  .cols-3, .cols-2, .cols-4 { grid-template-columns: 1fr; }
+  .cols-4 { grid-template-columns: 1fr 1fr; }
+  .section { margin: 44px 0; }
+  .section-title { font-size: 25px; }
+  .plant-row { grid-template-columns: 96px 1fr; }
 }

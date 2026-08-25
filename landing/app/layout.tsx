@@ -1,6 +1,12 @@
 import type { Metadata } from "next";
 import Script from "next/script";
+import { Literata, Golos_Text } from "next/font/google";
 import "./globals.css";
+
+// Та же пара шрифтов, что в приложении (docs/design-v2/DECISION.md): лендинг —
+// продолжение продукта, а не отдельная страница. Оба свободные, с кириллицей.
+const literata = Literata({ subsets: ["cyrillic", "latin"], weight: ["600"], variable: "--font-literata", display: "swap" });
+const golos = Golos_Text({ subsets: ["cyrillic", "latin"], weight: ["400", "500", "600"], variable: "--font-golos", display: "swap" });
 
 const SITE = "https://botanik.fun";
 
@@ -23,7 +29,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru">
+    <html lang="ru" className={`${literata.variable} ${golos.variable}`}>
       <body>
         <div className="container">{children}</div>
         {/* Yandex.Metrika counter */}

@@ -8,20 +8,29 @@ import {
 /** A collectible medallion — metal ring by tier + leaf + tier stars. Mirrors the
  *  app's BadgeMedallion so a значок looks the same on phone and web. */
 export function Medallion({ tier, size = 64, earned = true }: { tier: number; size?: number; earned?: boolean }) {
+  // Настоящий арт значков с сервера (тот же, что в приложении) вместо эмодзи-заглушки.
+  // Ярус: 1 бронза, 2 серебро, 3 золото. Ободок из tierColors держит форму, пока
+  // грузится картинка, и делает «незаработанный» значок приглушённым.
   const [light, metal] = tierColors(tier);
+  const art = ["bronze", "silver", "gold"][Math.min(Math.max(tier, 1), 3) - 1];
   return (
     <div
       style={{
         width: size, height: size, borderRadius: "50%",
         background: earned ? light : "#F6F6F4",
         border: `${earned ? 3 : 2}px solid ${earned ? metal : metal + "73"}`,
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-        opacity: earned ? 1 : 0.55, flex: "0 0 auto",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        opacity: earned ? 1 : 0.45, flex: "0 0 auto", overflow: "hidden",
         boxShadow: earned ? `0 2px 8px ${metal}33` : "none",
       }}
     >
-      <span style={{ fontSize: size * 0.34, lineHeight: 1 }}>🌿</span>
-      <span style={{ fontSize: size * 0.17, color: metal, letterSpacing: 1 }}>{"★".repeat(tier)}</span>
+      <img
+        src={`https://botanik.fun/badges/badge-${art}.png`}
+        alt=""
+        width={Math.round(size * 0.78)}
+        height={Math.round(size * 0.78)}
+        style={{ objectFit: "contain" }}
+      />
     </div>
   );
 }
@@ -44,14 +53,14 @@ export function BadgeTile({ b }: { b: Badge }) {
 /** Activity-feed line for the recent-badges feed. */
 export function FeedRow({ b }: { b: Badge }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px solid #eef0ea" }}>
+    <div className="feed-row">
       <Medallion tier={b.tier} size={38} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14 }}>
           <b>{b.nick}</b> — значок «{b.place || "место"}»
         </div>
-        <div style={{ fontSize: 12, color: "#6b7280" }}>
-          {cap(b.name)} · {seasonAdj(b.window).toLowerCase()} сезон{b.ordinal ? ` · № ${b.ordinal}` : ""}
+        <div style={{ fontSize: 12, color: "#6b7368" }}>
+          {cap(b.name)}{b.ordinal ? ` · № ${b.ordinal}` : ""}
         </div>
       </div>
     </div>
