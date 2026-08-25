@@ -1,8 +1,8 @@
 // Shared visual components for the landing — all server components (no client JS).
 import Link from "next/link";
 import {
-  Badge, LeaderRow, tierColors, cap, seasonEmoji, seasonAdj, badgeLabel,
-  windowLabelRu, RUSTORE_URL, APPSTORE_URL,
+  Badge, EtherEvent, LeaderRow, tierColors, cap, seasonEmoji, seasonAdj, badgeLabel,
+  windowLabelRu, agoRu, RUSTORE_URL, APPSTORE_URL,
 } from "./lib";
 
 /** A collectible medallion — metal ring by tier + leaf + tier stars. Mirrors the
@@ -50,18 +50,31 @@ export function BadgeTile({ b }: { b: Badge }) {
   );
 }
 
-/** Activity-feed line for the recent-badges feed. */
-export function FeedRow({ b }: { b: Badge }) {
+/** Строка «Эфира»: кто, что нашёл и примерно где. Это живая лента находок —
+ *  она обновляется каждый день, в отличие от значков, которые выдаются редко. */
+export function EtherRow({ e }: { e: EtherEvent }) {
+  const nick = e.actor?.nick || e.actor?.handle || "натуралист";
+  const photo = e.plant?.photo || null;
   return (
     <div className="feed-row">
-      <Medallion tier={b.tier} size={38} />
+      {e.type === "id" ? (
+        <div className="ether-thumb">
+          {photo ? <img src={photo} alt="" /> : <span>🌿</span>}
+        </div>
+      ) : (
+        <Medallion tier={e.tier ?? 1} size={38} />
+      )}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14 }}>
-          <b>{b.nick}</b> — значок «{b.place || "место"}»
+        <div style={{ fontSize: 14, lineHeight: 1.35 }}>
+          <b>{nick}</b>{" "}
+          {e.type === "id" ? (
+            <>нашёл{e.plant ? <> <span style={{ fontStyle: "italic" }}>{e.plant.name.toLowerCase()}</span></> : " растение"}</>
+          ) : (
+            <>получил значок «{e.place || "место"}»</>
+          )}
+          {e.place && e.type === "id" ? <span style={{ color: "#6b7368" }}> · {e.place}</span> : null}
         </div>
-        <div style={{ fontSize: 12, color: "#6b7368" }}>
-          {cap(b.name)}{b.ordinal ? ` · № ${b.ordinal}` : ""}
-        </div>
+        <div style={{ fontSize: 12, color: "#6b7368" }}>{agoRu(e.at)}</div>
       </div>
     </div>
   );

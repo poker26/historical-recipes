@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { getLeaderboard, getRecentBadges } from "./lib";
-import { Header, Footer, DownloadButtons, LeaderTable, FeedRow, Medallion } from "./ui";
+import { getEther, getLeaderboard } from "./lib";
+import { Header, Footer, DownloadButtons, LeaderTable, EtherRow, Medallion } from "./ui";
 
 // Живые данные (рейтинг + лента) тянутся с внутреннего backend. Без этого Next
 // запекает главную СТАТИЧЕСКИ на этапе docker build, где хост `backend` недоступен,
@@ -21,16 +21,18 @@ const STATS = [
 ];
 
 export default async function Home() {
-  const [board, recent] = await Promise.all([getLeaderboard("global", { limit: 5 }), getRecentBadges(12)]);
-  // Схлопываем ярусы одного места в одну строку: раньше «Коптево» занимало три
-  // подряд идущие записи (новичок/любитель/мастер) и лента выглядела сломанной.
+  const [board, ether] = await Promise.all([getLeaderboard("global", { limit: 5 }), getEther(24)]);
+  // Лента — «Эфир» приложения (все публичные находки), а не значки: значки выдаются
+  // редко и лента из них месяцами стоит на месте, а находки идут каждый день.
+  // Схлопываем повтор «один и тот же человек нашёл тот же вид», чтобы серия кадров
+  // одного растения не забивала блок.
   const seen = new Set<string>();
-  const feed = (recent?.badges ?? []).filter((b) => {
-    const key = `${b.nick}·${b.place ?? b.badge_id}`;
+  const feed = (ether?.events ?? []).filter((e) => {
+    const key = `${e.actor?.handle ?? e.actor?.nick}·${e.type === "id" ? e.plant?.id : e.place}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).slice(0, 6);
+  }).slice(0, 7);
 
   return (
     <>
@@ -134,7 +136,7 @@ export default async function Home() {
         <div className="card">
           <h2 style={{ margin: "0 0 6px", fontSize: 22 }}>Свежие находки</h2>
           {feed.length ? (
-            feed.map((b, i) => <FeedRow b={b} key={i} />)
+            feed.map((e, i) => <EtherRow e={e} key={i} />)
           ) : (
             <p style={{ color: "#6b7368" }}>Скоро здесь появятся первые находки.</p>
           )}

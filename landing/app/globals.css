@@ -132,6 +132,10 @@ a { color: var(--forest); }
 
 .feed-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--mist); }
 .feed-row:last-child { border-bottom: none; }
+/* Кружок находки в «Эфире»: фото вида, пока оно есть, иначе лист-заглушка. */
+.ether-thumb { width: 38px; height: 38px; border-radius: 50%; overflow: hidden; flex: 0 0 auto;
+  background: var(--leaf); display: flex; align-items: center; justify-content: center; font-size: 18px; }
+.ether-thumb img { width: 100%; height: 100%; object-fit: cover; }
 
 .grid-badges { display: flex; flex-wrap: wrap; gap: 18px; }
 

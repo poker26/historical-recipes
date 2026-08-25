@@ -77,6 +77,14 @@ async def badge_claim(device_key: str = Query(...), place_id: str = Query(...),
     return await quests.claim_badge(db, device_key, place_id, window, year)
 
 
+@router.get("/claimable")
+async def claimable(device_key: str = Query(...), biotopes: bool = Query(True),
+                    db: AsyncSession = Depends(get_db)):
+    """Заработанные, но НЕ забранные значки девайса за текущее окно (места + биотопы)
+    одним вызовом — для баннера «забери значок» на главной / экране квестов."""
+    return await quests.claimable_badges(db, device_key, include_biotopes=biotopes)
+
+
 @router.get("/badges")
 async def badges(device_key: str = Query(...), db: AsyncSession = Depends(get_db)):
     return {"device_key": device_key, "badges": await quests.badge_shelf(db, device_key)}
@@ -93,6 +101,17 @@ async def places_near(lat: float = Query(...), lng: float = Query(...),
     map/list. Instant (DB only, no live iNat)."""
     return await quests.places_near(db, lat, lng, device_key=device_key,
                                     radius_km=radius_km, limit=limit, window=window)
+
+
+@router.post("/custom/estimate")
+async def custom_estimate(lat: float = Query(...), lng: float = Query(...),
+                          radius_km: float = Query(1.0),
+                          movement_mode: str = Query("walk"),
+                          month: int | None = Query(None, ge=1, le=12),
+                          db: AsyncSession = Depends(get_db)):
+    """Дешёвая оценка области ДО создания кастомной прогулки: жизнеспособность,
+    счётчики видов, биотопы, минимальный жизнеспособный радиус (RFC-v2 §7.3)."""
+    return await quests.estimate_custom_area(db, lat, lng, radius_km, movement_mode, month)
 
 
 @router.post("/custom/create")
@@ -211,7 +230,16 @@ async def following(device_key: str = Query(...), db: AsyncSession = Depends(get
 
 
 @router.get("/feed")
-async def feed(device_key: str = Query(...), limit: int = Query(30, ge=1, le=100),
+async def feed(device_key: str | None = Query(None), limit: int = Query(30, ge=1, le=100),
+               scope: str = Query("following", pattern="^(following|ether)$"),
                db: AsyncSession = Depends(get_db)):
-    """Merged recent activity (in-corpus finds + badges) of followees. No coordinates."""
-    return await quests.feed(db, device_key, limit=limit)
+    """Merged recent activity (in-corpus finds + badges). scope=following — подписки;
+    scope=ether — «Эфир»: все публичные находки сообщества, место приблизительное
+    (имя известного места), координат нет никогда.
+
+    Эфиру device_key не нужен: он собирает всех, кто оставил активность публичной,
+    и ничего не персонализирует. Поэтому лендинг botanik.fun читает ту же ленту
+    анонимно. Ленте подписок ключ обязателен — без него не от кого считать подписки."""
+    if scope == "following" and not device_key:
+        raise HTTPException(400, "device_key required for scope=following")
+    return await quests.feed(db, device_key, limit=limit, scope=scope)

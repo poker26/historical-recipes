@@ -92,6 +92,31 @@ export const getLeaderboard = (
   return getJson<Leaderboard>(`/quests/leaderboard?${q}`);
 };
 
+/** Событие «Эфира» — общей ленты находок сообщества. Место приблизительное
+ *  (имя парка/леса), координат в ленте нет никогда. */
+export type EtherEvent = {
+  type: "id" | "badge";
+  actor: { handle?: string; nick?: string; avatar?: string | null };
+  plant?: { id: string; name: string; photo?: string | null } | null;
+  place?: string | null;
+  tier?: number;
+  name?: string;
+  ordinal?: number | null;
+  at: string;
+};
+
+/** «Сколько прошло» по-русски, без библиотек: лента и так серверная. */
+export function agoRu(iso: string): string {
+  const min = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  if (min < 2) return "только что";
+  if (min < 60) return `${min} мин назад`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} ${h === 1 ? "час" : h < 5 ? "часа" : "часов"} назад`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d} ${d === 1 ? "день" : d < 5 ? "дня" : "дней"} назад`;
+  return new Date(iso).toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+}
+
 export const getRecentBadges = (limit = 12, place_id?: string) =>
   getJson<{ badges: Badge[] }>(
     `/quests/recent-badges?limit=${limit}${place_id ? `&place_id=${place_id}` : ""}`,
@@ -189,3 +214,7 @@ export const RUSTORE_URL =
   process.env.NEXT_PUBLIC_RUSTORE_URL || "https://www.rustore.ru/catalog/app/ru.begemot.plantid";
 export const APPSTORE_URL =
   process.env.NEXT_PUBLIC_APPSTORE_URL || "https://apps.apple.com/ru/app/что-растёт/id6778605472";
+
+/** «Эфир» — все публичные находки сообщества. Анонимно: device_key эфиру не нужен. */
+export const getEther = (limit = 12) =>
+  getJson<{ events: EtherEvent[] }>(`/quests/feed?scope=ether&limit=${limit}`);
