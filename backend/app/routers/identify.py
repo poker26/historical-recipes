@@ -173,25 +173,35 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
         # pending» — not «not in corpus». Attach `registry` {status, accepted_latin,
         # family_latin} so the client says so instead of a dead end.
         spine = await resolve_latin_to_spine(db, unmatched_latins)
-        # Enrich the registry hit with a license-clean iNat photo + RU name (lazy, cached)
-        # — no LLM, no invented facts: just «known species, here's how it looks».
-        registry_latins = [c["latin"] for c in candidates
-                           if c.get("plant") is None and c["latin"] in spine]
-        photos = await resolve_registry_photos(db, registry_latins) if registry_latins else {}
-        registry = 0
+        # Реестр теперь покрывает ВСЕ виды вне корпуса, а не только черепановскую
+        # флору. Смысл (формулировка Олега 2026-08-26): ответ должен звучать не
+        # «мы не смогли определить», а «мы знаем, что это — просто у атласа другая
+        # задача». Поэтому фото и русское имя тянем для любого неопознанного вида,
+        # а `status` объясняет ПОЧЕМУ очерка нет:
+        #   accepted / synonym — своя флора, очерк ещё не написан;
+        #   outside_scope      — вид определён, но он вне рамок травника
+        #                        (комнатные, клумбовые, чужая флора) — 70% отказов.
+        photos = await resolve_registry_photos(db, unmatched_latins)
+        registry = out_of_scope = 0
         for c in candidates:
-            if c.get("plant") is None and c["latin"] in spine:
-                reg = dict(spine[c["latin"]])
-                ph = photos.get(c["latin"])
-                if ph:
-                    reg["photo_url"] = ph.get("photo_url")
-                    reg["photo_attribution"] = ph.get("photo_attribution")
-                    if not c.get("name_ru") and ph.get("common_name"):
-                        c["name_ru"] = ph.get("common_name")
-                c["registry"] = reg
+            if c.get("plant") is not None:
+                continue
+            reg = dict(spine.get(c["latin"]) or {"status": "outside_scope"})
+            ph = photos.get(c["latin"])
+            if ph:
+                reg["photo_url"] = ph.get("photo_url")
+                reg["photo_attribution"] = ph.get("photo_attribution")
+                if not c.get("name_ru") and ph.get("common_name"):
+                    c["name_ru"] = ph.get("common_name")
+            c["registry"] = reg
+            if reg["status"] == "outside_scope":
+                out_of_scope += 1
+            else:
                 registry += 1
         if registry:
             result["registry_count"] = registry
+        if out_of_scope:
+            result["out_of_scope_count"] = out_of_scope
         # Третий ярус после карточки и реестра: РОД. Две трети отказов (замер
         # 2026-08-26) — это виды, чей род в корпусе есть; вместо тупика «нет в
         # атласе» отдаём родню, честно помеченную отдельным полем. Подменять вид
