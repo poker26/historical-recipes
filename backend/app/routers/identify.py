@@ -44,7 +44,8 @@ _MUSHROOM_DISCLAIMER = (
 _MUSHROOM_KINGDOMS = {"fungi", "mushroom", "гриб", "грибы"}
 from app.services.inaturalist import resolve_names_ru, resolve_registry_photos
 from app.services.plant_matching import (
-    resolve_latin_to_plants, resolve_latin_to_spine, synonym_map, canonical_key, _latin_key,
+    resolve_latin_to_plants, resolve_latin_to_spine, resolve_genus_relatives,
+    synonym_map, canonical_key, _latin_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -191,6 +192,19 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
                 registry += 1
         if registry:
             result["registry_count"] = registry
+        # Третий ярус после карточки и реестра: РОД. Две трети отказов (замер
+        # 2026-08-26) — это виды, чей род в корпусе есть; вместо тупика «нет в
+        # атласе» отдаём родню, честно помеченную отдельным полем. Подменять вид
+        # родственником в поле `plant` НЕЛЬЗЯ — снят Crassula ovata, а показать
+        # Тиллею водную как «его карточку» было бы враньём.
+        relatives = await resolve_genus_relatives(db, unmatched_latins)
+        genus_hits = 0
+        for c in candidates:
+            if c.get("plant") is None and c["latin"] in relatives:
+                c["genus_relatives"] = relatives[c["latin"]]
+                genus_hits += 1
+        if genus_hits:
+            result["genus_count"] = genus_hits
     result["matched_count"] = matched
     return result
 
@@ -244,6 +258,12 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
 
         candidates = result.get("candidates") or []
         top = candidates[0] if candidates else {}
+        # Причина отказа (миграция 021): ошибка движка и пустой ответ — разные беды.
+        failure_reason = failure_detail = None
+        if result.get("error"):
+            failure_reason, failure_detail = "engine_error", str(result["error"])[:400]
+        elif not candidates:
+            failure_reason = "no_candidates"
         top_score = top.get("score") or 0
         # matched_plant_id = the card of the TOP candidate, or a NEAR-TIE (score ≥ 85% of
         # top) — NEVER a low-score also-ran. A 0.002 sibling once hijacked matched_plant_id:
@@ -280,6 +300,8 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
             matched_count=result.get("matched_count"),
             remaining_requests=result.get("remaining_requests"),
             candidates=candidates or None,
+            failure_reason=failure_reason,
+            failure_detail=failure_detail,
         ))
         # Touch quest_devices.last_seen: register is called once per install, so
         # without this «active devices» undercounts ~2× (146 identifying devices

@@ -279,6 +279,54 @@ async def resolve_latin_to_plants(
     return out
 
 
+async def resolve_genus_relatives(
+    db: AsyncSession,
+    latin_names: list[str],
+    *,
+    per_genus: int = 3,
+) -> dict[str, dict]:
+    """Для видов, которых в корпусе НЕТ, — что мы знаем об их РОДЕ.
+
+    Замер отказов 2026-08-26: из 228 снимков «вид назван, карточки нет» у 150 (66%)
+    род в корпусе есть. Отдавать вместо вида его родственника МОЛЧА нельзя (снят
+    Crassula ovata — денежное дерево, а у нас Тиллея водная: формально тот же род,
+    но человеку нужна его толстянка), поэтому это отдельное поле: клиент обязан
+    сказать «этого вида у нас нет» и лишь потом предложить родню.
+
+    Возвращает ``{input_latin: {genus, count, plants:[{id,name,name_latin,has_monograph}]}}``.
+    Первыми идут виды с готовым читательским очерком — от родственника без очерка
+    пользы мало."""
+    genera: dict[str, list[str]] = {}
+    for n in latin_names:
+        g = (_latin_key(n) or "").split(" ")[0]
+        if g and len(g) > 2:
+            genera.setdefault(g, []).append(n)
+    if not genera:
+        return {}
+    rows = (await db.execute(text("""
+        SELECT lower(split_part(p.name_latin, ' ', 1)) AS genus,
+               p.id::text, p.name, p.name_modern, p.name_latin, p.photo_url,
+               (rm.plant_id IS NOT NULL) AS has_monograph
+        FROM plants p
+        LEFT JOIN plant_reader_monograph rm ON rm.plant_id = p.id
+        WHERE lower(split_part(coalesce(p.name_latin, ''), ' ', 1)) = ANY(:g)
+        ORDER BY (rm.plant_id IS NOT NULL) DESC, p.name"""),
+        {"g": list(genera)})).all()
+    by_genus: dict[str, list[dict]] = {}
+    for r in rows:
+        by_genus.setdefault(r.genus, []).append({
+            "id": r[1], "name": (r.name_modern or r.name), "name_latin": r.name_latin,
+            "photo_url": r.photo_url, "has_monograph": bool(r.has_monograph)})
+    out: dict[str, dict] = {}
+    for g, names in genera.items():
+        rel = by_genus.get(g)
+        if not rel:
+            continue
+        for n in names:
+            out[n] = {"genus": g.capitalize(), "count": len(rel), "plants": rel[:per_genus]}
+    return out
+
+
 async def resolve_latin_to_spine(
     db: AsyncSession,
     latin_names: list[str],

@@ -56,3 +56,11 @@ class Identification(Base):
     matched_count: Mapped[int | None] = mapped_column(Integer)
     remaining_requests: Mapped[int | None] = mapped_column(Integer)
     candidates: Mapped[list | None] = mapped_column(JSONB)       # full candidate list as returned
+
+    # Почему определение не состоялось (миграция 021). Без этого «кандидатов нет»
+    # неотличимо от «движок вернул ошибку»: 7.1% снимков уходили в архив с пустым
+    # candidates и без единого признака причины.
+    #   engine_error  — движок ответил ошибкой (квота, таймаут, транспорт)
+    #   no_candidates — движок ответил, но список пуст
+    failure_reason: Mapped[str | None] = mapped_column(String(32), index=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text)
