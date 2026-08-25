@@ -45,7 +45,7 @@ _MUSHROOM_KINGDOMS = {"fungi", "mushroom", "гриб", "грибы"}
 from app.services.inaturalist import resolve_names_ru, resolve_registry_photos
 from app.services.plant_matching import (
     resolve_latin_to_plants, resolve_latin_to_spine, resolve_genus_relatives,
-    synonym_map, canonical_key, _latin_key,
+    resolve_genus_in_spine, synonym_map, canonical_key, _latin_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -182,11 +182,18 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
         #   outside_scope      — вид определён, но он вне рамок травника
         #                        (комнатные, клумбовые, чужая флора) — 70% отказов.
         photos = await resolve_registry_photos(db, unmatched_latins)
+        # Род из свода = растение всё-таки НАШЕЙ флоры, даже если конкретное имя
+        # своду 1995 года незнакомо (Taraxacum campylodes — принятое ныне имя
+        # одуванчика лекарственного). Такому виду говорим «очерк ещё не написан»,
+        # а не «он вне рамок травника».
+        native_genus = await resolve_genus_in_spine(db, unmatched_latins)
         registry = out_of_scope = 0
         for c in candidates:
             if c.get("plant") is not None:
                 continue
-            reg = dict(spine.get(c["latin"]) or {"status": "outside_scope"})
+            reg = dict(spine.get(c["latin"])
+                       or {"status": "monograph_pending" if c["latin"] in native_genus
+                           else "outside_scope"})
             ph = photos.get(c["latin"])
             if ph:
                 reg["photo_url"] = ph.get("photo_url")

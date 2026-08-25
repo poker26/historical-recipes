@@ -279,6 +279,31 @@ async def resolve_latin_to_plants(
     return out
 
 
+async def resolve_genus_in_spine(db: AsyncSession, latin_names: list[str]) -> set[str]:
+    """Какие из этих имён принадлежат РОДУ, который есть в черепановском своде.
+
+    Нужно, чтобы не обозвать «видом вне рамок атласа» своё же растение: свод 1995
+    года не знает имени ``Taraxacum campylodes`` (это современное принятое имя
+    одуванчика лекарственного), но род Taraxacum в нём, разумеется, есть. Ошибиться
+    в эту сторону дороже: сказать про одуванчик «он не про наш травник» — грубый
+    ляп, а сказать про денежное дерево «очерк ещё не написан» — просто мягче.
+    Отсутствие таблиц таксономии → пустое множество (деградируем молча)."""
+    by_genus: dict[str, list[str]] = {}
+    for n in latin_names:
+        g = (_latin_key(n) or "").split(" ")[0]
+        if g and len(g) > 2:
+            by_genus.setdefault(g, []).append(n)
+    if not by_genus:
+        return set()
+    try:
+        rows = (await db.execute(text(
+            "SELECT DISTINCT lower(genus) FROM taxon_backbone WHERE lower(genus) = ANY(:g)"),
+            {"g": list(by_genus)})).scalars().all()
+    except Exception:
+        return set()
+    return {n for g in rows for n in by_genus.get(g, [])}
+
+
 async def resolve_genus_relatives(
     db: AsyncSession,
     latin_names: list[str],
