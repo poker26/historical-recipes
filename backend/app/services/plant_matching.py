@@ -306,6 +306,7 @@ async def resolve_genus_relatives(
     rows = (await db.execute(text("""
         SELECT lower(split_part(p.name_latin, ' ', 1)) AS genus,
                p.id::text, p.name, p.name_modern, p.name_latin, p.photo_url,
+               p.is_toxic, p.kingdom,
                (rm.plant_id IS NOT NULL) AS has_monograph
         FROM plants p
         LEFT JOIN plant_reader_monograph rm ON rm.plant_id = p.id
@@ -316,7 +317,8 @@ async def resolve_genus_relatives(
     for r in rows:
         by_genus.setdefault(r.genus, []).append({
             "id": r[1], "name": (r.name_modern or r.name), "name_latin": r.name_latin,
-            "photo_url": r.photo_url, "has_monograph": bool(r.has_monograph)})
+            "photo_url": r.photo_url, "is_toxic": bool(r.is_toxic),
+            "kingdom": r.kingdom, "has_monograph": bool(r.has_monograph)})
     out: dict[str, dict] = {}
     for g, names in genera.items():
         rel = by_genus.get(g)
