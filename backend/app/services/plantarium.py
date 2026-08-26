@@ -8,7 +8,9 @@ authors' (we take NONE — names/facts only), text/lists are reusable WITH attri
 and MASS scraping is forbidden → we fetch ONE region's list on demand per quest, never
 crawl. Always surface the `source_url` so the client can credit plantarium.ru.
 """
+import asyncio
 import re
+import time
 
 import httpx
 
@@ -116,18 +118,43 @@ def _clean_locality(s: str) -> str:
     return re.sub(r"\s+", " ", _ADMIN_NOISE.sub("", s)).strip(" -·,")
 
 
+# Политика Nominatim — не чаще одного запроса в секунду с одного клиента. Массовое
+# заведение личных мест (33 штуки подряд) её нарушило и получило 429 на все точки,
+# из-за чего часть мест осталась без топонима. Держим очередь сами: не быстрее
+# 1.2 с между запросами + память ответов по точке (округление до ~100 м).
+_NOM_GAP_S = 1.2
+_nom_lock = asyncio.Lock()
+_nom_last = 0.0
+_nom_cache: dict[tuple, dict | None] = {}
+
+
 async def toponym_at(lat: float, lng: float) -> dict | None:
     """Nearest meaningful place name at the point (OSM Nominatim reverse) for auto-naming
     a custom quest. Returns {green, locality} (either may be None) — `green` = a named
     park/forest to use directly, `locality` = nearest settlement/neighbourhood (admin
     boilerplate stripped) to pair with the biotope. None on failure (caller falls back to
     the biotope name)."""
+    key = (round(lat, 3), round(lng, 3))
+    if key in _nom_cache:
+        return _nom_cache[key]
     try:
-        async with httpx.AsyncClient(timeout=20, headers={"User-Agent": _UA}) as client:
-            r = await client.get("https://nominatim.openstreetmap.org/reverse", params={
-                "lat": lat, "lon": lng, "format": "jsonv2", "accept-language": "ru", "zoom": 16})
+        async with _nom_lock:                     # один запрос за раз, не чаще 1/1.2 с
+            global _nom_last
+            wait = _NOM_GAP_S - (time.monotonic() - _nom_last)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            async with httpx.AsyncClient(timeout=20, headers={"User-Agent": _UA}) as client:
+                r = await client.get("https://nominatim.openstreetmap.org/reverse", params={
+                    "lat": lat, "lon": lng, "format": "jsonv2",
+                    "accept-language": "ru", "zoom": 16})
+                if r.status_code == 429:          # уже под ограничением — подождать и разок повторить
+                    await asyncio.sleep(5)
+                    r = await client.get("https://nominatim.openstreetmap.org/reverse", params={
+                        "lat": lat, "lon": lng, "format": "jsonv2",
+                        "accept-language": "ru", "zoom": 16})
+                _nom_last = time.monotonic()
             if r.status_code != 200:
-                return None
+                return None                       # 429/5xx НЕ кешируем: это не ответ, а отказ
             j = r.json() or {}
             a = j.get("address", {}) or {}
             green = next((a[k] for k in _GREEN_KEYS if a.get(k)), None)
@@ -138,7 +165,9 @@ async def toponym_at(lat: float, lng: float) -> dict | None:
             loc_raw = next((a[k] for k in _LOCALITY_KEYS if a.get(k)), None)
             locality = _clean_locality(loc_raw) if loc_raw else None
             if green or locality:
-                return {"green": green, "locality": locality or None}
+                _nom_cache[key] = {"green": green, "locality": locality or None}
+                return _nom_cache[key]
+            _nom_cache[key] = None                # тут действительно нет имени
     except (httpx.HTTPError, ValueError):
         pass
     return None
