@@ -766,7 +766,11 @@ async def ensure_personal_place(db: AsyncSession, device_key: str,
     from app.services import plantarium
     bios = await asyncio.to_thread(biotope_at, lat, lng)
     topo = await plantarium.toponym_at(lat, lng)
-    qname = _custom_quest_name(topo, bios)
+    # Личное место подписываем как личное: голый топоним («Кролики») читается как
+    # чужой квест, а «Твоё место · Кролики» сразу объясняет, откуда оно взялось.
+    base = _custom_quest_name(topo, bios)
+    qname = base if base.startswith("Твоё место") else f"Твоё место · {base}"
+    qname = qname[:60]
     row = (await db.execute(text("""
         INSERT INTO quest_places (id, osm_id, name, kind, owner_key, geom, area)
         VALUES (gen_random_uuid(), NULL, :name, 'personal', CAST(:dk AS uuid),
