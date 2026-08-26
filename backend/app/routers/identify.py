@@ -257,6 +257,19 @@ def _parse_uuid(raw: str | None) -> uuid.UUID | None:
         return None
 
 
+async def _personal_place_bg(device_key: str, lat: float, lng: float) -> None:
+    """Фоновое заведение личного места: собственная сессия (сессия запроса к этому
+    моменту уже закрыта), любая ошибка — только в лог, пользователь о ней не узнаёт."""
+    try:
+        from app.database import async_session
+        async with async_session() as db:
+            res = await quests_svc.ensure_personal_place(db, device_key, lat, lng)
+            if res:
+                logger.info("personal place ready: %s", res.get("name"))
+    except Exception as e:
+        logger.warning(f"personal place skipped: {type(e).__name__}: {e}")
+
+
 async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
                    organs: list[str] | None, lat, lng, geo_accuracy, captured_at,
                    exif_json, device_model, device_manufacturer, os_version,
@@ -410,6 +423,14 @@ async def identify_plant(
                 cands[0].get("latin"), cands[0].get("score"))
             if qc:
                 result["quest_credit"] = qc
+            else:
+                # Снимок вне всех квест-мест — а это подавляющее большинство: внутрь
+                # полигона попадал лишь каждый двенадцатый девайс (замер 2026-08-26).
+                # Заводим личное место вокруг точки, куда человек возвращается. В ФОНЕ:
+                # там обращение к iNat и обратный геокодинг, держать на них ответ
+                # определителя нельзя. Прошлые снимки в этой точке засчитаются сами —
+                # прогресс считается из архива, а не из момента съёмки.
+                asyncio.create_task(_personal_place_bg(device_key, lat, lng))
         except Exception as e:
             logger.warning(f"quest_credit skipped: {type(e).__name__}: {e}")
     return result

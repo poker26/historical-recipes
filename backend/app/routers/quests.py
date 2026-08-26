@@ -229,6 +229,23 @@ async def following(device_key: str = Query(...), db: AsyncSession = Depends(get
     return await quests.following(db, device_key)
 
 
+@router.get("/meta")
+async def meta(device_key: str = Query(...), db: AsyncSession = Depends(get_db)):
+    """Награды без географии: «Собиратель» (сколько разных видов) и «Постоянство»
+    (лучшая серия дней подряд). Работают у всех, включая тех, кто никогда не
+    оказывался внутри квест-места — а это 92% устройств с геолокацией."""
+    return await quests.meta_progress(db, device_key)
+
+
+@router.post("/meta/{kind}/claim")
+async def claim_meta(kind: str, device_key: str = Query(...),
+                     db: AsyncSession = Depends(get_db)):
+    res = await quests.claim_meta_badge(db, device_key, kind)
+    if "error" in res:
+        raise HTTPException(400, res["error"])
+    return res
+
+
 @router.get("/feed")
 async def feed(device_key: str | None = Query(None), limit: int = Query(30, ge=1, le=100),
                scope: str = Query("following", pattern="^(following|ether)$"),

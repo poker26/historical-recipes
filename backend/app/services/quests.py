@@ -502,6 +502,68 @@ def _bbox_around(lat: float, lng: float, km: float) -> tuple[float, float, float
     return lat - dlat, lng - dlng, lat + dlat, lng + dlng
 
 
+# Диапазоны радиуса конструктора (RFC-v2 §7.3): «вело» в v2.0 = пресет большего
+# радиуса, не отдельный роутинг-режим.
+_EST_RANGE = {"walk": (0.3, 10.0), "bike": (1.0, 25.0)}
+_EST_MIN_SPECIES = 8       # ниже — область «тонкая», предлагаем расширение
+_EST_TTL_S = 1800.0
+_ESTIMATE_CACHE: dict[tuple, tuple[float, dict]] = {}
+
+
+async def estimate_custom_area(db: AsyncSession, lat: float, lng: float,
+                               radius_km: float, movement_mode: str = "walk",
+                               month: int | None = None) -> dict:
+    """Дешёвая оценка области ДО генерации кастомной прогулки (RFC-v2 §7.3,
+    драфт §12.4): один iNat species_counts по bbox + биотоп точки. «Никаких
+    тупиков»: тонкая область получает min_viable/suggested радиус, а не ошибку.
+    Кэш в памяти процесса (клиент дополнительно дебаунсит drag)."""
+    import time as _time
+    lo, hi = _EST_RANGE.get(movement_mode, _EST_RANGE["walk"])
+    radius_km = max(lo, min(hi, float(radius_km)))
+    key = (round(lat, 3), round(lng, 3), round(radius_km, 1), movement_mode, month or 0)
+    now = _time.time()
+    hit = _ESTIMATE_CACHE.get(key)
+    if hit and now - hit[0] < _EST_TTL_S:
+        return hit[1]
+    swlat, swlng, nelat, nelng = _bbox_around(lat, lng, radius_km)
+    species = await _inat_species_bbox(swlat, swlng, nelat, nelng, month=month)
+    from app.services.worldcover import biotope_at
+    bios = await asyncio.to_thread(biotope_at, lat, lng)
+    n = len(species)
+    confirmed = 0
+    if species:
+        plant_map = await resolve_latin_to_plants(db, list(species.keys()))
+        confirmed = sum(1 for p in plant_map.values() if p)
+    if n >= _EST_MIN_SPECIES:
+        viability, reason, min_viable, suggested = "ready", None, None, None
+    else:
+        # видовое богатство растёт ~ с площадью (радиус²) → корневая экстраполяция
+        factor = math.sqrt(_EST_MIN_SPECIES / max(n, 1))
+        min_viable = round(min(hi, radius_km * factor), 1)
+        suggested = round(min(hi, min_viable * 1.15), 1)
+        if n == 0:
+            viability, reason = "unavailable", "no_observations_or_inat_error"
+        elif min_viable > radius_km:
+            viability, reason = "sparse", "not_enough_species"
+        else:
+            viability, reason = "ready", None
+            min_viable = suggested = None
+    result = {
+        "viability": viability, "reason": reason,
+        "radius_km": radius_km, "movement_mode": movement_mode,
+        "radius_range_km": [lo, hi],
+        "candidate_count": n, "confirmed_count": confirmed,
+        "expected_count": max(0, n - confirmed),
+        "min_viable_radius_km": min_viable, "suggested_radius_km": suggested,
+        "biotopes": sorted(bios) if bios else [],
+    }
+    _ESTIMATE_CACHE[key] = (now, result)
+    if len(_ESTIMATE_CACHE) > 500:      # не даём кэшу расти бесконечно
+        for k in list(_ESTIMATE_CACHE)[:100]:
+            _ESTIMATE_CACHE.pop(k, None)
+    return result
+
+
 async def compute_custom_set(db: AsyncSession, place_id: str, label: str,
                              point_lat: float, point_lng: float) -> dict:
     """Species-set for a CUSTOM (user-ordered) quest at a point. Layer-1 «точно растёт»
@@ -657,6 +719,74 @@ async def create_custom_quest(db: AsyncSession, lat: float, lng: float,
     return out
 
 
+# --------------------------------------------------- личные места (замер 2026-08-26)
+# Снимок попадал внутрь квест-места лишь у 8% устройств с геолокацией: игра ждала,
+# что человек придёт в размеченный парк, а он снимает во дворе и на даче. Поэтому
+# место заводится САМО вокруг точки, куда человек возвращается. Не вокруг любого
+# снимка: нужен признак «я тут бываю» — иначе один кадр из окна поезда плодит мусор.
+_PERSONAL_RADIUS_M = 700.0     # круг места
+_PERSONAL_NEAR_M = 600.0       # в этом радиусе считаем снимки «тем же местом»
+_PERSONAL_MIN_SHOTS = 3        # столько снимков рядом = сюда человек возвращается
+_PERSONAL_MAX = 8              # больше личных мест на устройство не заводим
+
+
+async def ensure_personal_place(db: AsyncSession, device_key: str,
+                                lat: float, lng: float) -> dict | None:
+    """Завести личное место вокруг точки, если человек тут снимает регулярно.
+
+    Вызывается в фоне после архивации снимка, который не попал ни в одно место.
+    Прогресс значка считается из СОХРАНЁННЫХ снимков внутри полигона, поэтому все
+    прежние кадры в этой точке засчитываются задним числом — место появляется уже
+    с накопленным прогрессом. Возвращает None, когда заводить нечего (мало снимков,
+    точка уже внутри места, лимит исчерпан)."""
+    dk = _try_uuid(device_key) if device_key else None
+    if dk is None or lat is None or lng is None:
+        return None
+    inside = (await db.execute(text("""
+        SELECT 1 FROM quest_places
+        WHERE geom IS NOT NULL
+          AND ST_Contains(geom, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)) LIMIT 1"""),
+        {"lat": lat, "lng": lng})).first()
+    if inside:
+        return None                                   # уже есть чей-то квест — не дублируем
+    mine = (await db.execute(text(
+        "SELECT count(*) FROM quest_places WHERE owner_key = CAST(:dk AS uuid)"),
+        {"dk": str(dk)})).scalar() or 0
+    if mine >= _PERSONAL_MAX:
+        return None
+    shots = (await db.execute(text("""
+        SELECT count(*) FROM identifications
+        WHERE device_key = CAST(:dk AS uuid) AND lat IS NOT NULL
+          AND ST_DWithin(ST_SetSRID(ST_MakePoint(lng, lat), 4326)::geography,
+                         ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography, :near)"""),
+        {"dk": str(dk), "lat": lat, "lng": lng, "near": _PERSONAL_NEAR_M})).scalar() or 0
+    if shots < _PERSONAL_MIN_SHOTS:
+        return None
+    from app.services.worldcover import biotope_at
+    from app.services import plantarium
+    bios = await asyncio.to_thread(biotope_at, lat, lng)
+    topo = await plantarium.toponym_at(lat, lng)
+    qname = _custom_quest_name(topo, bios)
+    row = (await db.execute(text("""
+        INSERT INTO quest_places (id, osm_id, name, kind, owner_key, geom, area)
+        VALUES (gen_random_uuid(), NULL, :name, 'personal', CAST(:dk AS uuid),
+            ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(:lng,:lat),4326)::geography, :rad)::geometry),
+            pi() * :rad * :rad)
+        RETURNING id::text"""),
+        {"name": qname, "dk": str(dk), "lng": lng, "lat": lat, "rad": _PERSONAL_RADIUS_M})).first()
+    await db.commit()
+    pid = row[0]
+    res = await compute_custom_set(db, pid, _current_window(), lat, lng)
+    if "set_size" not in res:
+        # Пусто у iNat в этой точке — место без набора бесполезно, убираем за собой.
+        await db.execute(text("DELETE FROM quest_places WHERE id = :p"), {"p": pid})
+        await db.commit()
+        return None
+    logger.info("personal place %s created for %s (%s, %d видов)", pid, dk, qname, res["set_size"])
+    return {"place_id": pid, "name": qname, "kind": "personal",
+            "set_size": res.get("set_size"), "target": res.get("target")}
+
+
 async def place_participants(db: AsyncSession, place_id: str, window: str | None = None,
                              year: int | None = None, limit: int = 50) -> dict:
     """«Кто проходил этот квест» (Oleg 2026-06-21) — devices that EARNED a badge for this
@@ -665,7 +795,7 @@ async def place_participants(db: AsyncSession, place_id: str, window: str | None
     in-progress, not yet a badge — is a later, heavier addition.)"""
     win = window or _current_window()
     yr = year or date.today().year
-    badge_id = f"{place_id}:{win}:{yr}"
+    badge_id = f"{place_id}:all"   # cumulative badge — one per place
     rows = (await db.execute(text("""
         SELECT d.handle, d.nickname, d.avatar, b.device_key, MAX(b.tier) AS tier
         FROM quest_issued_badges b
@@ -687,6 +817,21 @@ async def place_participants(db: AsyncSession, place_id: str, window: str | None
 
 
 # ----------------------------------------------------------- Phase 5: badges
+
+async def _pool_for(db, place_id) -> tuple[set, int]:
+    """КУМУЛЯТИВНАЯ модель «Знаток места» (решение Олега 2026-08-24): пул места =
+    объединение ВСЕХ его сезонных наборов, прогресс не сгорает на смене окна.
+    Окно больше не дедлайн, а подсказка «что искать сейчас» (place_set). Возвращает
+    (pool, target); target по той же формуле от размера пула."""
+    rows = (await db.execute(text(
+        "SELECT species_set FROM quest_place_sets WHERE place_id = :p"),
+        {"p": place_id})).all()
+    pool: set[str] = set()
+    for (sset,) in rows:
+        pool |= set(sset or [])
+    target = max(5, min(15, round(0.6 * len(pool)))) if pool else 0
+    return pool, target
+
 
 async def _set_for(db, place_id, label):
     """The set for this window, else — gap-proof fallback — the most recently computed set
@@ -716,14 +861,15 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
     issuance, 0 = none); `claimable_tier` = highest earned tier NOT yet issued (null
     = nothing to claim); `next_need` = species needed-count of the next not-yet-
     earned rung (null at the top)."""
-    ps = await _set_for(db, place_id, label)
-    if not ps:
+    sset, pool_target = await _pool_for(db, place_id)
+    if not sset:
         return {"error": "no species-set for this place/window"}
-    f, t = window_dates(label, year)
     # CUSTOM quests = a fresh personal hunt → count only finds made AFTER the quest was
     # created (Oleg 2026-06-21: «новый квест — новый поиск»; don't auto-credit species
-    # already found earlier in an overlapping area). Place quests keep season-wide credit
-    # (you're documenting the place over the whole window).
+    # already found earlier in an overlapping area). Place quests: CUMULATIVE, all-time
+    # (Oleg 2026-08-24) — the window guillotine silently reset progress at month
+    # rollover (the Kurils case) and nobody understood why; season is now a HINT
+    # (place_set), not a deadline.
     crow = (await db.execute(text(
         "SELECT kind, created_at FROM quest_places WHERE id=:p"), {"p": place_id})).first()
     since = crow[1] if (crow and crow[0] == "custom") else None
@@ -737,12 +883,10 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
         SELECT candidates, top_latin, top_score FROM identifications
         WHERE device_key = CAST(:dk AS uuid)
           AND lat IS NOT NULL AND lng IS NOT NULL
-          AND captured_at >= :f AND captured_at < (CAST(:t AS date) + 1)
           AND (CAST(:since AS timestamptz) IS NULL OR captured_at >= CAST(:since AS timestamptz))
           AND ST_Contains((SELECT geom FROM quest_places WHERE id=:p),
                           ST_SetSRID(ST_MakePoint(lng, lat), 4326))
-    """), {"dk": device_key, "f": f, "t": t, "p": place_id, "since": since})).all()
-    sset = set(ps.species_set or [])
+    """), {"dk": device_key, "p": place_id, "since": since})).all()
     syn = await synonym_map(db)   # synonym-aware credit (Betonica↔Stachys officinalis)
     exact: set[str] = set()
     soft: set[str] = set()      # genus-level «almost» (shown as «похоже» on the client)
@@ -753,8 +897,10 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
     soft -= exact
     matched = sorted(exact | soft)
     m = len(matched)
-    badge_id = f"{place_id}:{label}:{year}"
-    tiers = tier_thresholds(ps.target, len(sset))
+    # Cumulative badge — ONE per place, no window/year in the id. Old monthly ids
+    # ({place}:{window}:{year}) are migrated to :all (scripts/migrate_badges_all.py).
+    badge_id = f"{place_id}:all"
+    tiers = tier_thresholds(pool_target, len(sset))
     issued = await _issued_tiers(db, badge_id, device_key)
     earned = [tr for tr in tiers if tr["need"] <= m]
     current_tier = max((tr["tier"] for tr in earned), default=0)
@@ -762,23 +908,21 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
     not_earned = [tr for tr in tiers if tr["need"] > m]
     next_need = not_earned[0]["need"] if not_earned else None
     return {"badge_id": badge_id, "set_size": len(sset), "matched": m,
-            "target": ps.target, "tiers": tiers, "current_tier": current_tier,
+            "target": pool_target, "tiers": tiers, "current_tier": current_tier,
             "claimable_tier": claimable_tier, "next_need": next_need,
             "matched_keys": matched, "soft_keys": sorted(soft)}
 
 
 async def claim_badge(db: AsyncSession, device_key: str, place_id: str, label: str, year: int) -> dict:
-    """Issue every tier the device has EARNED but not yet claimed, up to the highest,
-    while the window is open. Each tier gets its own per-tier ordinal (scarcity).
-    Idempotent per (badge_id, device, tier). The response headlines the HIGHEST tier
-    granted; `granted` lists all rungs issued this call."""
+    """Issue every tier the device has EARNED but not yet claimed, up to the highest.
+    Cumulative model: no window_closed — mastery of a place never expires. Each tier
+    keeps its own per-tier ordinal (scarcity). Idempotent per (badge_id, device, tier).
+    The response headlines the HIGHEST tier granted; `granted` lists all rungs issued
+    this call. `label`/`year` stay in the signature for old-client compatibility."""
     prog = await badge_progress(db, device_key, place_id, label, year)
     if "error" in prog:
         return prog
     badge_id = prog["badge_id"]
-    _, t = window_dates(label, year)
-    if date.today() > t:
-        return {**prog, "issued": False, "reason": "window_closed"}
     issued = await _issued_tiers(db, badge_id, device_key)
     earned_unissued = [tr for tr in prog["tiers"]
                        if tr["need"] <= prog["matched"] and tr["tier"] not in issued]
@@ -808,6 +952,17 @@ async def badge_shelf(db: AsyncSession, device_key: str) -> list[dict]:
     out = []
     for b in rows:
         parts = b.badge_id.split(":")
+        if parts and parts[0] == "meta":         # «Собиратель» / «Постоянство» — без географии
+            mk = ":".join(parts[1:])
+            out.append({
+                "badge_id": b.badge_id, "kind": mk,
+                "title": (_META_LADDERS.get(mk) or {}).get("title"),
+                "place_id": None, "window": None, "year": None,
+                "tier": b.tier, "name": _TIER_NAMES.get(b.tier, ""),
+                "points": b.points, "ordinal": b.ordinal,
+                "issued_at": b.issued_at.isoformat(),
+            })
+            continue
         if parts and parts[0] == "biotope":      # «Знаток <биотопа>» — cumulative, no place/window
             out.append({
                 "badge_id": b.badge_id, "kind": "biotope",
@@ -957,11 +1112,218 @@ def _current_window() -> str:
     return window_label(t.month, t.day)
 
 
+# ------------------------------------------- награды без географии (замер 2026-08-26)
+# 92% людей вообще не попадают в квест-места, а снимают. Значит награда должна быть
+# и за сам факт наблюдения: сколько РАЗНЫХ видов собрано и сколько дней подряд
+# человек выходит с камерой. Гео тут не нужно — работает у всех и с первого дня.
+_META_LADDERS = {
+    "collection": {
+        "title": "Собиратель",
+        "unit": "видов",
+        "rungs": [10, 25, 50],
+    },
+    "streak": {
+        "title": "Постоянство",
+        "unit": "дней подряд",
+        "rungs": [3, 7, 14],
+    },
+}
+
+
+def _meta_tiers(kind: str) -> list[dict]:
+    lad = _META_LADDERS[kind]
+    return [{"tier": i + 1, "need": need, "name": _TIER_NAMES[i + 1],
+             "points": _TIER_POINTS[i + 1]}
+            for i, need in enumerate(lad["rungs"])]
+
+
+async def _collection_size(db, device_key) -> int:
+    """Сколько РАЗНЫХ видов девайс определил за всё время (синонимы схлопнуты).
+    Считаем по архиву — значит проверяемо сервером, а не по клиентской истории."""
+    rows = (await db.execute(text(
+        "SELECT DISTINCT top_latin FROM identifications "
+        "WHERE device_key = CAST(:dk AS uuid) AND top_latin IS NOT NULL"),
+        {"dk": str(device_key)})).scalars().all()
+    syn = await synonym_map(db)
+    keys = {canonical_key(_latin_key(n), syn) for n in rows if n}
+    return len({k for k in keys if k})
+
+
+async def _best_streak(db, device_key) -> int:
+    """Самая длинная серия дней подряд со снимком. Именно ЛУЧШАЯ, а не текущая:
+    отобрать уже выданный значок, потому что человек пропустил день, — обидно и
+    неправильно; серия остаётся достижением."""
+    days = (await db.execute(text(
+        "SELECT DISTINCT (COALESCE(captured_at, created_at) AT TIME ZONE 'UTC')::date d "
+        "FROM identifications WHERE device_key = CAST(:dk AS uuid) ORDER BY d"),
+        {"dk": str(device_key)})).scalars().all()
+    best = run = 0
+    prev = None
+    for d in days:
+        run = run + 1 if (prev is not None and (d - prev).days == 1) else 1
+        best = max(best, run)
+        prev = d
+    return best
+
+
+async def meta_progress(db: AsyncSession, device_key: str) -> dict:
+    """Прогресс по наградам без географии. Форма ответа повторяет badge_progress,
+    чтобы клиент рисовал их той же лестницей."""
+    dk = _try_uuid(device_key)
+    if dk is None:
+        return {"items": []}
+    items = []
+    for kind in _META_LADDERS:
+        matched = await (_collection_size(db, dk) if kind == "collection" else _best_streak(db, dk))
+        badge_id = f"meta:{kind}"
+        tiers = _meta_tiers(kind)
+        issued = await _issued_tiers(db, badge_id, dk)
+        earned = [t for t in tiers if t["need"] <= matched]
+        not_earned = [t for t in tiers if t["need"] > matched]
+        items.append({
+            "kind": kind, "badge_id": badge_id,
+            "title": _META_LADDERS[kind]["title"], "unit": _META_LADDERS[kind]["unit"],
+            "matched": matched, "tiers": tiers,
+            "current_tier": max((t["tier"] for t in earned), default=0),
+            "claimable_tier": max((t["tier"] for t in earned if t["tier"] not in issued),
+                                  default=None),
+            "next_need": not_earned[0]["need"] if not_earned else None,
+        })
+    return {"items": items}
+
+
+async def claim_meta_badge(db: AsyncSession, device_key: str, kind: str) -> dict:
+    """Выдать заработанные, но не забранные ярусы награды без географии."""
+    if kind not in _META_LADDERS:
+        return {"error": "unknown badge kind"}
+    dk = _try_uuid(device_key)
+    if dk is None:
+        return {"error": "device not registered"}
+    prog = next(i for i in (await meta_progress(db, str(dk)))["items"] if i["kind"] == kind)
+    badge_id = prog["badge_id"]
+    issued = await _issued_tiers(db, badge_id, dk)
+    unissued = [t for t in prog["tiers"] if t["need"] <= prog["matched"] and t["tier"] not in issued]
+    if not unissued:
+        return {**prog, "issued": False,
+                "reason": "already" if issued else "below_first_tier"}
+    granted = []
+    for tr in unissued:
+        n = (await db.execute(select(func.count()).select_from(QuestIssuedBadge).where(
+            QuestIssuedBadge.badge_id == badge_id,
+            QuestIssuedBadge.tier == tr["tier"]))).scalar() or 0
+        db.add(QuestIssuedBadge(badge_id=badge_id, device_key=dk, tier=tr["tier"],
+                                points=tr["points"], ordinal=n + 1, window_closed=False))
+        granted.append({**tr, "ordinal": n + 1})
+    await db.commit()
+    top = granted[-1]
+    prog = next(i for i in (await meta_progress(db, str(dk)))["items"] if i["kind"] == kind)
+    return {**prog, "issued": True, "tier": top["tier"], "name": top["name"],
+            "ordinal": top["ordinal"], "points": top["points"], "granted": granted}
+
+
+async def claimable_badges(db: AsyncSession, device_key: str,
+                           include_biotopes: bool = True) -> dict:
+    """Все ЗАРАБОТАННЫЕ, но не забранные значки девайса за текущее окно — одним
+    запросом, для баннера «забери значок» на главной. До этого клиенту пришлось бы
+    поллить badge_progress по каждому месту отдельно, поэтому заработанные значки
+    молча висели незабранными (кейс Северо-Курильска: новичок month-08 ждал с 8-го
+    числа). Места-кандидаты = только те, где девайс реально стрелял в этом окне."""
+    dk = _try_uuid(device_key)
+    if dk is None:
+        return {"count": 0, "items": []}
+    label = _current_window()
+    yr = date.today().year
+    # Cumulative model: candidate places = anywhere the device EVER shot (capped).
+    rows = (await db.execute(text("""
+        SELECT DISTINCT p.id::text, p.name
+        FROM identifications i
+        JOIN quest_places p ON p.geom IS NOT NULL
+         AND ST_Contains(p.geom, ST_SetSRID(ST_MakePoint(i.lng, i.lat), 4326))
+        WHERE i.device_key = CAST(:dk AS uuid) AND i.lat IS NOT NULL
+        LIMIT 12"""), {"dk": str(dk)})).all()
+    items = []
+    for pid, name in rows:
+        prog = await badge_progress(db, str(dk), pid, label, yr)
+        if prog.get("claimable_tier"):
+            items.append({
+                "kind": "place", "place_id": pid, "place": name,
+                "window": label, "year": yr,
+                "claimable_tier": prog["claimable_tier"],
+                "tier_name": _TIER_NAMES.get(prog["claimable_tier"], ""),
+                "matched": prog["matched"], "target": prog["target"],
+                "next_need": prog["next_need"],
+            })
+    # награды без географии — тем, кто снимает, но не ходит по квест-местам
+    try:
+        for m in (await meta_progress(db, str(dk)))["items"]:
+            if m.get("claimable_tier"):
+                items.append({
+                    "kind": m["kind"], "title": m["title"], "unit": m["unit"],
+                    "claimable_tier": m["claimable_tier"],
+                    "tier_name": _TIER_NAMES.get(m["claimable_tier"], ""),
+                    "matched": m["matched"], "next_need": m["next_need"],
+                })
+    except Exception:
+        pass
+    if include_biotopes:
+        try:
+            matches = await _device_biotope_matches(db, str(dk))
+            for bio in matches:
+                prog = await biotope_progress(db, str(dk), bio, _matches=matches)
+                if prog.get("claimable_tier"):
+                    items.append({
+                        "kind": "biotope", "biotope": bio,
+                        "claimable_tier": prog["claimable_tier"],
+                        "tier_name": _TIER_NAMES.get(prog["claimable_tier"], ""),
+                        "matched": prog["matched"],
+                    })
+        except Exception:
+            pass   # биотоп-скан — бонус; его сбой не должен прятать place-значки
+    return {"window": label, "year": yr, "count": len(items), "items": items}
+
+
+async def quest_credit_for_shot(db: AsyncSession, device_key: str, lat: float, lng: float,
+                                cands, top_latin, top_score) -> dict | None:
+    """Кредит квесту за ТОЛЬКО ЧТО сделанный снимок — для экрана результата
+    определения («зачтено в квест X, 4 из 9»). Связывает момент съёмки с игрой:
+    сейчас 5 из 6 определяющих девайсов вообще не открывают вкладку квестов.
+    Возвращает None, когда снимок вне квест-мест / без гео / нет набора — клиент
+    просто не рисует блок. Вызывается ПОСЛЕ архивации снимка, так что
+    badge_progress уже учитывает и его."""
+    dk = _try_uuid(device_key) if device_key else None
+    if dk is None or lat is None or lng is None:
+        return None
+    label = _current_window()
+    yr = date.today().year
+    rows = (await db.execute(text("""
+        SELECT id::text, name FROM quest_places
+        WHERE geom IS NOT NULL
+          AND ST_Contains(geom, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326))
+        ORDER BY ST_Area(geom) ASC LIMIT 3"""), {"lat": lat, "lng": lng})).all()
+    syn = await synonym_map(db)
+    for pid, name in rows:                       # smallest containing place with a pool wins
+        pool, _ = await _pool_for(db, pid)       # cumulative: credit vs the FULL pool
+        if not pool:
+            continue
+        ex, sf = _credit_keys(cands, top_latin, top_score, pool, syn)
+        prog = await badge_progress(db, str(dk), pid, label, yr)
+        if "error" in prog:
+            continue
+        return {"place_id": pid, "place": name, "window": label, "year": yr,
+                "this_shot": sorted(ex | sf), "matched": prog["matched"],
+                "target": prog["target"], "next_need": prog["next_need"],
+                "current_tier": prog["current_tier"],
+                "claimable_tier": prog["claimable_tier"]}
+    return None
+
+
 async def _badge_issued(db, device_key, place_id, window, year) -> bool:
+    """Cumulative model: one badge per place (badge_id = '{place_id}:all');
+    window/year kept in the signature for caller compatibility, ignored."""
     if not device_key:
         return False
     n = (await db.execute(select(func.count()).select_from(QuestIssuedBadge).where(
-        QuestIssuedBadge.badge_id == f"{place_id}:{window}:{year}",
+        QuestIssuedBadge.badge_id == f"{place_id}:all",
         QuestIssuedBadge.device_key == device_key))).scalar() or 0
     return n > 0
 
@@ -983,10 +1345,13 @@ async def places_near(db: AsyncSession, lat: float, lng: float, device_key=None,
         FROM quest_places p
         JOIN quest_place_sets ps ON ps.place_id = p.id AND ps.window_label = :win
         WHERE p.geom IS NOT NULL
+          -- личное место — только своему владельцу: чужая дача не должна быть пином
+          AND (p.kind <> 'personal' OR p.owner_key = CAST(:dk AS uuid))
           AND ST_DWithin(ST_Centroid(p.geom)::geography,
                          ST_SetSRID(ST_MakePoint(:lng,:lat),4326)::geography, :rad)
         ORDER BY dist LIMIT :lim
-    """), {"lat": lat, "lng": lng, "win": win, "rad": radius_km * 1000.0, "lim": limit})).all()
+    """), {"lat": lat, "lng": lng, "win": win, "rad": radius_km * 1000.0, "lim": limit,
+              "dk": str(_try_uuid(device_key)) if _try_uuid(device_key) else None})).all()
 
     places = []
     for pid, name, kind, clat, clng, dist, target, set_size in rows:
@@ -1030,10 +1395,13 @@ async def places_in_bounds(db: AsyncSession, min_lat: float, min_lng: float,
             LIMIT 1
         ) ps ON true
         WHERE p.geom IS NOT NULL
+          -- личное место рисуем только его владельцу (см. ensure_personal_place)
+          AND (p.kind <> 'personal' OR p.owner_key = CAST(:dk AS uuid))
           AND ST_Centroid(p.geom) && ST_MakeEnvelope(:minlng,:minlat,:maxlng,:maxlat,4326)
         LIMIT :lim
     """), {"win": win, "minlng": min_lng, "minlat": min_lat,
-           "maxlng": max_lng, "maxlat": max_lat, "lim": limit})).all()
+           "maxlng": max_lng, "maxlat": max_lat, "lim": limit,
+           "dk": str(_try_uuid(device_key)) if _try_uuid(device_key) else None})).all()
     ids = [str(r[0]) for r in rows]
     top_tier: dict[str, int] = {}     # place_id -> highest issued tier
     started: set[str] = set()         # place_id -> has a geotagged find inside
@@ -1323,13 +1691,28 @@ async def public_profile(db: AsyncSession, id_str, viewer_device_key=None) -> di
         b["place"] = names.get(b.get("place_id"))
     board = await leaderboard(db, device_key=str(dk), limit=1)
     me = board.get("me") or {}
-    is_following = None
+    # Подписки/подписчики — РАЗНЫЕ вещи (решение Олега 2026-08-25): «подписки» =
+    # кого читает он, «подписчики» = кто читает его, «друг» = ВЗАИМНАЯ подписка.
+    # Раньше в UI и то и другое звалось «друзья», хотя связь односторонняя.
+    followers = (await db.execute(select(func.count()).select_from(QuestFollow).where(
+        QuestFollow.followee_handle == handle))).scalar() or 0
+    following_n = (await db.execute(select(func.count()).select_from(QuestFollow).where(
+        QuestFollow.follower_key == dk))).scalar() or 0
+    is_following = None      # смотрящий подписан на него
+    follows_me = None        # он подписан на смотрящего
+    is_mutual = None
     if viewer_device_key:
         vk = _try_uuid(viewer_device_key)
         if vk is not None:
             n = (await db.execute(select(func.count()).select_from(QuestFollow).where(
                 QuestFollow.follower_key == vk, QuestFollow.followee_handle == handle))).scalar() or 0
             is_following = n > 0
+            vdev = await db.get(Device, vk)
+            vhandle = (vdev.handle if vdev else None) or auto_handle(vk)
+            back = (await db.execute(select(func.count()).select_from(QuestFollow).where(
+                QuestFollow.follower_key == dk, QuestFollow.followee_handle == vhandle))).scalar() or 0
+            follows_me = back > 0
+            is_mutual = bool(is_following and follows_me)
     return {
         "handle": handle,
         "nick": (dev.nickname if dev else None) or auto_nick(dk),
@@ -1339,6 +1722,10 @@ async def public_profile(db: AsyncSession, id_str, viewer_device_key=None) -> di
         "rank": me.get("rank"),
         "badges": shelf,
         "is_following": is_following,
+        "follows_me": follows_me,
+        "is_mutual": is_mutual,
+        "followers": followers,
+        "following": following_n,
     }
 
 
@@ -1368,11 +1755,32 @@ async def follow(db, device_key, target_handle: str) -> dict:
         return {"error": "unavailable"}
     # store followee as its canonical handle
     th = (tdev.handle if tdev else None) or auto_handle(target)
-    await db.execute(pg_insert(QuestFollow).values(
+    res = await db.execute(pg_insert(QuestFollow).values(
         follower_key=vk, followee_handle=th).on_conflict_do_nothing(
         index_elements=["follower_key", "followee_handle"]))
     await db.commit()
-    return {"status": "ok", "following": True, "handle": th}
+    # Взаимность: подписан ли ОН на меня (тогда это «друг», а не просто подписка).
+    vdev = await db.get(Device, vk)
+    vhandle = (vdev.handle if vdev else None) or auto_handle(vk)
+    back = (await db.execute(select(func.count()).select_from(QuestFollow).where(
+        QuestFollow.follower_key == target, QuestFollow.followee_handle == vhandle))).scalar() or 0
+    mutual = back > 0
+    # Уведомление подписчику — только на НОВУЮ подписку (rowcount 0 = была раньше).
+    # Без него подписка уходила в пустоту: человек никак не узнавал об интересе.
+    if res.rowcount:
+        try:
+            from app.services.push import send_to_device
+            nick = (vdev.nickname if vdev else None) or auto_nick(vk)
+            await send_to_device(
+                db, str(target),
+                "Взаимно!" if mutual else "На тебя подписались",
+                (f"{nick} тоже подписан(а) на тебя — теперь вы друзья."
+                 if mutual else f"{nick} следит за твоими находками."),
+                {"kind": "new_follower", "handle": vhandle},
+            )
+        except Exception as e:
+            logger.info(f"follow push skipped: {type(e).__name__}: {e}")
+    return {"status": "ok", "following": True, "handle": th, "mutual": mutual}
 
 
 async def unfollow(db, device_key, target_handle: str) -> dict:
@@ -1401,29 +1809,67 @@ async def following(db, device_key) -> dict:
     handles = (await db.execute(select(QuestFollow.followee_handle).where(
         QuestFollow.follower_key == vk))).scalars().all()
     actors = await _actors_for(db, handles, public_only=False)
-    # species count per followee (one grouped query)
-    out = []
-    for dk, a in actors.items():
-        out.append({**a})
+    dev = await db.get(Device, vk)
+    my_handle = (dev.handle if dev else None) or auto_handle(vk)
+    # Кто из них подписан на МЕНЯ → это «друзья» (взаимные), остальные — подписки.
+    back = set()
+    if actors:
+        rows = (await db.execute(select(QuestFollow.follower_key).where(
+            QuestFollow.followee_handle == my_handle,
+            QuestFollow.follower_key.in_(list(actors.keys()))))).scalars().all()
+        back = set(rows)
+    out = [{**a, "mutual": dk in back} for dk, a in actors.items()]
     return {"following": out}
 
 
-async def feed(db, device_key, limit: int = 30) -> dict:
-    """Merged recent activity of followees: in-corpus identifications + badges.
-    No coordinates; excludes blocked + activity_public=false."""
-    vk = uuid_or(device_key)
-    handles = (await db.execute(select(QuestFollow.followee_handle).where(
-        QuestFollow.follower_key == vk))).scalars().all()
-    actors = await _actors_for(db, handles, public_only=True)
+async def feed(db, device_key, limit: int = 30, scope: str = "following") -> dict:
+    """Merged recent activity: in-corpus identifications + badges. No coordinates;
+    excludes blocked + activity_public=false.
+
+    scope="following" — только те, на кого подписан (как было);
+    scope="ether" — «Эфир» (идея Олега 2026-08-24): ВСЕ публичные находки сообщества.
+    При 9 подписках на всё приложение лента подписок мертва — эфир живёт сразу.
+    Место события — ПРИБЛИЗИТЕЛЬНОЕ: имя известного квест-места, никогда координаты."""
+    if scope == "ether":
+        rows = (await db.execute(select(
+            Device.device_key, Device.handle, Device.nickname, Device.avatar).where(
+            Device.blocked.is_(False), Device.activity_public.is_(True)))).all()
+        actors = {dk: {"handle": h or auto_handle(dk), "nick": nk or auto_nick(dk),
+                       "avatar": av} for dk, h, nk, av in rows}
+    else:
+        vk = uuid_or(device_key)
+        handles = (await db.execute(select(QuestFollow.followee_handle).where(
+            QuestFollow.follower_key == vk))).scalars().all()
+        actors = await _actors_for(db, handles, public_only=True)
     if not actors:
         return {"events": []}
     keys = list(actors.keys())
 
     ids = (await db.execute(select(
-        Identification.device_key, Identification.matched_plant_id, Identification.created_at).where(
+        Identification.id, Identification.device_key, Identification.matched_plant_id,
+        Identification.created_at).where(
         Identification.device_key.in_(keys), Identification.matched_plant_id.isnot(None))
         .order_by(Identification.created_at.desc()).limit(limit))).all()
-    plant_ids = list({pid for _, pid, _ in ids if pid})
+    # Приблизительное «где»: имя самого маленького известного места, накрывающего точку
+    # (парк/лес/кастом). Точных координат в ленте НЕТ никогда.
+    coarse: dict = {}
+    iid_list = [str(i) for i, _, _, _ in ids]
+    if iid_list:
+        # kind='custom' исключён: кастом-квесты создают на дачах, и повторяющийся
+        # топоним при нике («… · Курниково») по совокупности выдаёт деревню конкретного
+        # человека. Публичные OSM-места (парки/леса) именем светиться могут — они и
+        # есть публичные.
+        crows = (await db.execute(text("""
+            SELECT i.id::text,
+                   (SELECT p.name FROM quest_places p
+                     WHERE p.geom IS NOT NULL AND i.lat IS NOT NULL
+                       AND p.kind NOT IN ('custom', 'personal')
+                       AND ST_Contains(p.geom, ST_SetSRID(ST_MakePoint(i.lng, i.lat), 4326))
+                     ORDER BY ST_Area(p.geom) LIMIT 1)
+            FROM identifications i WHERE i.id = ANY(CAST(:ids AS uuid[]))"""),
+            {"ids": iid_list})).all()
+        coarse = {rid: nm for rid, nm in crows if nm}
+    plant_ids = list({pid for _, _, pid, _ in ids if pid})
     plants: dict = {}
     if plant_ids:
         prows = (await db.execute(select(
@@ -1441,12 +1887,13 @@ async def feed(db, device_key, limit: int = 30) -> dict:
     place_names = await _place_names(db, [b.badge_id.split(":")[0] for b in badges])
 
     events = []
-    for dk, pid, at in ids:
+    for iid, dk, pid, at in ids:
         pl = plants.get(pid)
         if not pl:
             continue
         events.append({"type": "id", "actor": actors[dk],
                        "plant": {"id": pl["id"], "name": pl.get("name_modern") or pl["name"], "photo": pl["photo"]},
+                       "place": coarse.get(str(iid)),
                        "at": at.isoformat()})
     for b in badges:
         parts = b.badge_id.split(":")
