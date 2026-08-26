@@ -246,6 +246,17 @@ async def claim_meta(kind: str, device_key: str = Query(...),
     return res
 
 
+@router.post("/invite/accept")
+async def invite_accept(device_key: str = Query(...), code: str = Query(...),
+                        db: AsyncSession = Depends(get_db)):
+    """«Меня пригласил(а)»: код = публичный handle пригласившего. Засчитывается
+    приглашающему только когда новичок реально начнёт пользоваться приложением."""
+    res = await quests.accept_invite(db, device_key, code)
+    if "error" in res:
+        raise HTTPException(400, res["error"])
+    return res
+
+
 @router.get("/feed")
 async def feed(device_key: str | None = Query(None), limit: int = Query(30, ge=1, le=100),
                scope: str = Query("following", pattern="^(following|ether)$"),

@@ -34,6 +34,10 @@ class Device(Base):
     blocked: Mapped[bool] = mapped_column(Boolean, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Кто позвал в приложение (миграция 023): device_key пригласившего. Кодом
+    # приглашения служит его публичный `handle` — отдельных секретов не заводим.
+    invited_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class QuestFollow(Base):

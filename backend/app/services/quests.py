@@ -11,7 +11,7 @@ import calendar
 import hashlib
 import logging
 import math
-from datetime import date
+from datetime import date, datetime, timezone
 
 import httpx
 from sqlalchemy import select, func, text
@@ -1131,7 +1131,27 @@ _META_LADDERS = {
         "unit": "дней подряд",
         "rungs": [3, 7, 14],
     },
+    # Социальная линейка (идея Олега 2026-08-26). Считаем не «сколько раз кликнули
+    # по ссылке», а сколько приглашённых РЕАЛЬНО пользуются приложением — иначе
+    # значок фармится переустановками.
+    "invites": {
+        "title": "Проводник",
+        "unit": "приглашённых",
+        "rungs": [1, 3, 10],
+    },
+    "friends": {
+        "title": "Компанейский",
+        "unit": "взаимных друзей",
+        "rungs": [1, 3, 10],
+    },
 }
+
+# Приглашённый засчитывается, только если он пользуется приложением сам.
+_INVITE_MIN_SHOTS = 3
+_INVITE_MIN_DAYS = 2
+# Позвать «задним числом» можно лишь в первые дни жизни устройства — иначе код
+# вводили бы через полгода ради значка знакомому.
+_INVITE_WINDOW_DAYS = 21
 
 
 def _meta_tiers(kind: str) -> list[dict]:
@@ -1170,6 +1190,63 @@ async def _best_streak(db, device_key) -> int:
     return best
 
 
+async def _invited_count(db, device_key) -> int:
+    """Сколько приведённых людей действительно пользуются приложением: не меньше
+    трёх определений в разные дни. Клик по ссылке наградой не считается."""
+    return (await db.execute(text("""
+        SELECT count(*) FROM quest_devices d
+        WHERE d.invited_by = CAST(:dk AS uuid)
+          AND (SELECT count(*) FROM identifications i WHERE i.device_key = d.device_key)
+              >= :min_shots
+          AND (SELECT count(DISTINCT (COALESCE(i.captured_at, i.created_at)
+                                      AT TIME ZONE 'UTC')::date)
+               FROM identifications i WHERE i.device_key = d.device_key) >= :min_days"""),
+        {"dk": str(device_key), "min_shots": _INVITE_MIN_SHOTS,
+         "min_days": _INVITE_MIN_DAYS})).scalar() or 0
+
+
+async def _friends_count(db, device_key) -> int:
+    """Взаимные подписки — «друзья» (см. public_profile: подписка ≠ подписчик ≠ друг)."""
+    return (await db.execute(text("""
+        SELECT count(*) FROM quest_follows f
+        JOIN quest_devices me ON me.device_key = f.follower_key
+        JOIN quest_devices them ON them.handle = f.followee_handle
+        JOIN quest_follows back ON back.follower_key = them.device_key
+                               AND back.followee_handle = me.handle
+        WHERE f.follower_key = CAST(:dk AS uuid)"""),
+        {"dk": str(device_key)})).scalar() or 0
+
+
+async def accept_invite(db: AsyncSession, device_key: str, code: str) -> dict:
+    """«Меня пригласил(а)» — привязать устройство к пригласившему по его handle.
+
+    Проверки: себя не пригласишь, дважды не пригласишь, и только в первые
+    _INVITE_WINDOW_DAYS дней жизни устройства — иначе код вводили бы через полгода
+    ради значка знакомому."""
+    dk = _try_uuid(device_key)
+    if dk is None:
+        return {"error": "device not registered"}
+    me = await db.get(Device, dk)
+    if me is None:
+        return {"error": "device not registered"}
+    if me.invited_by is not None:
+        return {"error": "приглашение уже отмечено"}
+    host = (await db.execute(select(Device).where(
+        Device.handle == (code or "").strip().lower()))).scalar_one_or_none()
+    if host is None:
+        return {"error": "такого кода нет"}
+    if host.device_key == dk:
+        return {"error": "нельзя пригласить самого себя"}
+    age_days = (datetime.now(timezone.utc) - me.created_at).days if me.created_at else 0
+    if age_days > _INVITE_WINDOW_DAYS:
+        return {"error": "код можно ввести только в первые дни после установки"}
+    me.invited_by = host.device_key
+    me.invited_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"status": "ok", "host_handle": host.handle,
+            "host_nick": host.nickname or auto_nick(host.device_key)}
+
+
 async def meta_progress(db: AsyncSession, device_key: str) -> dict:
     """Прогресс по наградам без географии. Форма ответа повторяет badge_progress,
     чтобы клиент рисовал их той же лестницей."""
@@ -1177,8 +1254,14 @@ async def meta_progress(db: AsyncSession, device_key: str) -> dict:
     if dk is None:
         return {"items": []}
     items = []
+    counters = {
+        "collection": _collection_size,
+        "streak": _best_streak,
+        "invites": _invited_count,
+        "friends": _friends_count,
+    }
     for kind in _META_LADDERS:
-        matched = await (_collection_size(db, dk) if kind == "collection" else _best_streak(db, dk))
+        matched = await counters[kind](db, dk)
         badge_id = f"meta:{kind}"
         tiers = _meta_tiers(kind)
         issued = await _issued_tiers(db, badge_id, dk)
