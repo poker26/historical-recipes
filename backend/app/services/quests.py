@@ -9,6 +9,7 @@ still a card (iNat name/photo, plant_id null).
 import asyncio
 import calendar
 import hashlib
+import os
 import logging
 import math
 from datetime import date, datetime, timezone
@@ -1241,6 +1242,65 @@ async def _friends_count(db, device_key) -> int:
                                AND back.followee_handle = me.handle
         WHERE f.follower_key = CAST(:dk AS uuid)"""),
         {"dk": str(device_key)})).scalar() or 0
+
+
+# Отложенное приглашение: между переходом по ссылке и первым запуском приложения
+# лежит магазин, который никаких кодов не передаёт. Поэтому запоминаем ОТПЕЧАТОК
+# перехода (хэш адреса и браузера) и при первом запуске ищем свежий переход с того
+# же адреса. Отпечаток необратим и живёт сутки — этого хватает на «увидел ссылку →
+# поставил → открыл», и не хватает, чтобы кого-то отслеживать.
+_INVITE_CLICK_TTL_H = 24
+
+
+def _invite_fingerprint(ip: str | None, ua: str | None) -> str:
+    salt = os.environ.get("INVITE_SALT", "chto-rastet")
+    raw = f"{salt}|{(ip or '').strip()}|{(ua or '')[:120]}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+async def record_invite_click(db: AsyncSession, code: str, ip: str | None,
+                              ua: str | None) -> dict:
+    """Лендинг зовёт это при открытии botanik.fun/i/<код>."""
+    code = (code or "").strip().lower()
+    host = (await db.execute(select(Device).where(Device.handle == code))).scalar_one_or_none()
+    if host is None:
+        return {"status": "unknown_code"}
+    await db.execute(text("""
+        INSERT INTO quest_invite_clicks (code, fingerprint) VALUES (:c, :f)"""),
+        {"c": code, "f": _invite_fingerprint(ip, ua)})
+    await db.commit()
+    return {"status": "ok", "host_handle": host.handle,
+            "host_nick": host.nickname or auto_nick(host.device_key),
+            "host_avatar": host.avatar}
+
+
+async def claim_deferred_invite(db: AsyncSession, device_key: str, ip: str | None,
+                                ua: str | None) -> dict:
+    """Первый запуск приложения: «меня никто не звал?» — ищем свежий переход по
+    ссылке с того же адреса. Ничего не нашли — это просто обычная установка."""
+    dk = _try_uuid(device_key)
+    if dk is None:
+        return {"status": "no_device"}
+    me = await db.get(Device, dk)
+    if me is None or me.invited_by is not None:
+        return {"status": "already"}
+    row = (await db.execute(text("""
+        SELECT id::text, code FROM quest_invite_clicks
+        WHERE fingerprint = :f AND consumed_by IS NULL
+          AND created_at > now() - (:ttl || ' hours')::interval
+        ORDER BY created_at DESC LIMIT 1"""),
+        {"f": _invite_fingerprint(ip, ua), "ttl": str(_INVITE_CLICK_TTL_H)})).first()
+    if not row:
+        return {"status": "none"}
+    click_id, code = row
+    res = await accept_invite(db, str(dk), code)
+    if res.get("status") != "ok":
+        return {"status": "none"}
+    await db.execute(text("""
+        UPDATE quest_invite_clicks SET consumed_by = CAST(:dk AS uuid), consumed_at = now()
+        WHERE id = CAST(:i AS uuid)"""), {"dk": str(dk), "i": click_id})
+    await db.commit()
+    return {"status": "ok", **res}
 
 
 async def accept_invite(db: AsyncSession, device_key: str, code: str) -> dict:

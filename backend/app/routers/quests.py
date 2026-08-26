@@ -1,7 +1,7 @@
 """Quests: the walk engine endpoint (Phase 3). Badges land here later."""
 import uuid as _uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -244,6 +244,33 @@ async def claim_meta(kind: str, device_key: str = Query(...),
     if "error" in res:
         raise HTTPException(400, res["error"])
     return res
+
+
+def _client_ip(request: Request) -> str | None:
+    """Адрес посетителя за nginx. Лендинг ходит в backend изнутри сети, поэтому
+    честный адрес он передаёт сам заголовком — иначе все переходы выглядели бы
+    как один и тот же контейнер."""
+    fwd = request.headers.get("x-forwarded-for") or ""
+    return (fwd.split(",")[0].strip() or None) if fwd else (
+        request.client.host if request.client else None)
+
+
+@router.post("/invite/click")
+async def invite_click(request: Request, code: str = Query(...),
+                       db: AsyncSession = Depends(get_db)):
+    """Переход по пригласительной ссылке botanik.fun/i/<код> — зовёт лендинг.
+    Запоминаем отпечаток, чтобы приглашение пережило поход в магазин."""
+    return await quests.record_invite_click(
+        db, code, _client_ip(request), request.headers.get("x-visitor-ua"))
+
+
+@router.post("/invite/claim")
+async def invite_claim(request: Request, device_key: str = Query(...),
+                       db: AsyncSession = Depends(get_db)):
+    """Первый запуск приложения: «меня не звали?». Ищет свежий переход по ссылке
+    с того же адреса. Ничего не найдено — обычная установка, это не ошибка."""
+    return await quests.claim_deferred_invite(
+        db, device_key, _client_ip(request), request.headers.get("user-agent"))
 
 
 @router.post("/invite/accept")

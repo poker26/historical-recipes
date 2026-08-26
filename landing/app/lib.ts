@@ -218,3 +218,26 @@ export const APPSTORE_URL =
 /** «Эфир» — все публичные находки сообщества. Анонимно: device_key эфиру не нужен. */
 export const getEther = (limit = 12) =>
   getJson<{ events: EtherEvent[] }>(`/quests/feed?scope=ether&limit=${limit}`);
+
+/** Переход по пригласительной ссылке: сервер запоминает отпечаток посетителя, чтобы
+ *  узнать его после установки из магазина (кода в приложении иначе неоткуда взять).
+ *  Адрес и браузер передаём явно — лендинг ходит в backend изнутри сети. */
+export async function recordInviteClick(
+  code: string, ip: string | null, ua: string | null,
+): Promise<{ host_nick?: string; host_avatar?: string | null } | null> {
+  try {
+    const res = await fetch(`${API}/quests/invite/click?code=${encodeURIComponent(code)}`, {
+      method: "POST",
+      headers: {
+        ...(ip ? { "x-forwarded-for": ip } : {}),
+        ...(ua ? { "x-visitor-ua": ua } : {}),
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
