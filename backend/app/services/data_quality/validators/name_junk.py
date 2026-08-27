@@ -36,10 +36,17 @@ def _junk_reason(value: str | None) -> str | None:
            description="ссылка/разметка/непомерная длина в name или name_modern")
 async def check_name_junk(db) -> list[Finding]:
     rows = (await db.execute(select(Plant.id, Plant.name, Plant.name_modern,
-                                    Plant.name_latin))).all()
+                                    Plant.name_latin, Plant.names_historical))).all()
     findings: list[Finding] = []
-    for pid, name, modern, latin in rows:
+    for pid, name, modern, latin, hist in rows:
         problems = {}
+        # Исторические имена — тоже поле показа И вход матчера: алиас со ссылкой на
+        # хвосте не совпадёт ни с чем (58 таких карточек, найдены после «Липы»).
+        bad_aliases = [h for h in (hist or []) if _junk_reason(h)]
+        if bad_aliases:
+            problems["names_historical"] = {
+                "value": bad_aliases[:5], "reason": "ссылка или разметка в алиасе",
+                "cleaned": [clean_display_name(h) for h in bad_aliases[:5]]}
         for field, value in (("name", name), ("name_modern", modern)):
             reason = _junk_reason(value)
             if reason:
