@@ -34,12 +34,20 @@ _PROSE_WORD = re.compile(r"\w+(ющая|ющий|ющее|ющими|ющих|н
                          r"ется|ится|вшая|вший|покрыт)", re.IGNORECASE)
 
 
+_LATIN_NAME = re.compile(r"^[A-Z][a-z]+ [a-z]")
+_CYRILLIC = re.compile(r"[А-Яа-яЁё]")
+
+
 def _is_name_list(value: str) -> bool:
     """Перечень названий, а не поломка: пометка языка либо три и больше запятых
     без цифр и типографского сора. Одного причастия мало (в сортах аконита честно
     стоит «вьющийся»), прозой считаем от двух."""
     if len(_PROSE_WORD.findall(value)) >= 2:
         return False
+    # Латинский синоним с авторами тоже бывает длинным и остаётся именем:
+    # «Batrachium trichophyllum (Chaix) van den Bosch subsp. lutulentum … Janchen».
+    if _LATIN_NAME.match(value) and not _CYRILLIC.search(value):
+        return True
     return bool(_LANG_PREFIX.match(value)) or (
         value.count(",") >= 3 and not _TYPO_JUNK.search(value))
 
