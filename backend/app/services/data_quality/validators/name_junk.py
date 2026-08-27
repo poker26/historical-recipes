@@ -21,13 +21,35 @@ from app.services.data_quality.framework import Finding, validator
 _URL_RE = re.compile(r"(https?://|www\.|%[0-9A-Fa-f]{2}|<[a-z]+>)", re.IGNORECASE)
 _MAX_NAME = 90          # «Пижма обыкновенная (Глистник, Дикая рябина, …)» = 88, это ещё имя
 
+# Длинное — не всегда мусор: в алиасах законно живут перечни иноязычных названий
+# («Нем. Birkenpilz, Rauher Locherschwamm, …», «Франц. Bolete des polonais, …») и
+# списки народных имён. Это данные, а не поломка, и держать их в очереди P0 —
+# значит приучить смотреть мимо неё. А вот проза («Купула, ОКРУЖАЮЩАЯ соцветие,
+# густо ПОКРЫТА…») мусор и по длине, и по сути.
+_LANG_PREFIX = re.compile(r"^(нем\.|немецкое|франц\.|французское|англ\.|английское|итал\.|"
+                          r"исп\.|польск\.|швед\.|голл\.|браз\.|укр\.|чешск\.|латыш\.|"
+                          r"der |die |das )", re.IGNORECASE)
+_TYPO_JUNK = re.compile(r"[!@$/\{}\[\]|+]|\d")
+_PROSE_WORD = re.compile(r"\w+(ющая|ющий|ющее|ющими|ющих|нная|нное|нными|нных|"
+                         r"ется|ится|вшая|вший|покрыт)", re.IGNORECASE)
+
+
+def _is_name_list(value: str) -> bool:
+    """Перечень названий, а не поломка: пометка языка либо три и больше запятых
+    без цифр и типографского сора. Одного причастия мало (в сортах аконита честно
+    стоит «вьющийся»), прозой считаем от двух."""
+    if len(_PROSE_WORD.findall(value)) >= 2:
+        return False
+    return bool(_LANG_PREFIX.match(value)) or (
+        value.count(",") >= 3 and not _TYPO_JUNK.search(value))
+
 
 def _junk_reason(value: str | None) -> str | None:
     if not value:
         return None
     if _URL_RE.search(value):
         return "ссылка или разметка внутри имени"
-    if len(value) > _MAX_NAME:
+    if len(value) > _MAX_NAME and not _is_name_list(value):
         return f"длина {len(value)} символов — это уже не подпись"
     return None
 
