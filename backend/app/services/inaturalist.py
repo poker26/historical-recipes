@@ -25,6 +25,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.plant import Plant, PlantBookMention
+from app.services.data_quality.validators.name_junk import clean_display_name
 from app.models.inat_cache import InatTaxonCache
 from app.services.plant_matching import _latin_key
 
@@ -603,7 +604,9 @@ async def enrich_plants_inat(
                     p.photo_license = res.get("photo_license")
                     p.photo_source = "inaturalist" if res.get("photo_url") else None
                     if got_name:
-                        p.name_modern = common
+                        # Имя из внешнего источника чистим так же, как LLM-имя:
+                        # подпись вида уезжает в ленту и пуши, ссылке там не место.
+                        p.name_modern = clean_display_name(common) or common
                     if promoted:
                         p.name = common
                     p.inat_synced_at = now

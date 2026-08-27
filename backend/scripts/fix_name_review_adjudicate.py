@@ -27,6 +27,7 @@ from sqlalchemy import text
 
 from app.database import async_session
 from app.models.plant import Plant
+from app.services.data_quality.validators.name_junk import clean_display_name
 from app.services.llm import chat_completion_json
 from app.services.data_quality.taxonomy import _resolve_one
 import httpx
@@ -172,6 +173,10 @@ async def process(client, sem, row):
             p = await s.get(Plant, uuid.UUID(str(pid)))
             if p:
                 p.name_latin = canonical
+                # Чистим то, что пишем: LLM нормализует OCR-строку целиком, а в ней
+                # к имени бывает приклеена ссылка на источник — так в проде появилась
+                # «Липа коринфскаяhttps://www.google.ru/books/…» (поймано в «Эфире»).
+                modern = clean_display_name(modern)
                 if modern and not (p.name_modern or "").strip():
                     p.name_modern = modern
                 p.inat_synced_at = None

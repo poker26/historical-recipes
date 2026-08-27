@@ -14,3 +14,4 @@ from app.services.data_quality.validators import stub_zero_facts  # noqa: F401
 from app.services.data_quality.validators import identity_over_merge  # noqa: F401
 from app.services.data_quality.validators import qdrant_drift  # noqa: F401
 from app.services.data_quality.validators import compound_hierarchy  # noqa: F401
+from app.services.data_quality.validators import name_junk  # noqa: F401
