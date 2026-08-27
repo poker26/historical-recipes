@@ -42,11 +42,15 @@ async def check_name_junk(db) -> list[Finding]:
         problems = {}
         # Исторические имена — тоже поле показа И вход матчера: алиас со ссылкой на
         # хвосте не совпадёт ни с чем (58 таких карточек, найдены после «Липы»).
-        bad_aliases = [h for h in (hist or []) if _junk_reason(h)]
+        bad_aliases = [(h, _junk_reason(h)) for h in (hist or []) if _junk_reason(h)]
         if bad_aliases:
+            # Причину берём настоящую: помимо ссылок сюда попадают OCR-хвосты
+            # библиографии («B. junceum Pall.— Pallas. (1795). 48.— …»), а это не
+            # алиас вовсе и обрезанием не чинится — такие надо выбрасывать.
+            reasons = sorted({r for _, r in bad_aliases})
             problems["names_historical"] = {
-                "value": bad_aliases[:5], "reason": "ссылка или разметка в алиасе",
-                "cleaned": [clean_display_name(h) for h in bad_aliases[:5]]}
+                "value": [h for h, _ in bad_aliases[:5]], "reason": "; ".join(reasons),
+                "cleaned": [clean_display_name(h) for h, _ in bad_aliases[:5]]}
         for field, value in (("name", name), ("name_modern", modern)):
             reason = _junk_reason(value)
             if reason:
