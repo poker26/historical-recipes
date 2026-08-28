@@ -70,10 +70,11 @@ def download_file(path: str) -> bytes:
         response.release_conn()
 
 
-def delete_file(path: str) -> None:
-    """Delete file from MinIO."""
+def delete_file(path: str, bucket: str | None = None) -> None:
+    """Delete file from MinIO. `bucket` — для не-основных корзин (полевые снимки
+    лежат в field-uploads, и удалять их нужно оттуда, а не из корпуса)."""
     client = get_client()
-    client.remove_object(settings.minio_bucket, path)
+    client.remove_object(bucket or settings.minio_bucket, path)
 
 
 def list_files(prefix: str) -> list[str]:

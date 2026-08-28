@@ -273,10 +273,14 @@ async def _personal_place_bg(device_key: str, lat: float, lng: float) -> None:
 async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
                    organs: list[str] | None, lat, lng, geo_accuracy, captured_at,
                    exif_json, device_model, device_manufacturer, os_version,
-                   os_sdk, app_version, device_key=None) -> None:
+                   os_sdk, app_version, device_key=None) -> str | None:
     """Archive the photo (→ field-uploads bucket) + its metadata + the engine
     outcome to the ``identifications`` table. Best-effort: any failure is logged
-    and swallowed so archival never breaks the user's identification."""
+    and swallowed so archival never breaks the user's identification.
+
+    Возвращает id записи: клиенту он нужен, чтобы удалить конкретный снимок из
+    архива («моя фотка попала в определение растений, нельзя её удалить?» —
+    отзыв 2026-08-28). Без адреса удалять было бы нечего."""
     try:
         photo_key = None
         if photo:
@@ -311,7 +315,7 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
             except (ValueError, TypeError):
                 exif = {"_raw": exif_json[:2000]}
 
-        db.add(Identification(
+        row = Identification(
             photo_key=photo_key,
             device_key=_parse_uuid(device_key),
             engine=result.get("engine"),
@@ -332,7 +336,8 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
             candidates=candidates or None,
             failure_reason=failure_reason,
             failure_detail=failure_detail,
-        ))
+        )
+        db.add(row)
         # Touch quest_devices.last_seen: register is called once per install, so
         # without this «active devices» undercounts ~2× (146 identifying devices
         # vs 80 by last_seen over the same 30 days, measured 2026-08-24).
@@ -342,6 +347,7 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
                 sa_text("UPDATE quest_devices SET last_seen = now() "
                         "WHERE device_key = CAST(:dk AS uuid)"), {"dk": str(dk)})
         await db.commit()
+        return str(row.id)
     except Exception as e:
         logger.warning(f"identification archive failed: {type(e).__name__}: {e}")
         try:
@@ -404,13 +410,17 @@ async def identify_plant(
     result = await _bridge(result, db)
     if is_mushroom:
         result["safety_notice"] = _MUSHROOM_DISCLAIMER   # always when the verdict is fungi
-    await _archive(
+    ident_id = await _archive(
         db, photo=(blobs[0] if blobs else None), result=result, organs=organs,
         lat=lat, lng=lng, geo_accuracy=geo_accuracy, captured_at=captured_at,
         exif_json=exif_json, device_model=device_model,
         device_manufacturer=device_manufacturer, os_version=os_version,
         os_sdk=os_sdk, app_version=app_version, device_key=device_key,
     )
+    if ident_id:
+        # Адрес архивной записи — по нему клиент удаляет снимок из архива вместе с
+        # находкой (DELETE /api/identify/{id}). Старые клиенты поле игнорируют.
+        result["identification_id"] = ident_id
     # Quest credit for THIS shot (place quest containing the point, current window):
     # ties the shooting moment to the game — most identifying devices never open the
     # quests tab, so progress made in-place must be visible right on the result
@@ -440,6 +450,31 @@ class IdentifyByUrlRequest(BaseModel):
     image_urls: list[str]
     organs: list[str] | None = None
     limit: int = 5
+
+
+@router.delete("/{identification_id}")
+async def delete_identification(identification_id: str, device_key: str = Query(...),
+                                db: AsyncSession = Depends(get_db)):
+    """Удалить свой снимок из архива — фото из хранилища и строку из базы.
+
+    Человек фотографирует не только растения: в архив попал портрет («моя фотка
+    попала в определение растений» — отзыв 2026-08-28), и удалить его должно быть
+    можно, не спрашивая никого. Удаляем ТОЛЬКО свою запись: device_key снимка
+    обязан совпасть с переданным, иначе 404 — чужой архив не разглашаем даже
+    фактом существования записи."""
+    ident = await db.get(Identification, _parse_uuid(identification_id))
+    dk = _parse_uuid(device_key)
+    if ident is None or dk is None or ident.device_key != dk:
+        raise HTTPException(404, "not found")
+    if ident.photo_key:
+        try:
+            minio_svc.delete_file(ident.photo_key, bucket=settings.minio_field_bucket)
+        except Exception as e:                     # строку всё равно убираем
+            logger.warning(f"photo delete failed for {identification_id}: "
+                           f"{type(e).__name__}: {e}")
+    await db.delete(ident)
+    await db.commit()
+    return {"status": "deleted"}
 
 
 @router.post("/by-url")
