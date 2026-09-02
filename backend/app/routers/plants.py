@@ -33,6 +33,7 @@ from app.services.compound_matching import is_nontarget_compound_class
 from app.services.medical_matching import is_nontarget_action
 from app.services.qdrant import delete_points
 from app.services.inaturalist import enrich_plants_inat, find_observations
+from app.services.text_tidy import tidy_deep
 
 router = APIRouter()
 
@@ -1248,7 +1249,10 @@ async def get_plant(
                 PlantReaderMonograph.plant_id == plant_id,
                 PlantReaderMonograph.reviewed.is_(True)))).scalar_one_or_none()
         if stored is not None:
-            return stored.monograph
+            # Санитар вёрстки на показе: в базе лежит цитата из источника, её мы
+            # не переписываем, но мягкий перенос и пробел перед запятой — следы
+            # распознавания, а не автора.
+            return tidy_deep(stored.monograph)
 
     # Collect every source_book_id referenced across the child rows, then resolve
     # titles in one query for human-readable source attribution.
