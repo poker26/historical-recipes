@@ -64,8 +64,27 @@ export default async function ProfilePage({ params }: Params) {
             )}
           </section>
 
+          {/* Подписка. Страница профиля — это то, что человек шлёт другу «подпишись
+              на меня», а подписаться отсюда было НЕЧЕМ: только кнопки магазинов.
+              Универсальная ссылка сама приложение не откроет — ни во встроенном
+              браузере мессенджера, ни со страницы того же домена, — поэтому зовём
+              его своей схемой chtorastet:// (работает с версии 2.0.4). */}
+          <section className="card" style={{ marginTop: 32, textAlign: "center" }}>
+            <h2 style={{ margin: "4px 0 8px", fontSize: 22 }}>Подписаться на {p.nick}</h2>
+            <p style={{ color: "#3f4a43", margin: "0 auto 16px", maxWidth: 460 }}>
+              Подписка живёт в приложении: там видно находки тех, на кого подписан.
+            </p>
+            <a href={`chtorastet://p/${params.id}`} className="btn btn-primary">
+              Открыть в приложении
+            </a>
+            <p className="footnote" style={{ marginTop: 12 }}>
+              Если ничего не открылось — приложение либо не установлено, либо старее
+              версии 2.0.4. Тогда поставьте его ниже и откройте эту ссылку ещё раз.
+            </p>
+          </section>
+
           {/* CTA */}
-          <section className="card" style={{ marginTop: 32, textAlign: "center", background: "#eaf3de", border: "none" }}>
+          <section className="card" style={{ marginTop: 20, textAlign: "center", background: "#eaf3de", border: "none" }}>
             <h2 style={{ margin: "4px 0 8px" }}>Хочешь так же?</h2>
             <p style={{ color: "#3f4a43", margin: "0 auto 18px", maxWidth: 420 }}>
               Установи «Что растёт», определяй растения и собирай свои значки натуралиста.
