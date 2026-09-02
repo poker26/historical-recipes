@@ -517,6 +517,9 @@ def _noun_keys(s: str | None) -> set[str]:
 # Curated alias knowledge (see plant_aliases.txt for the format and rationale).
 # Edited by hand, version-controlled, never written by extraction.
 _ALIASES_PATH = Path(__file__).resolve().parent / "plant_aliases.txt"
+# Кухонные значения — тот же формат, но записи ПЕРЕБИВАЮТ обычный матчинг
+# (см. culinary_meanings.txt: «гвоздика» — пряность, а не садовый Dianthus).
+_CULINARY_PATH = Path(__file__).resolve().parent / "culinary_meanings.txt"
 
 
 def load_plant_aliases(path: Path = _ALIASES_PATH) -> dict[str, list[str]]:
@@ -634,6 +637,8 @@ class PlantMatcher:
     """
 
     def __init__(self, plants):
+        # Основные имена отдельно от общего индекса — нужны кухонному словарю.
+        self._primary: dict[str, uuid.UUID] = {}
         self._exact: dict[str, uuid.UUID] = {}
         self._noun_key: dict[str, uuid.UUID] = {}
         self._genus_by_token: dict[str, uuid.UUID] = {}
@@ -674,7 +679,15 @@ class PlantMatcher:
         # Curated knowledge: fold hand-maintained aliases into both tiers. These
         # are vetted, distinctive names (e.g. "кишнец"→Кориандр), so unlike
         # auto-extracted folk names they ARE allowed to seed noun-token keys.
+        for p in plants:
+            nv = normalize(p.name)
+            if nv:
+                self._primary.setdefault(nv, p.id)
         self._merge_aliases(load_plant_aliases())
+        # Кухонные омонимы — ПОСЛЕ всего и поверх всего: обычный алиас проигрывает
+        # основному имени карточки, а беда именно в том, что основное имя занято
+        # омонимом («Гвоздика» = Dianthus ловила 1186 рецептов с пряностью).
+        self._force_culinary(load_plant_aliases(_CULINARY_PATH))
 
     def _resolve_canonical(self, canon: str) -> uuid.UUID | None:
         """Find the plant a curated alias line points at: by exact full name
@@ -701,6 +714,23 @@ class PlantMatcher:
                 for key in _noun_keys(alias):
                     if key not in _NON_PLANT_STEMS:
                         self._noun_key.setdefault(key, pid)
+
+    def _force_culinary(self, meanings: dict[str, list[str]]) -> None:
+        """Перебить точный матчинг для слов с однозначным кухонным смыслом.
+
+        Цель ищем СТРОГО по основному имени карточки, а не общим резолвером:
+        общий пошёл бы по историческим именам и попал бы в «бергамот настоящий»,
+        у которого в алиасах лежит «Гвоздичное дерево» (карточка с испорченной
+        идентичностью — гвоздичные имена при цитрусовых фактах). Ошибиться здесь
+        дороже всего: запись перебивает весь остальной матчинг."""
+        for canon, names in meanings.items():
+            pid = self._primary.get(normalize(canon))
+            if pid is None:
+                continue                     # карточки ещё нет — запись оживёт позже
+            for alias in names:
+                nv = normalize(alias)
+                if nv:
+                    self._exact[nv] = pid    # именно присвоение, не setdefault
 
     def match(self, names: list[str | None]) -> uuid.UUID | None:
         # Universal non-plant substances (water, salt, sugar, alcohols, dairy,
