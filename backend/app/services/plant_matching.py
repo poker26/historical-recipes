@@ -650,19 +650,29 @@ class PlantMatcher:
         # generic: it must resolve to the GENUS row if one exists, else to nothing
         # — never an arbitrary species. That is the genus-tier contract.
         tok2sp: dict[str, set[uuid.UUID]] = {}
-        for p in species:
+
+        # ДВА прохода, а не один. Имя карточки — свидетельство сильнее, чем
+        # народный синоним, вычитанный из скана: это правило записано в
+        # культурном словаре, но до сих пор не исполнялось. Оба яруса клались в
+        # один индекс через setdefault вперемешку, поэтому спорное имя доставалось
+        # той карточке, что раньше попалась в выборке. Замер 2026-09-03: 614 имён
+        # были так выиграны чужим синонимом у владельца основного имени —
+        # «ожина» уходила ситнику, «рокет» исландскому мху.
+        for p in species:                                    # проход 1: имена
             for variant in (p.name, p.name_latin):
                 nv = normalize(variant)
                 if nv and nv not in _NON_PLANT_SUBSTANCES:
                     self._exact.setdefault(nv, p.id)
-            for variant in (p.names_historical or []):
-                nv = normalize(variant)
-                if not nv or nv in _NON_PLANT_SUBSTANCES or (" " not in nv and nv in _AMBIGUOUS_FOLK):
-                    continue
-                self._exact.setdefault(nv, p.id)
             for key in _noun_keys(p.name):
                 if key not in _NON_PLANT_STEMS:
                     tok2sp.setdefault(key, set()).add(p.id)
+        for p in species:                                    # проход 2: синонимы
+            for variant in (p.names_historical or []):
+                nv = normalize(variant)
+                if (not nv or nv in _NON_PLANT_SUBSTANCES
+                        or (" " not in nv and nv in _AMBIGUOUS_FOLK)):
+                    continue
+                self._exact.setdefault(nv, p.id)
         self._noun_key = {tok: next(iter(ids)) for tok, ids in tok2sp.items() if len(ids) == 1}
 
         # Genus rows (RFC-reference-granularity): a bare/generic mention of the
