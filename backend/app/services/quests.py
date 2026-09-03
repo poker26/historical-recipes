@@ -1995,6 +1995,79 @@ async def following(db, device_key) -> dict:
     return {"following": out}
 
 
+async def followers(db, device_key) -> dict:
+    """Кто подписан на МЕНЯ.
+
+    Отзыв 3 сентября 2026: «на нас подписываются, а мы не можем найти тех, кто
+    подписался». Подписка хранится ребром follower_key → followee_handle, то есть
+    от подписчика видно, на кого он подписан, а обратно — нет: своих подписчиков
+    человек не видел вовсе. Здесь ребро читается в обратную сторону.
+
+    Ключ подписчика приватный, наружу отдаём только его публичный handle — тот же,
+    что уже виден в «Эфире» и в профиле."""
+    vk = uuid_or(device_key)
+    dev = await db.get(Device, vk)
+    my_handle = (dev.handle if dev else None) or auto_handle(vk)
+    keys = (await db.execute(select(QuestFollow.follower_key).where(
+        QuestFollow.followee_handle == my_handle))).scalars().all()
+    if not keys:
+        return {"followers": []}
+    rows = (await db.execute(select(
+        Device.device_key, Device.handle, Device.nickname, Device.avatar).where(
+        Device.device_key.in_(list(keys)), Device.blocked.is_(False)))).all()
+    # На кого из них подписан я сам — это «взаимные», их клиент показывает первыми.
+    mine = set((await db.execute(select(QuestFollow.followee_handle).where(
+        QuestFollow.follower_key == vk))).scalars().all())
+    out = []
+    for dk, h, nk, av in rows:
+        handle = h or auto_handle(dk)
+        out.append({"handle": handle, "nick": nk or auto_nick(dk), "avatar": av,
+                    "mutual": handle in mine})
+    out.sort(key=lambda a: (not a["mutual"], a["nick"].lower()))
+    return {"followers": out}
+
+
+async def find_people(db, q: str | None, device_key=None, limit: int = 30) -> dict:
+    """Поиск людей по имени или по короткому коду профиля.
+
+    Отзыв 3 сентября 2026: «невозможно друг друга найти, чтобы подписаться —
+    нет ни строки поиска, ни списка пользователей». Без пустого запроса отдаём
+    просто недавно заходивших: человеку, который собирает команду, чаще нужен
+    не поиск, а возможность увидеть, кто вообще есть.
+
+    Имя ищем и среди заданных вручную, и среди выданных автоматически. Второе
+    в базе не хранится (считается из ключа), поэтому отбор идёт в память. При
+    239 устройствах это дешевле индекса; когда их станут тысячи, автоимя надо
+    будет складывать в колонку и искать запросом.
+
+    Видны только те, у кого «показывать мою активность» включено, — тот же
+    порог, что у «Эфира»: не заводим новой открытости, пользуемся прежней."""
+    vk = uuid_or(device_key) if device_key else None
+    rows = (await db.execute(select(
+        Device.device_key, Device.handle, Device.nickname, Device.avatar,
+        Device.last_seen).where(
+        Device.blocked.is_(False), Device.activity_public.is_(True)).order_by(
+        Device.last_seen.desc()))).all()
+    mine = set()
+    if vk:
+        mine = set((await db.execute(select(QuestFollow.followee_handle).where(
+            QuestFollow.follower_key == vk))).scalars().all())
+    needle = (q or "").strip().lower()
+    out = []
+    for dk, h, nk, av, seen in rows:
+        if vk and dk == vk:
+            continue                      # себя в поиске не показываем
+        handle = h or auto_handle(dk)
+        nick = nk or auto_nick(dk)
+        if needle and needle not in nick.lower() and needle not in handle.lower():
+            continue
+        out.append({"handle": handle, "nick": nick, "avatar": av,
+                    "following": handle in mine})
+        if len(out) >= limit:
+            break
+    return {"people": out, "query": q or ""}
+
+
 async def feed(db, device_key, limit: int = 30, scope: str = "following") -> dict:
     """Merged recent activity: in-corpus identifications + badges. No coordinates;
     excludes blocked + activity_public=false.

@@ -229,6 +229,23 @@ async def following(device_key: str = Query(...), db: AsyncSession = Depends(get
     return await quests.following(db, device_key)
 
 
+@router.get("/followers")
+async def followers(device_key: str = Query(...), db: AsyncSession = Depends(get_db)):
+    """Кто подписан на меня. Обратная сторона ребра подписки — до отзыва
+    3 сентября 2026 её никто не мог посмотреть."""
+    return await quests.followers(db, device_key)
+
+
+@router.get("/people")
+async def people(q: str | None = Query(None, description="имя или код профиля"),
+                 device_key: str | None = Query(None),
+                 limit: int = Query(30, ge=1, le=100),
+                 db: AsyncSession = Depends(get_db)):
+    """Поиск людей; без запроса — недавно заходившие. Видны только те, у кого
+    включено «показывать мою активность»."""
+    return await quests.find_people(db, q, device_key, limit)
+
+
 @router.get("/meta")
 async def meta(device_key: str = Query(...), db: AsyncSession = Depends(get_db)):
     """Награды без географии: «Собиратель» (сколько разных видов) и «Постоянство»
