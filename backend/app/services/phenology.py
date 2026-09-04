@@ -128,3 +128,80 @@ async def split_by_season(db: AsyncSession, items: list[dict], month: int,
                              p.get("cell_months"), p.get("cell_n_obs")) if p else None)
         (later if verdict is False else now).append(it)
     return now, later
+
+
+# --- Сроки сбора из корпуса: текст plant_harvests.season → месяцы ------------
+# Те же правила, которыми заполнялись corpus_months (скрипты season_norm и
+# relative_seasons, сентябрь 2026). Держим их в коде, потому что полке «что
+# заготавливают» нужен срок КАЖДОЙ записи, а не сумма по виду: у цикория
+# корень копают «глубокой осенью», а траву режут «в период цветения» — если
+# смотреть на вид целиком, январская полка предложит косить цикорий.
+import re as _re
+
+_MONTH_PATS = {"январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма[йя]": 5, "июн": 6,
+               "июл": 7, "август": 8, "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12}
+_SEASON_PATS = [
+    (r"ранн\w* весн|начал\w* весн", {3, 4}),
+    (r"поздн\w* весн|конц\w* весн", {5}),
+    (r"весн", {4, 5}),
+    (r"начал\w* лет|ранн\w* лет", {6}),
+    (r"конц\w* лет|поздн\w* лет", {8}),
+    (r"\bлет", {6, 7, 8}),
+    (r"ранн\w* осен|начал\w* осен", {9}),
+    (r"поздн\w* осен|конц\w* осен", {10, 11}),
+    (r"осен", {9, 10}),
+    (r"\bзим", {12, 1, 2}),
+    (r"заморозк", {10, 11}),
+    (r"круглый год|весь год|в течение года", set(range(1, 13))),
+]
+# Относительные сроки — смещения от месяца пика наблюдений iNat.
+_RELATIVE_RULES = [
+    (r"до цветени|бутонизац|до распускани|перед цветени", (-2, -1)),
+    (r"начал\w* цветени|начал\w* бутон", (-1, 0)),
+    (r"полн\w* цветени|массов\w* цветени", (0,)),
+    (r"во время цветени|в период цветени|в фазе цветени|период цветени|цветени", (-1, 0, 1)),
+    (r"после цветени|отцвет|по окончании цветени", (1, 2)),
+    (r"созрева|зрел|плодонош|плод|ягод|семен|семян", (1, 2, 3)),
+    (r"отраст|молод\w* лист|распускани\w* лист", (-2, -1)),
+    (r"листопад|увяда|отмиран", (2, 3)),
+]
+
+
+def season_months(season: str | None, peak: int | None = None) -> set[int]:
+    """«июнь — август» → {6,7,8}; «поздней осенью» → {10,11}; «в период
+    цветения» → месяцы вокруг пика наблюдений `peak` (1–12), без пика — пусто.
+    Прямые сроки важнее относительных: если в тексте есть месяц или сезон,
+    относительная формулировка не рассматривается."""
+    s = (season or "").lower()
+    found = []
+    for pat, m in _MONTH_PATS.items():
+        for mm in _re.finditer(pat, s):
+            found.append((mm.start(), m))
+    out: set[int] = set()
+    if found:
+        found.sort()
+        ms = [m for _, m in found]
+        out.add(ms[0])
+        for i in range(1, len(ms)):
+            a, b = ms[i - 1], ms[i]
+            seg = s[found[i - 1][0]:found[i][0]]
+            if _re.search(r"[-—–]|\bпо\b|\bдо\b", seg) and b >= a:
+                out.update(range(a, b + 1))
+            else:
+                out.add(b)
+    for pat, m in _SEASON_PATS:
+        if _re.search(pat, s):
+            out |= m
+    if out or not peak:
+        return out
+    for pat, offs in _RELATIVE_RULES:
+        if _re.search(pat, s):
+            return {((peak - 1 + o) % 12) + 1 for o in offs}
+    return out
+
+
+def peak_month(inat_months: list[float] | None) -> int | None:
+    """Месяц пика наблюдений по мировой гистограмме, 1–12; None без данных."""
+    if not inat_months or len(inat_months) != 12 or sum(inat_months) <= 0:
+        return None
+    return max(range(12), key=lambda i: inat_months[i]) + 1

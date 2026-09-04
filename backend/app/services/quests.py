@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.inaturalist import INAT_BASE, _HEADERS
+from pathlib import Path
 from app.services.safety import MUSHROOM_DISCLAIMER
 from app.services import gbif
 from app.services.plant_matching import resolve_latin_to_plants, _latin_key, synonym_map, canonical_key
@@ -1212,6 +1213,14 @@ _META_LADDERS = {
         "unit": "взаимных друзей",
         "rungs": [1, 3, 10],
     },
+    # «Аптека на окне» (RFC всесезонной версии §4.5): комнатные определяют круглый
+    # год, и зимой это единственная лестница, которая растёт у всех. Список
+    # комнатных — houseplants.txt рядом.
+    "windowsill": {
+        "title": "Подоконник",
+        "unit": "комнатных видов",
+        "rungs": [3, 7, 15],
+    },
 }
 
 # Приглашённый засчитывается, только если он пользуется приложением сам.
@@ -1239,6 +1248,36 @@ async def _collection_size(db, device_key) -> int:
     syn = await synonym_map(db)
     keys = {canonical_key(_latin_key(n), syn) for n in rows if n}
     return len({k for k in keys if k})
+
+
+_HOUSEPLANTS_PATH = Path(__file__).resolve().parent / "houseplants.txt"
+
+
+def _houseplant_prefixes() -> list[str]:
+    if not _HOUSEPLANTS_PATH.exists():
+        return []
+    out = []
+    for line in _HOUSEPLANTS_PATH.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip().lower()
+        if line:
+            out.append(line)
+    return out
+
+
+async def _windowsill_count(db, device_key) -> int:
+    """Сколько РАЗНЫХ комнатных видов девайс определил (лестница «Подоконник»).
+    Считаем по архиву, по matched_plant_id, через список начал имён в
+    houseplants.txt — карточки комнатных ничем не помечены в базе."""
+    prefixes = _houseplant_prefixes()
+    if not prefixes:
+        return 0
+    patterns = ["^" + p for p in prefixes]
+    n = (await db.execute(text(
+        "SELECT count(DISTINCT p.id) FROM identifications i "
+        "JOIN plants p ON p.id = i.matched_plant_id "
+        "WHERE i.device_key = CAST(:dk AS uuid) AND p.name ~* ANY(CAST(:pat AS text[]))"),
+        {"dk": str(device_key), "pat": patterns})).scalar()
+    return int(n or 0)
 
 
 async def _best_streak(db, device_key) -> int:
@@ -1386,6 +1425,7 @@ async def meta_progress(db: AsyncSession, device_key: str) -> dict:
         "streak": _best_streak,
         "invites": _invited_count,
         "friends": _friends_count,
+        "windowsill": _windowsill_count,
     }
     for kind in _META_LADDERS:
         matched = await counters[kind](db, dk)

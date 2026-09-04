@@ -80,8 +80,17 @@ async def seasonal(lat: float = Query(...), lng: float = Query(...),
     month = date.today().month
     near = await quests_svc.nearby(db, lat, lng, month=month, limit=limit * 3)
     corpus_items = [it for it in near.get("items", []) if it.get("plant_id")]
-    if not corpus_items:
-        return {"items": [], "biotopes": near.get("biotopes", [])}
+    # Сезон — по фенологии ячейки региона, а не только по месяцу съёмки у iNat
+    # (RFC всесезонной версии, Phase A): «сфотографирован в этом месяце» ≠
+    # «узнаваем сейчас», и мировая гистограмма подменяет весну тёплыми странами.
+    from app.services.phenology import split_by_season, cell_of, ALIVE_MIN
+    for it in corpus_items:
+        it["latin_key"] = quests_svc._latin_key(it.get("latin"))
+    corpus_items, _ = await split_by_season(db, corpus_items, month, cell=cell_of(lat, lng))
+    if len(corpus_items) < ALIVE_MIN:
+        # Режим «что заготавливают»: в лесу сейчас нечего узнавать, но книги знают,
+        # что в этом месяце собирают — почки, кору, шишки, ягоды под снегом.
+        return await _harvest_shelf(db, month, limit, near.get("biotopes", []))
     ids = [it["plant_id"] for it in corpus_items]
     # монограф-крючки + safety + счётчик пригодных рецептов — одним проходом
     rows = (await db.execute(text("""
@@ -110,4 +119,71 @@ async def seasonal(lat: float = Query(...), lng: float = Query(...),
     # порядок nearby (биотоп+частота) сохраняется стабильной сортировкой
     out.sort(key=lambda x: (x["hook"] is None, x["recipes"] == 0))
     return {"items": out[:limit], "biotopes": near.get("biotopes", []),
-            "month": month}
+            "month": month, "mode": "growing", "title": "Сейчас в лесу"}
+
+
+_MONTHS_PREP = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле",
+                "августе", "сентябре", "октябре", "ноябре", "декабре"]
+
+
+async def _harvest_shelf(db: AsyncSession, month: int, limit: int, biotopes: list) -> dict:
+    """Полка «что заготавливают в <месяце>» — из сроков сбора в корпусе.
+
+    Источник — species_phenology.corpus_months (месяцы сбора надземных частей,
+    прямые и выведенные из относительных сроков через пик наблюдений) и сама
+    запись о заготовке в plant_harvests: часть, срок, способ, книга и год. Крючок
+    карточки — цитата о том, как и когда собирать; это те же карточки растений,
+    что и летом, только вход другой. Пусто в этом месяце — полка прячется
+    (клиент не рисует пустых состояний)."""
+    # Виды отбираются по corpus_months (сумма сроков по виду), а запись — по её
+    # СОБСТВЕННОМУ сроку: иначе январская полка показывала «цикорий — трава, в
+    # период цветения», потому что у того же цикория корень копают зимой.
+    from app.services.phenology import season_months, peak_month
+    rows = (await db.execute(text("""
+        WITH keys AS (
+            SELECT latin_key, inat_months FROM species_phenology
+            WHERE corpus_months IS NOT NULL AND CAST(:m AS smallint) = ANY(corpus_months))
+        SELECT p.id, p.name, p.name_latin, p.photo_url, p.safety_level,
+               h.part, h.season, h.method, b.title AS book, b.year, k.inat_months,
+               (SELECT count(*) FROM plant_medicinal_uses u WHERE u.plant_id = p.id) AS facts,
+               (SELECT count(*) FROM recipe_ingredients ri
+                  JOIN recipes r ON r.id = ri.recipe_id AND r.home_doable
+                 WHERE ri.plant_id = p.id) AS recipes
+        FROM plants p
+        JOIN keys k ON lower(split_part(p.name_latin, ' ', 1) || ' ' || split_part(p.name_latin, ' ', 2)) = k.latin_key
+        JOIN plant_harvests h ON h.plant_id = p.id AND h.season IS NOT NULL
+        LEFT JOIN books b ON b.id = h.source_book_id
+        WHERE p.name_latin IS NOT NULL AND p.name_latin !~ '[А-Яа-я]'
+          AND (h.part IS NULL OR h.part !~* 'корень|корни|корневищ|клубн|луковиц')
+          -- агрономия, а не сбор: «семена высевают под зиму», «выгонку начинают в декабре»
+          AND (h.method IS NULL OR h.method !~* 'высева|посев|сеют|выгонк|высажива|обреза')
+        ORDER BY facts DESC, p.id, (b.year IS NULL), length(coalesce(h.method, '')) DESC
+        LIMIT 1500"""), {"m": month})).all()
+    best: dict = {}
+    order: list = []
+    for r in rows:
+        if month not in season_months(r.season, peak_month(r.inat_months)):
+            continue
+        if r.id not in best:
+            best[r.id] = r
+            order.append(r.id)
+        if len(order) >= limit:
+            break
+    out = []
+    for pid in order:
+        r = best[pid]
+        when = (r.season or "").strip()
+        how = (r.method or "").strip()
+        hook = ("Собирают " + (r.part + ", " if r.part else "") + when).strip()
+        if how:
+            hook += ". " + how[0].upper() + how[1:]
+        if r.book:
+            hook += f" — {r.book}" + (f", {r.year}" if r.year else "")
+        out.append({
+            "plant_id": str(r.id), "name": r.name, "latin": r.name_latin,
+            "photo": r.photo_url, "hook": hook[:220],
+            "safety_level": r.safety_level, "recipes": r.recipes or 0,
+            "biotope_match": False,
+        })
+    return {"items": out, "biotopes": biotopes, "month": month,
+            "mode": "harvest", "title": f"Что заготавливают в {_MONTHS_PREP[month - 1]}"}
