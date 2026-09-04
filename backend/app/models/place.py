@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Text, Float, Integer, Boolean, DateTime, ForeignKey, UniqueConstraint, func
+from sqlalchemy import String, Text, Float, Integer, SmallInteger, Boolean, DateTime, ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -62,3 +62,19 @@ class QuestIssuedBadge(Base):
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ordinal: Mapped[int | None] = mapped_column(Integer)            # per-(badge_id, tier) scarcity rank
     window_closed: Mapped[bool] = mapped_column(Boolean, server_default="false")
+
+
+class SpeciesPhenology(Base):
+    """Когда вид реально находят: доли наблюдений iNat по месяцам и месяцы сбора
+    надземных частей из корпуса (миграция 026). Ключ — тот же latin_key, что в
+    quest_place_sets.species_set. Читает services/phenology.py, чтобы «что
+    искать сейчас» не звало искать медуницу в сентябре."""
+    __tablename__ = "species_phenology"
+
+    latin_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    latin: Mapped[str | None] = mapped_column(Text)
+    inat_taxon_id: Mapped[int | None] = mapped_column(Integer)
+    inat_n_obs: Mapped[int | None] = mapped_column(Integer)
+    inat_months: Mapped[list | None] = mapped_column(ARRAY(Float))          # 12 долей, сумма 1
+    corpus_months: Mapped[list | None] = mapped_column(ARRAY(SmallInteger))  # 1..12
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

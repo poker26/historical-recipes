@@ -1658,6 +1658,14 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
             # places have no flag → default confirmed.
             "confidence": m.get("confidence", "confirmed"),
         })
+    # Сезон. Набор места строится по месяцу, когда виды ФОТОГРАФИРУЮТ, а
+    # кастомные и личные — вообще без сезона; поэтому медуница всплывала в
+    # сентябре. Отсеиваем на показе по фенологии (см. services/phenology.py):
+    # пул значка кумулятивный и не трогается, а «что искать сейчас» становится
+    # честным. Отложенные не теряем — отдаём числом, клиент сможет показать
+    # «ещё N видов появятся в другой сезон».
+    from app.services.phenology import split_by_season
+    items, out_of_season = await split_by_season(db, items, _window_month(win))
     # GPS→biotope filter: keep only species of the requested habitat (those whose
     # corpus card is tagged with `biotope` in plant_biotopes).
     if biotope:
@@ -1671,7 +1679,8 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
         items = [i for i in items if i["plant_id"] in keep]
     return {"place": {"id": str(place_id), "name": place.name if place else None,
                       "window": win, "set_size": len(meta), "target": ps.target,
-                      "matched": matched, "badge_issued": await _badge_issued(db, device_key, place_id, win, yr)},
+                      "matched": matched, "badge_issued": await _badge_issued(db, device_key, place_id, win, yr),
+                      "out_of_season": len(out_of_season)},
             "biotope": biotope, "items": items}
 
 
