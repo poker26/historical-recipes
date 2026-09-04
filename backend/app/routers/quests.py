@@ -163,10 +163,12 @@ async def place_set(place_id: str, window: str | None = Query(None),
 @router.get("/place/{place_id}/participants")
 async def place_participants(place_id: str, window: str | None = Query(None),
                              year: int | None = Query(None),
+                             group: str = Query("plants", pattern="^(plants|fungi)$"),
                              db: AsyncSession = Depends(get_db)):
     """«Кто проходил этот квест» — people who earned a badge for this place×window, to
-    befriend those who did the same quest (vs the global leaderboard). Public only."""
-    return await quests.place_participants(db, place_id, window=window, year=year)
+    befriend those who did the same quest (vs the global leaderboard). Public only.
+    `group=fungi` — кто заработал грибной значок места."""
+    return await quests.place_participants(db, place_id, window=window, year=year, group=group)
 
 
 @router.get("/place/{place_id}/biotopes")

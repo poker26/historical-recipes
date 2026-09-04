@@ -842,14 +842,16 @@ async def ensure_personal_place(db: AsyncSession, device_key: str,
 
 
 async def place_participants(db: AsyncSession, place_id: str, window: str | None = None,
-                             year: int | None = None, limit: int = 50) -> dict:
+                             year: int | None = None, limit: int = 50,
+                             group: str = "plants") -> dict:
     """«Кто проходил этот квест» (Oleg 2026-06-21) — devices that EARNED a badge for this
     place×window×year, to befriend people who did the SAME quest (distinct from the global
     leaderboard). Public + not-blocked only; highest tier per device. («Проходит сейчас» —
     in-progress, not yet a badge — is a later, heavier addition.)"""
     win = window or _current_window()
     yr = year or date.today().year
-    badge_id = f"{place_id}:all"   # cumulative badge — one per place
+    # cumulative badge — one per place PER GROUP: «кто проходил грибы» ≠ «кто проходил растения»
+    badge_id = f"{place_id}:all" if group == "plants" else f"{place_id}:{group}"
     rows = (await db.execute(text("""
         SELECT d.handle, d.nickname, d.avatar, b.device_key, MAX(b.tier) AS tier
         FROM quest_issued_badges b
