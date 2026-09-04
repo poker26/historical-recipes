@@ -86,6 +86,35 @@ async def phenology_map(db: AsyncSession, latin_keys: list[str],
             for r in rows}
 
 
+# Столько видов в сезоне делают место «живым» — тот же минимум, что у набора.
+ALIVE_MIN = 5
+
+
+async def first_alive_month(db: AsyncSession, latin_keys: list[str], start_month: int,
+                            cell: tuple[int, int] | None = None,
+                            min_alive: int = ALIVE_MIN) -> int | None:
+    """Первый месяц, начиная со следующего, когда в пуле снова ≥ min_alive видов в
+    сезоне; None — такого месяца нет (или данных нет). Это «вернётся в марте» для
+    карточки «зимует» (RFC всесезонной версии §4.2): место не исчезает зимой, а
+    называет срок. Считается по той же ячейке региона, что и сам фильтр, — по миру
+    март в Москве выглядел живым, по ячейке живым становится апрель."""
+    if not latin_keys:
+        return None
+    ph = await phenology_map(db, latin_keys, cell)
+    for step in range(1, 13):
+        m = ((start_month - 1 + step) % 12) + 1
+        alive = 0
+        for k in latin_keys:
+            p = ph.get(k)
+            v = (in_season(p["inat_months"], p["corpus_months"], m,
+                           p.get("cell_months"), p.get("cell_n_obs")) if p else None)
+            if v is not False:
+                alive += 1
+                if alive >= min_alive:
+                    return m
+    return None
+
+
 async def split_by_season(db: AsyncSession, items: list[dict], month: int,
                           key_field: str = "latin_key",
                           cell: tuple[int, int] | None = None) -> tuple[list[dict], list[dict]]:

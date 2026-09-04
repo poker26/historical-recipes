@@ -1730,10 +1730,21 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
                 {"ids": pids, "b": biotope})).all()}
         items = [i for i in items if i["plant_id"] in keep]
     issued = await _badge_issued(db, device_key, place_id, win, yr, group)
+    # «Зимует» (RFC всесезонной версии §4.2, Phase A): если в сезоне меньше пяти видов,
+    # место не показывает пустой список, а называет месяц возвращения — первый, когда
+    # его КУМУЛЯТИВНЫЙ пул снова оживает по фенологии ячейки. Замер 4.09: севернее 54°
+    # в декабре–феврале живы 0–1% растительных мест, и зимних наборов мы не строим.
+    from app.services.phenology import first_alive_month, ALIVE_MIN
+    dormant = (not biotope) and len(items) < ALIVE_MIN
+    returns_month = None
+    if dormant:
+        pool, _ = await _pool_for(db, place_id, group)
+        returns_month = await first_alive_month(db, sorted(pool), _window_month(win), cell)
     return {"place": {"id": str(place_id), "name": place.name if place else None,
                       "window": win, "set_size": len(meta), "target": ps.target,
                       "matched": matched, "badge_issued": issued,
-                      "out_of_season": len(out_of_season)},
+                      "out_of_season": len(out_of_season),
+                      "dormant": dormant, "returns_month": returns_month},
             "group": group,
             # «Найти» никогда не значит «съесть»: та же строка, что в определителе.
             "safety_notice": MUSHROOM_DISCLAIMER if group == "fungi" else None,
