@@ -36,11 +36,7 @@ from app.services import quests as quests_svc
 # Hard, non-negotiable warning surfaced on EVERY mushroom identification (HANDOFF-
 # identify-improvements Q3): photo-ID has deadly lookalikes (бледная поганка ↔
 # шампиньон). Shown ABOVE the result; the per-card safety block carries the level/twin.
-_MUSHROOM_DISCLAIMER = (
-    "⚠️ Определение грибов по фото НЕ заменяет эксперта. У смертельно ядовитых грибов "
-    "есть съедобные двойники. НИКОГДА не употребляйте гриб, опознанный только по фото. "
-    "Сверяйтесь с уровнем опасности и «опасным двойником» на карточке."
-)
+from app.services.safety import MUSHROOM_DISCLAIMER as _MUSHROOM_DISCLAIMER   # одна строка на всё приложение
 _MUSHROOM_KINGDOMS = {"fungi", "mushroom", "гриб", "грибы"}
 from app.services.inaturalist import resolve_names_ru, resolve_registry_photos
 from app.services.plant_matching import (

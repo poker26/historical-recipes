@@ -56,11 +56,12 @@ async def biotope_claim(device_key: str = Query(...), biotope: str = Query(...),
 @router.post("/set/compute")
 async def compute_set(place_id: str = Query(...), window: str = Query(..., description="e.g. 'first-half-06'"),
                       force: bool = Query(False, description="bypass the density floor (test places in sparse areas)"),
+                      group: str = Query("plants", pattern="^(plants|fungi)$"),
                       db: AsyncSession = Depends(get_db)):
     """Precompute a place×window species-set (the badge target). Admin/backfill;
     a Temporal workflow will fan this over known places×windows later. `force` skips
-    the _MIN_OBS density gate for test places."""
-    return await quests.compute_species_set(db, place_id, window, force=force)
+    the _MIN_OBS density gate for test places. `group=fungi` — грибной набор."""
+    return await quests.compute_species_set(db, place_id, window, force=force, taxon_group=group)
 
 
 @router.get("/badge/progress")
@@ -146,11 +147,14 @@ async def places_in_bounds(min_lat: float = Query(...), min_lng: float = Query(.
 async def place_set(place_id: str, window: str | None = Query(None),
                     device_key: str | None = Query(None),
                     biotope: str | None = Query(None, description="filter to species of this habitat (GPS→biotope)"),
+                    group: str = Query("plants", pattern="^(plants|fungi)$",
+                                       description="какой набор: растения или грибы"),
                     db: AsyncSession = Depends(get_db)):
     """«What to look for here» — species cards from the saved set (no live iNat).
-    `biotope` filters to species of that habitat."""
+    `biotope` filters to species of that habitat. `group=fungi` — грибной набор места
+    (Phase «Осень»): отдельный от растительного, с обязательным safety_notice."""
     return await quests.place_set(db, place_id, window=window, device_key=device_key,
-                                  biotope=biotope)
+                                  biotope=biotope, group=group)
 
 
 @router.get("/place/{place_id}/participants")

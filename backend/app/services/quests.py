@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.inaturalist import INAT_BASE, _HEADERS
+from app.services.safety import MUSHROOM_DISCLAIMER
 from app.services import gbif
 from app.services.plant_matching import resolve_latin_to_plants, _latin_key, synonym_map, canonical_key
 from app.models.place import QuestPlace, QuestPlaceSet, QuestIssuedBadge
@@ -346,15 +347,27 @@ async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None =
 
 # ----------------------------------------------------------- Phase 4: species-set
 
+# Группа набора → iNat iconic_taxa. Грибной набор — отдельный (Phase «Осень», RFC
+# all-season): та же выборка по месту и месяцу, свой пул, свой значок (пока не построен).
+# NB: iNat в «Fungi» кладёт и лишайники, и микрогрибы — пока оставляем, слой честно
+# называется «грибы и лишайники»; отделять по ancestor_ids — если пилот покажет, что мешают.
+_ICONIC = {"plants": "Plantae", "fungi": "Fungi"}
+
+
 async def compute_species_set(db: AsyncSession, place_id: str, label: str,
-                              force: bool = False) -> dict:
+                              force: bool = False, taxon_group: str = "plants",
+                              dry: bool = False) -> dict:
     """Characteristic species-set of place × half-month window (multi-year iNat
     aggregate over the place bbox). Stores the badge TARGET. v1: iNat month filter
     (whole month) + bbox; half-month/polygon precision lives in badge progress.
 
     `force=True` bypasses the density floor (`_MIN_OBS` / 5-species minimum) — for
     TEST places in sparse areas where some observations exist but not 50. The set is
-    still corpus-bridged; it just builds from whatever ≥1 corpus species are present."""
+    still corpus-bridged; it just builds from whatever ≥1 corpus species are present.
+    `taxon_group` — 'plants' (как всегда) или 'fungi'; `dry=True` — посчитать и вернуть
+    состав, ничего не записывая (пилот перед массовой сборкой)."""
+    if taxon_group not in _ICONIC:
+        return {"error": "unknown taxon_group"}
     row = (await db.execute(text(
         "SELECT name, ST_YMin(geom), ST_XMin(geom), ST_YMax(geom), ST_XMax(geom) FROM quest_places WHERE id=:p"),
         {"p": place_id})).first()
@@ -372,7 +385,7 @@ async def compute_species_set(db: AsyncSession, place_id: str, label: str,
             try:
                 r = await client.get(f"{INAT_BASE}/observations/species_counts", headers=_HEADERS, params={
                     "nelat": nelat, "nelng": nelng, "swlat": swlat, "swlng": swlng, "month": month,
-                    "iconic_taxa": "Plantae", "quality_grade": "research", "per_page": 100, "locale": "ru"})
+                    "iconic_taxa": _ICONIC[taxon_group], "quality_grade": "research", "per_page": 100, "locale": "ru"})
                 if r.status_code == 200:
                     results = r.json().get("results", [])
                     break
@@ -409,14 +422,18 @@ async def compute_species_set(db: AsyncSession, place_id: str, label: str,
     if obs_total < min_obs or len(sset) < min_species:
         return {"place": name, "window": label, "skipped": "low_density", "obs_total": obs_total, "species": len(sset)}
     target = max(1 if force else 5, min(15, round(0.6 * len(sset)) or 1))
+    if dry:
+        return {"place": name, "window": label, "group": taxon_group, "set_size": len(sset),
+                "target": target, "obs_total": obs_total, "species": meta}
     await db.execute(pg_insert(QuestPlaceSet).values(
-        place_id=place_id, window_label=label, species_set=sset, species_meta=meta,
-        target=target, obs_total=obs_total
-    ).on_conflict_do_update(constraint="uq_place_window", set_={
+        place_id=place_id, window_label=label, taxon_group=taxon_group,
+        species_set=sset, species_meta=meta, target=target, obs_total=obs_total
+    ).on_conflict_do_update(constraint="uq_place_window_group", set_={
         "species_set": sset, "species_meta": meta, "target": target,
         "obs_total": obs_total, "computed_at": func.now()}))
     await db.commit()
-    return {"place": name, "window": label, "set_size": len(sset), "target": target, "obs_total": obs_total}
+    return {"place": name, "window": label, "group": taxon_group, "set_size": len(sset),
+            "target": target, "obs_total": obs_total}
 
 
 # ------------------------------------------------- custom quests (RFC-custom-quests)
@@ -656,9 +673,9 @@ async def compute_custom_set(db: AsyncSession, place_id: str, label: str,
         return {"place": name, "skipped": "empty", "confirmed": 0, "expected": 0}
     target = max(5, min(15, round(0.6 * len(sset)) or 5))
     await db.execute(pg_insert(QuestPlaceSet).values(
-        place_id=place_id, window_label=label, species_set=sset, species_meta=items,
-        target=target, obs_total=obs_total
-    ).on_conflict_do_update(constraint="uq_place_window", set_={
+        place_id=place_id, window_label=label, taxon_group="plants",
+        species_set=sset, species_meta=items, target=target, obs_total=obs_total
+    ).on_conflict_do_update(constraint="uq_place_window_group", set_={
         "species_set": sset, "species_meta": items, "target": target,
         "obs_total": obs_total, "computed_at": func.now()}))
     await db.commit()
@@ -681,6 +698,7 @@ async def create_custom_quest(db: AsyncSession, lat: float, lng: float,
         SELECT p.id::text, p.name, ST_Y(ST_Centroid(p.geom)), ST_X(ST_Centroid(p.geom)),
                ps.target, COALESCE(array_length(ps.species_set,1),0)
         FROM quest_places p JOIN quest_place_sets ps ON ps.place_id=p.id AND ps.window_label=:win
+                                                    AND ps.taxon_group='plants'
         WHERE p.kind='custom'
           AND ST_DWithin(ST_Centroid(p.geom)::geography,
                          ST_SetSRID(ST_MakePoint(:lng,:lat),4326)::geography, 250)
@@ -849,14 +867,16 @@ async def place_participants(db: AsyncSession, place_id: str, window: str | None
 
 # ----------------------------------------------------------- Phase 5: badges
 
-async def _pool_for(db, place_id) -> tuple[set, int]:
+async def _pool_for(db, place_id, group: str = "plants") -> tuple[set, int]:
     """КУМУЛЯТИВНАЯ модель «Знаток места» (решение Олега 2026-08-24): пул места =
     объединение ВСЕХ его сезонных наборов, прогресс не сгорает на смене окна.
     Окно больше не дедлайн, а подсказка «что искать сейчас» (place_set). Возвращает
     (pool, target); target по той же формуле от размера пула."""
+    # Только своя группа: грибной набор не должен раздувать растительный пул и
+    # обесценивать значок (мухомор — не «Знаток места»).
     rows = (await db.execute(text(
-        "SELECT species_set FROM quest_place_sets WHERE place_id = :p"),
-        {"p": place_id})).all()
+        "SELECT species_set FROM quest_place_sets WHERE place_id = :p AND taxon_group = :g"),
+        {"p": place_id, "g": group})).all()
     pool: set[str] = set()
     for (sset,) in rows:
         pool |= set(sset or [])
@@ -864,16 +884,17 @@ async def _pool_for(db, place_id) -> tuple[set, int]:
     return pool, target
 
 
-async def _set_for(db, place_id, label):
+async def _set_for(db, place_id, label, group: str = "plants"):
     """The set for this window, else — gap-proof fallback — the most recently computed set
     for the place (so a place never «disappears» at a window rollover before the new
     month's set is built, and an old custom quest keeps working)."""
     hit = (await db.execute(select(QuestPlaceSet).where(
-        QuestPlaceSet.place_id == place_id, QuestPlaceSet.window_label == label))).scalar_one_or_none()
+        QuestPlaceSet.place_id == place_id, QuestPlaceSet.window_label == label,
+        QuestPlaceSet.taxon_group == group))).scalar_one_or_none()
     if hit:
         return hit
     return (await db.execute(select(QuestPlaceSet).where(
-        QuestPlaceSet.place_id == place_id).order_by(
+        QuestPlaceSet.place_id == place_id, QuestPlaceSet.taxon_group == group).order_by(
             QuestPlaceSet.computed_at.desc()).limit(1))).scalar_one_or_none()
 
 
@@ -1517,6 +1538,7 @@ async def places_near(db: AsyncSession, lat: float, lng: float, device_key=None,
                ps.target, COALESCE(array_length(ps.species_set,1),0) AS set_size
         FROM quest_places p
         JOIN quest_place_sets ps ON ps.place_id = p.id AND ps.window_label = :win
+                                 AND ps.taxon_group = 'plants'
         WHERE p.geom IS NOT NULL
           -- личное место — только своему владельцу: чужая дача не должна быть пином
           AND (p.kind <> 'personal' OR p.owner_key = CAST(:dk AS uuid))
@@ -1563,7 +1585,7 @@ async def places_in_bounds(db: AsyncSession, min_lat: float, min_lng: float,
         FROM quest_places p
         JOIN LATERAL (
             SELECT target, species_set, window_label FROM quest_place_sets s
-            WHERE s.place_id = p.id
+            WHERE s.place_id = p.id AND s.taxon_group = 'plants'
             ORDER BY (s.window_label = :win) DESC, s.computed_at DESC
             LIMIT 1
         ) ps ON true
@@ -1614,7 +1636,7 @@ async def places_in_bounds(db: AsyncSession, min_lat: float, min_lng: float,
 
 async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
                     device_key=None, year: int | None = None,
-                    biotope: str | None = None) -> dict:
+                    biotope: str | None = None, group: str = "plants") -> dict:
     """«What to look for here» — species cards from the SAVED set (no live iNat).
     Names/photos come from species_meta (saved at compute) with a corpus fallback;
     plant_id via the latin-key bridge; found = this device identified it in the
@@ -1622,14 +1644,16 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
     half-b: join the place's expected species with plant_biotopes)."""
     win = window or _current_window()
     yr = year or date.today().year
-    ps = await _set_for(db, place_id, win)
+    ps = await _set_for(db, place_id, win, group)
     if not ps:
         return {"error": "no species-set for this place/window"}
     place = await db.get(QuestPlace, uuid_or(place_id))
 
     found_keys: set[str] = set()
     matched = 0
-    if device_key:
+    # Прогресс и значок пока только у растительного набора: грибной значок —
+    # следующий шаг Phase «Осень», сейчас грибной набор — витрина «что искать».
+    if device_key and group == "plants":
         prog = await badge_progress(db, str(device_key), str(place_id), win, yr)
         if "error" not in prog:
             found_keys = set(prog.get("matched_keys", []))
@@ -1677,10 +1701,15 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
                 "WHERE plant_id = ANY(cast(:ids as uuid[])) AND biotope = :b"),
                 {"ids": pids, "b": biotope})).all()}
         items = [i for i in items if i["plant_id"] in keep]
+    # Значок пока только у растительного набора (грибной — следующий шаг Phase «Осень»).
+    issued = (await _badge_issued(db, device_key, place_id, win, yr)) if group == "plants" else False
     return {"place": {"id": str(place_id), "name": place.name if place else None,
                       "window": win, "set_size": len(meta), "target": ps.target,
-                      "matched": matched, "badge_issued": await _badge_issued(db, device_key, place_id, win, yr),
+                      "matched": matched, "badge_issued": issued,
                       "out_of_season": len(out_of_season)},
+            "group": group,
+            # «Найти» никогда не значит «съесть»: та же строка, что в определителе.
+            "safety_notice": MUSHROOM_DISCLAIMER if group == "fungi" else None,
             "biotope": biotope, "items": items}
 
 

@@ -53,7 +53,7 @@ async def build_place_sets_activity(window_label: str) -> dict:
     async with async_session() as db:
         ids = [str(r[0]) for r in (await db.execute(text(
             "SELECT p.id FROM quest_places p WHERE NOT EXISTS "
-            "(SELECT 1 FROM quest_place_sets s WHERE s.place_id=p.id AND s.window_label=:w)"),
+            "(SELECT 1 FROM quest_place_sets s WHERE s.place_id=p.id AND s.window_label=:w AND s.taxon_group='plants')"),
             {"w": window_label})).all()]
     built = low_density = 0
     for i, pid in enumerate(ids):

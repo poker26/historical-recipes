@@ -41,6 +41,9 @@ class QuestPlaceSet(Base):
     # quests-places). Nullable — sets computed before this column fall back to
     # corpus-resolution in the endpoint.
     species_meta: Mapped[list | None] = mapped_column(JSONB)
+    # 'plants' | 'fungi' (миграция 027). У места может быть по набору на группу:
+    # грибной пул и значок живут отдельно от растительного «Знатока места».
+    taxon_group: Mapped[str] = mapped_column(Text, server_default="plants")
     target: Mapped[int | None] = mapped_column(Integer)        # round(0.6*|set|) clamp [5,15]
     obs_total: Mapped[int | None] = mapped_column(Integer)     # density signal
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
