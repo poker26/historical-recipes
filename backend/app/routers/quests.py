@@ -263,6 +263,15 @@ async def meta(device_key: str = Query(...), db: AsyncSession = Depends(get_db))
     return await quests.meta_progress(db, device_key)
 
 
+@router.get("/year-summary")
+async def year_summary(device_key: str = Query(...), year: int | None = Query(None),
+                       db: AsyncSession = Depends(get_db)):
+    """«Гербарий года» (RFC всесезонной версии §4.6): сколько видов, где, самое
+    редкое, друзья — из архива определений; share_text — готовая строка для
+    отправки. Пустой год → empty=true, клиент карточку не рисует."""
+    return await quests.year_summary(db, device_key, year)
+
+
 @router.post("/meta/{kind}/claim")
 async def claim_meta(kind: str, device_key: str = Query(...),
                      db: AsyncSession = Depends(get_db)):

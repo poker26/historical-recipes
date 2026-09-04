@@ -11,6 +11,7 @@ import calendar
 import hashlib
 import os
 import logging
+import re
 import math
 from datetime import date, datetime, timezone
 
@@ -2303,3 +2304,109 @@ async def recent_badges(db: AsyncSession, limit: int = 20, place_id: str | None 
             "ordinal": r.ordinal, "issued_at": r.issued_at.isoformat(),
         })
     return {"badges": feed}
+
+
+# ------------------------------------------------ «Гербарий года» (RFC всесезонной §4.6)
+
+_MONTHS_NOM = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль",
+               "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    n10, n100 = n % 10, n % 100
+    if n10 == 1 and n100 != 11:
+        return one
+    if 2 <= n10 <= 4 and not 12 <= n100 <= 14:
+        return few
+    return many
+
+
+_RARE_MIN_SPECIES = 5
+_RARE_MAX_OBS = 10_000
+
+
+def _short_name(name: str) -> str:
+    """«Купырь лесной (морковник лесной)» → «купырь лесной»; КАПС из OCR — в нижний."""
+    return re.sub(r"\s*\(.*?\)", "", name or "").strip().lower()
+
+
+async def year_summary(db: AsyncSession, device_key: str, year: int | None = None) -> dict:
+    """Карточка-итог года для отправки друзьям: сколько видов, где, самое редкое,
+    сколько друзей. Считается из архива определений и выданных значков — ничего
+    нового не собираем. Декабрьская история: в лесу пусто, а год был.
+
+    «Редкое» — вид с наименьшим числом наблюдений iNat по миру среди узнанных в
+    этом году (species_phenology.inat_n_obs); нет данных — не называем, лучше
+    промолчать, чем назвать редким одуванчик."""
+    dk = uuid_or(device_key)
+    year = year or date.today().year
+    p = {"dk": str(dk), "y": year}
+    shots = (await db.execute(text("""
+        SELECT count(*) AS n,
+               count(DISTINCT lower(split_part(top_latin, ' ', 1) || ' ' || split_part(top_latin, ' ', 2)))
+                   FILTER (WHERE top_latin IS NOT NULL AND matched_plant_id IS NOT NULL) AS species,
+               count(DISTINCT extract(month FROM created_at)) AS months,
+               count(*) FILTER (WHERE lat IS NOT NULL) AS with_geo
+        FROM identifications
+        WHERE device_key = CAST(:dk AS uuid) AND extract(year FROM created_at) = :y"""),
+        p)).one()
+    if not shots.n:
+        return {"year": year, "empty": True, "shots": 0, "species": 0}
+    best_month = (await db.execute(text("""
+        SELECT extract(month FROM created_at)::int AS m,
+               count(DISTINCT lower(split_part(top_latin, ' ', 1) || ' ' || split_part(top_latin, ' ', 2))) AS s
+        FROM identifications
+        WHERE device_key = CAST(:dk AS uuid) AND extract(year FROM created_at) = :y
+          AND top_latin IS NOT NULL AND matched_plant_id IS NOT NULL
+        GROUP BY 1 ORDER BY s DESC, m LIMIT 1"""), p)).first()
+    # Места — квест-места, внутрь которых попали снимки года (по полигону).
+    places = (await db.execute(text("""
+        SELECT q.name, count(*) AS n
+        FROM identifications i
+        JOIN quest_places q ON q.geom IS NOT NULL
+             AND ST_Contains(q.geom, ST_SetSRID(ST_MakePoint(i.lng, i.lat), 4326))
+        WHERE i.device_key = CAST(:dk AS uuid) AND extract(year FROM i.created_at) = :y
+          AND i.lat IS NOT NULL AND COALESCE(q.kind, '') NOT IN ('custom', 'personal')
+        GROUP BY q.name ORDER BY n DESC LIMIT 5"""), p)).all()
+    rarest = (await db.execute(text("""
+        SELECT p.name, ph.inat_n_obs
+        FROM identifications i
+        JOIN plants p ON p.id = i.matched_plant_id
+        JOIN species_phenology ph
+          ON ph.latin_key = lower(split_part(i.top_latin, ' ', 1) || ' ' || split_part(i.top_latin, ' ', 2))
+        WHERE i.device_key = CAST(:dk AS uuid) AND extract(year FROM i.created_at) = :y
+          AND ph.inat_n_obs IS NOT NULL AND ph.inat_n_obs > 0
+        ORDER BY ph.inat_n_obs ASC LIMIT 1"""), p)).first()
+    badges = (await db.execute(text("""
+        SELECT count(*) AS n, max(tier) AS best
+        FROM quest_issued_badges
+        WHERE device_key = CAST(:dk AS uuid) AND extract(year FROM issued_at) = :y"""), p)).one()
+    friends = await _friends_count(db, dk)
+    species = int(shots.species or 0)
+    # «Редкое» имеет смысл, когда есть из чего выбирать и вид действительно нечастый:
+    # среди трёх видов «самым редким» окажется купырь с 74 тысячами наблюдений.
+    if rarest and (species < _RARE_MIN_SPECIES or rarest.inat_n_obs > _RARE_MAX_OBS):
+        rarest = None
+    place_names = [r.name for r in places]
+    line = [f"За {year} год — {species} {_plural(species, 'вид', 'вида', 'видов')}"]
+    if place_names:
+        n = len(place_names)
+        line[0] += f" в {n} {_plural(n, 'месте', 'местах', 'местах')}"
+    line[0] += "."
+    if rarest:
+        line.append(f"Самое редкое — {_short_name(rarest.name)}.")
+    if best_month:
+        line.append(f"Лучший месяц — {_MONTHS_NOM[best_month.m - 1]}.")
+    if friends:
+        line.append(f"Рядом {friends} {_plural(friends, 'друг', 'друга', 'друзей')}.")
+    return {
+        "year": year, "empty": False,
+        "shots": int(shots.n), "species": species,
+        "months_active": int(shots.months or 0),
+        "best_month": best_month.m if best_month else None,
+        "places": place_names,
+        "rarest": {"name": rarest.name, "n_obs": rarest.inat_n_obs} if rarest else None,
+        "badges": int(badges.n or 0), "best_tier": badges.best,
+        "friends": friends,
+        "share_text": " ".join(line) + " — «Что растёт»",
+    }
