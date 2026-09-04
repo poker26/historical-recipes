@@ -187,3 +187,59 @@ async def _harvest_shelf(db: AsyncSession, month: int, limit: int, biotopes: lis
         })
     return {"items": out, "biotopes": biotopes, "month": month,
             "mode": "harvest", "title": f"Что заготавливают в {_MONTHS_PREP[month - 1]}"}
+
+
+# --- «Аптека на кухне» (RFC всесезонной версии §4.1/§4.4) --------------------
+# Вторая полка на главной, когда первая ушла в «что заготавливают»: в лесу пусто,
+# но собранное летом лежит в банках, и книги знают, что с ним делать при
+# простуде. Показания — регуляркой по тексту рецепта: замер 5.09 — 742 пошаговых
+# домашних рецепта с карточкой растения, LLM-разметка не понадобилась.
+_KITCHEN_RX = (r"простуд|кашл|кашел|грипп|ангин|бронхит|горл|насморк|жаропониж|"
+               r"потогон|авитамин|цинг|озноб|переохлажд|иммунитет")
+KITCHEN_DISCLAIMER = (
+    "Рецепты из книг разных лет — как их записали авторы. Это не назначение врача: "
+    "при болезни советуйтесь с ним, а растение проверяйте по карточке."
+)
+
+
+@router.get("/kitchen")
+async def kitchen(limit: int = Query(8, ge=3, le=12),
+                  db: AsyncSession = Depends(get_db)):
+    """Полка «Аптека на кухне»: домашние пошаговые рецепты при простуде и кашле,
+    по одному на растение, из растений с проверенным монографом и без ядовитых
+    (safety_level ≥ 3). Состав меняется раз в день (детерминированная выборка по
+    дате), внутри дня стабилен. Формат карточки — как у `/plants/{id}/recipes`,
+    плюс растение с фото: тап открывает рецепт, растение — карточку."""
+    day = date.today().isoformat()
+    rows = (await db.execute(text("""
+        WITH cand AS (
+            SELECT DISTINCT ON (p.id)
+                   r.id AS rid, r.name, r.category, r.recipe_kind, b.title AS book, b.year,
+                   COALESCE(NULLIF(trim(r.normalized_text), ''), r.original_text) AS txt,
+                   (SELECT count(*) FROM recipe_ingredients ri2 WHERE ri2.recipe_id = r.id) AS n_ing,
+                   p.id AS pid, p.name AS plant, p.photo_url, p.safety_level
+            FROM recipes r
+            JOIN books b ON b.id = r.book_id
+            JOIN recipe_ingredients ri ON ri.recipe_id = r.id
+            JOIN plants p ON p.id = ri.plant_id
+            JOIN plant_reader_monograph m ON m.plant_id = p.id AND m.reviewed
+            WHERE r.home_doable AND r.recipe_kind = 'medicinal' AND r.procedure_score >= 2
+              AND COALESCE(p.safety_level, 0) < 3
+              AND p.photo_url IS NOT NULL AND p.name !~ ','
+              -- растение должно быть центром рецепта, а не одним из девяти трав сбора
+              AND (SELECT count(*) FROM recipe_ingredients ri3 WHERE ri3.recipe_id = r.id) <= 4
+              AND (r.normalized_text ~* :rx OR r.name ~* :rx)
+            ORDER BY p.id, md5(r.id::text || :day))
+        SELECT * FROM cand ORDER BY md5(pid::text || :day) LIMIT :lim"""),
+        {"rx": _KITCHEN_RX, "day": day, "lim": limit})).all()
+    items = []
+    for r in rows:
+        t = (r.txt or "").strip()
+        items.append({
+            "id": str(r.rid), "name": r.name, "category": r.category, "kind": r.recipe_kind,
+            "n_ingredients": int(r.n_ing or 1), "book": r.book, "year": r.year,
+            "step_by_step": True, "text": t[:700], "truncated": len(t) > 700,
+            "plant_id": str(r.pid), "plant": r.plant, "photo": r.photo_url,
+            "safety_level": r.safety_level,
+        })
+    return {"items": items, "title": "Аптека на кухне", "disclaimer": KITCHEN_DISCLAIMER}
