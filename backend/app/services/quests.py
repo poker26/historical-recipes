@@ -2350,8 +2350,11 @@ async def year_summary(db: AsyncSession, device_key: str, year: int | None = Non
         FROM identifications
         WHERE device_key = CAST(:dk AS uuid) AND extract(year FROM created_at) = :y"""),
         p)).one()
+    # Карточка — декабрьская: клиент рисует её, когда сервер говорит show. Считать
+    # сводку можно в любой месяц (год всегда есть за что подвести), показывать — нет.
+    show = date.today().month == 12
     if not shots.n:
-        return {"year": year, "empty": True, "shots": 0, "species": 0}
+        return {"year": year, "empty": True, "show": False, "shots": 0, "species": 0}
     best_month = (await db.execute(text("""
         SELECT extract(month FROM created_at)::int AS m,
                count(DISTINCT lower(split_part(top_latin, ' ', 1) || ' ' || split_part(top_latin, ' ', 2))) AS s
@@ -2400,7 +2403,7 @@ async def year_summary(db: AsyncSession, device_key: str, year: int | None = Non
     if friends:
         line.append(f"Рядом {friends} {_plural(friends, 'друг', 'друга', 'друзей')}.")
     return {
-        "year": year, "empty": False,
+        "year": year, "empty": False, "show": show and species >= 3,
         "shots": int(shots.n), "species": species,
         "months_active": int(shots.months or 0),
         "best_month": best_month.m if best_month else None,
