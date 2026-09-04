@@ -1710,8 +1710,14 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
     # пул значка кумулятивный и не трогается, а «что искать сейчас» становится
     # честным. Отложенные не теряем — отдаём числом, клиент сможет показать
     # «ещё N видов появятся в другой сезон».
-    from app.services.phenology import split_by_season
-    items, out_of_season = await split_by_season(db, items, _window_month(win))
+    from app.services.phenology import split_by_season, cell_of
+    # Сезон — по ячейке региона самого места (миграция 028): у Сочи и Сахалина одна
+    # широта и разные зимы, и только наблюдения вокруг места это знают.
+    crow = (await db.execute(text(
+        "SELECT ST_Y(ST_Centroid(geom)), ST_X(ST_Centroid(geom)) FROM quest_places WHERE id = :p"),
+        {"p": place_id})).first()
+    cell = cell_of(crow[0], crow[1]) if crow and crow[0] is not None else None
+    items, out_of_season = await split_by_season(db, items, _window_month(win), cell=cell)
     # GPS→biotope filter: keep only species of the requested habitat (those whose
     # corpus card is tagged with `biotope` in plant_biotopes).
     if biotope:

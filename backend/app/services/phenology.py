@@ -33,10 +33,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # мимо; крапива, которую снимают весь год, — в любом месяце выше.
 IN_SEASON_SHARE = 0.05
 
+# Гистограмма ячейки региона считается надёжной от стольких наблюдений; меньше —
+# берём мировую. Ниже этого доли по месяцам — шум из десятка снимков.
+CELL_MIN_OBS = 30
+
+
+def cell_of(lat: float, lng: float) -> tuple[int, int]:
+    """Ячейка 2°×2° по юго-западному углу — та же, что в миграции 028 и в замерах."""
+    import math
+    return int(math.floor(lat / 2) * 2), int(math.floor(lng / 2) * 2)
+
 
 def in_season(inat_months: list[float] | None, corpus_months: list[int] | None,
-              month: int) -> bool | None:
-    """True/False по данным; None — данных нет (вызывающий решает, обычно пропускает)."""
+              month: int, cell_months: list[float] | None = None,
+              cell_n_obs: int | None = None) -> bool | None:
+    """True/False по данным; None — данных нет (вызывающий решает, обычно пропускает).
+
+    Порядок свидетелей: ячейка региона (если наблюдений в ней хватает) → мировая
+    гистограмма → корпус. Ячейка первой, потому что климат — местный: Сахалин и
+    Сочи на одной широте, и только наблюдения вокруг самого места это знают."""
+    if (cell_months and len(cell_months) == 12 and sum(cell_months) > 0
+            and (cell_n_obs or 0) >= CELL_MIN_OBS):
+        return cell_months[month - 1] >= IN_SEASON_SHARE
     if inat_months and len(inat_months) == 12 and sum(inat_months) > 0:
         return inat_months[month - 1] >= IN_SEASON_SHARE
     if corpus_months:
@@ -44,24 +62,40 @@ def in_season(inat_months: list[float] | None, corpus_months: list[int] | None,
     return None
 
 
-async def phenology_map(db: AsyncSession, latin_keys: list[str]) -> dict[str, dict]:
-    """{latin_key: {inat_months, corpus_months}} для запрошенных ключей."""
+async def phenology_map(db: AsyncSession, latin_keys: list[str],
+                        cell: tuple[int, int] | None = None) -> dict[str, dict]:
+    """{latin_key: {inat_months, corpus_months, cell_months, cell_n_obs}} для ключей.
+    `cell` — ячейка региона (см. cell_of); без неё поля ячейки пусты."""
     if not latin_keys:
         return {}
-    rows = (await db.execute(text(
-        "SELECT latin_key, inat_months, corpus_months FROM species_phenology "
-        "WHERE latin_key = ANY(:k)"), {"k": list(set(latin_keys))})).all()
-    return {r.latin_key: {"inat_months": r.inat_months, "corpus_months": r.corpus_months}
+    keys = list(set(latin_keys))
+    if cell is None:
+        rows = (await db.execute(text(
+            "SELECT latin_key, inat_months, corpus_months, NULL AS cell_months, NULL AS cell_n_obs "
+            "FROM species_phenology WHERE latin_key = ANY(:k)"), {"k": keys})).all()
+    else:
+        rows = (await db.execute(text(
+            "SELECT g.latin_key, g.inat_months, g.corpus_months, c.inat_months AS cell_months, "
+            "c.inat_n_obs AS cell_n_obs "
+            "FROM species_phenology g LEFT JOIN species_phenology_cell c "
+            "  ON c.latin_key = g.latin_key AND c.cell_lat = :clat AND c.cell_lng = :clng "
+            "WHERE g.latin_key = ANY(:k)"),
+            {"k": keys, "clat": cell[0], "clng": cell[1]})).all()
+    return {r.latin_key: {"inat_months": r.inat_months, "corpus_months": r.corpus_months,
+                          "cell_months": r.cell_months, "cell_n_obs": r.cell_n_obs}
             for r in rows}
 
 
 async def split_by_season(db: AsyncSession, items: list[dict], month: int,
-                          key_field: str = "latin_key") -> tuple[list[dict], list[dict]]:
-    """Разделить карточки на «сейчас» и «не сезон». Без данных — в «сейчас»."""
-    ph = await phenology_map(db, [i[key_field] for i in items if i.get(key_field)])
+                          key_field: str = "latin_key",
+                          cell: tuple[int, int] | None = None) -> tuple[list[dict], list[dict]]:
+    """Разделить карточки на «сейчас» и «не сезон». Без данных — в «сейчас».
+    `cell` — ячейка региона места/съёмки: с ней сезон считается по местным наблюдениям."""
+    ph = await phenology_map(db, [i[key_field] for i in items if i.get(key_field)], cell)
     now, later = [], []
     for it in items:
         p = ph.get(it.get(key_field))
-        verdict = in_season(p["inat_months"], p["corpus_months"], month) if p else None
+        verdict = (in_season(p["inat_months"], p["corpus_months"], month,
+                             p.get("cell_months"), p.get("cell_n_obs")) if p else None)
         (later if verdict is False else now).append(it)
     return now, later

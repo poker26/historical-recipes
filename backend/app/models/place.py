@@ -81,3 +81,19 @@ class SpeciesPhenology(Base):
     inat_months: Mapped[list | None] = mapped_column(ARRAY(Float))          # 12 долей, сумма 1
     corpus_months: Mapped[list | None] = mapped_column(ARRAY(SmallInteger))  # 1..12
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SpeciesPhenologyCell(Base):
+    """То же, что SpeciesPhenology, но по ячейке региона 2°×2° (миграция 028):
+    климат места берётся из наблюдений внутри ячейки, а не из мировой суммы,
+    где зимой правят субтропики. Ключ ячейки — юго-западный угол
+    (floor(lat/2)*2, floor(lng/2)*2). Читает services/phenology.py, глобальная
+    строка остаётся запасной при малом числе наблюдений."""
+    __tablename__ = "species_phenology_cell"
+
+    latin_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    cell_lat: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    cell_lng: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    inat_n_obs: Mapped[int | None] = mapped_column(Integer)
+    inat_months: Mapped[list | None] = mapped_column(ARRAY(Float))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
