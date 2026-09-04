@@ -31,6 +31,11 @@ from app.models.plant import Plant
 logger = logging.getLogger(__name__)
 
 _MIN_OBS = 50          # density threshold: below this a place gives only walks, no badge
+# Грибы наблюдают реже растений: по местам, прошедшим гейт (≥5 грибов с карточкой),
+# медиана — 22 наблюдения за месяц, а растительный порог 50 отсеял бы 85 мест из 119.
+# Качество грибного набора держит минимум в 5 видов; порог по наблюдениям здесь нужен
+# лишь чтобы не строить набор на пяти-шести случайных снимках (замер 4.09.2026).
+_MIN_OBS_FUNGI = 10
 POINTS_PER_BADGE = 10  # legacy v1 constant (superseded by tier points below)
 
 # Soft progression: each place×window badge has up to 3 TIERS — a low entry rung so
@@ -417,7 +422,7 @@ async def compute_species_set(db: AsyncSession, place_id: str, label: str,
     plant_map = await resolve_latin_to_plants(db, sset)
     sset = [k for k in sset if plant_map.get(k)]
     meta = [m for m in meta if plant_map.get(m["key"])]
-    min_obs = 0 if force else _MIN_OBS
+    min_obs = 0 if force else (_MIN_OBS_FUNGI if taxon_group == "fungi" else _MIN_OBS)
     min_species = 1 if force else 5
     if obs_total < min_obs or len(sset) < min_species:
         return {"place": name, "window": label, "skipped": "low_density", "obs_total": obs_total, "species": len(sset)}
