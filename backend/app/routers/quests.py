@@ -67,15 +67,18 @@ async def compute_set(place_id: str = Query(...), window: str = Query(..., descr
 @router.get("/badge/progress")
 async def badge_progress(device_key: str = Query(...), place_id: str = Query(...),
                          window: str = Query(...), year: int = Query(...),
+                         group: str = Query("plants", pattern="^(plants|fungi)$"),
                          db: AsyncSession = Depends(get_db)):
-    return await quests.badge_progress(db, device_key, place_id, window, year)
+    """`group=fungi` — прогресс грибного значка места (свой пул, свой badge_id)."""
+    return await quests.badge_progress(db, device_key, place_id, window, year, group=group)
 
 
 @router.post("/badge/claim")
 async def badge_claim(device_key: str = Query(...), place_id: str = Query(...),
                       window: str = Query(...), year: int = Query(...),
+                      group: str = Query("plants", pattern="^(plants|fungi)$"),
                       db: AsyncSession = Depends(get_db)):
-    return await quests.claim_badge(db, device_key, place_id, window, year)
+    return await quests.claim_badge(db, device_key, place_id, window, year, group=group)
 
 
 @router.get("/claimable")

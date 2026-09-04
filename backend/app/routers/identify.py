@@ -424,9 +424,12 @@ async def identify_plant(
     if device_key and lat is not None and lng is not None and result.get("candidates"):
         try:
             cands = result["candidates"]
+            # Гриб зачитывается в грибной пул места, растение — в растительный:
+            # значки раздельные, мухомор не идёт в «Знаток места».
             qc = await quests_svc.quest_credit_for_shot(
                 db, device_key, lat, lng, cands,
-                cands[0].get("latin"), cands[0].get("score"))
+                cands[0].get("latin"), cands[0].get("score"),
+                group="fungi" if is_mushroom else "plants")
             if qc:
                 result["quest_credit"] = qc
             else:

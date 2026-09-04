@@ -911,14 +911,17 @@ async def _issued_tiers(db, badge_id: str, device_key) -> dict:
     return {tr: od for tr, od in rows}
 
 
-async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label: str, year: int) -> dict:
+async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label: str, year: int,
+                         group: str = "plants") -> dict:
     """Server-verified progress: distinct set-species this device identified INSIDE
     the polygon during this year's half-month window (from History), mapped onto the
     tier ladder. `current_tier` = highest tier EARNED (need ≤ matched, regardless of
     issuance, 0 = none); `claimable_tier` = highest earned tier NOT yet issued (null
     = nothing to claim); `next_need` = species needed-count of the next not-yet-
     earned rung (null at the top)."""
-    sset, pool_target = await _pool_for(db, place_id)
+    # Пул и значок — свои у каждой группы: растительный «Знаток места» и грибной
+    # живут раздельно, мухомор не идёт в зачёт растениям и наоборот.
+    sset, pool_target = await _pool_for(db, place_id, group)
     if not sset:
         return {"error": "no species-set for this place/window"}
     # CUSTOM quests = a fresh personal hunt → count only finds made AFTER the quest was
@@ -956,7 +959,7 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
     m = len(matched)
     # Cumulative badge — ONE per place, no window/year in the id. Old monthly ids
     # ({place}:{window}:{year}) are migrated to :all (scripts/migrate_badges_all.py).
-    badge_id = f"{place_id}:all"
+    badge_id = f"{place_id}:all" if group == "plants" else f"{place_id}:{group}"
     tiers = tier_thresholds(pool_target, len(sset))
     issued = await _issued_tiers(db, badge_id, device_key)
     earned = [tr for tr in tiers if tr["need"] <= m]
@@ -970,13 +973,14 @@ async def badge_progress(db: AsyncSession, device_key: str, place_id: str, label
             "matched_keys": matched, "soft_keys": sorted(soft)}
 
 
-async def claim_badge(db: AsyncSession, device_key: str, place_id: str, label: str, year: int) -> dict:
+async def claim_badge(db: AsyncSession, device_key: str, place_id: str, label: str, year: int,
+                      group: str = "plants") -> dict:
     """Issue every tier the device has EARNED but not yet claimed, up to the highest.
     Cumulative model: no window_closed — mastery of a place never expires. Each tier
     keeps its own per-tier ordinal (scarcity). Idempotent per (badge_id, device, tier).
     The response headlines the HIGHEST tier granted; `granted` lists all rungs issued
     this call. `label`/`year` stay in the signature for old-client compatibility."""
-    prog = await badge_progress(db, device_key, place_id, label, year)
+    prog = await badge_progress(db, device_key, place_id, label, year, group=group)
     if "error" in prog:
         return prog
     badge_id = prog["badge_id"]
@@ -997,7 +1001,7 @@ async def claim_badge(db: AsyncSession, device_key: str, place_id: str, label: s
     await db.commit()
     top = granted[-1]
     # Re-read so current_tier/claimable_tier reflect the just-issued rungs.
-    prog = await badge_progress(db, device_key, place_id, label, year)
+    prog = await badge_progress(db, device_key, place_id, label, year, group=group)
     return {**prog, "issued": True, "tier": top["tier"], "name": top["name"],
             "ordinal": top["ordinal"], "points": top["points"], "granted": granted}
 
@@ -1030,6 +1034,15 @@ async def badge_shelf(db: AsyncSession, device_key: str) -> list[dict]:
                 "issued_at": b.issued_at.isoformat(),
             })
             continue
+        if len(parts) == 2 and parts[1] == "fungi":   # грибной значок места — «Грибник · Лосиный остров»
+            out.append({
+                "badge_id": b.badge_id, "kind": "place_fungi",
+                "place_id": parts[0], "window": None, "year": None,
+                "tier": b.tier, "name": _TIER_NAMES.get(b.tier, ""),
+                "points": b.points, "ordinal": b.ordinal,
+                "issued_at": b.issued_at.isoformat(),
+            })
+            continue
         out.append({
             "badge_id": b.badge_id, "kind": "place",
             "place_id": parts[0] if parts else None,
@@ -1043,7 +1056,7 @@ async def badge_shelf(db: AsyncSession, device_key: str) -> list[dict]:
     # public profile) gets «Мастер · Нескучный сад» — not just the bare tier name.
     names = await _place_names(db, [b.get("place_id") for b in out])
     for b in out:
-        if b.get("kind") == "place":
+        if b.get("kind") in ("place", "place_fungi"):
             b["place"] = names.get(b.get("place_id"))
     return out
 
@@ -1442,16 +1455,18 @@ async def claimable_badges(db: AsyncSession, device_key: str,
         LIMIT 12"""), {"dk": str(dk)})).all()
     items = []
     for pid, name in rows:
-        prog = await badge_progress(db, str(dk), pid, label, yr)
-        if prog.get("claimable_tier"):
-            items.append({
-                "kind": "place", "place_id": pid, "place": name,
-                "window": label, "year": yr,
-                "claimable_tier": prog["claimable_tier"],
-                "tier_name": _TIER_NAMES.get(prog["claimable_tier"], ""),
-                "matched": prog["matched"], "target": prog["target"],
-                "next_need": prog["next_need"],
-            })
+        # Два значка у места — растительный и грибной — проверяем оба.
+        for group, kind in (("plants", "place"), ("fungi", "place_fungi")):
+            prog = await badge_progress(db, str(dk), pid, label, yr, group=group)
+            if prog.get("claimable_tier"):
+                items.append({
+                    "kind": kind, "place_id": pid, "place": name,
+                    "window": label, "year": yr,
+                    "claimable_tier": prog["claimable_tier"],
+                    "tier_name": _TIER_NAMES.get(prog["claimable_tier"], ""),
+                    "matched": prog["matched"], "target": prog["target"],
+                    "next_need": prog["next_need"],
+                })
     # награды без географии — тем, кто снимает, но не ходит по квест-местам
     try:
         for m in (await meta_progress(db, str(dk)))["items"]:
@@ -1482,7 +1497,7 @@ async def claimable_badges(db: AsyncSession, device_key: str,
 
 
 async def quest_credit_for_shot(db: AsyncSession, device_key: str, lat: float, lng: float,
-                                cands, top_latin, top_score) -> dict | None:
+                                cands, top_latin, top_score, group: str = "plants") -> dict | None:
     """Кредит квесту за ТОЛЬКО ЧТО сделанный снимок — для экрана результата
     определения («зачтено в квест X, 4 из 9»). Связывает момент съёмки с игрой:
     сейчас 5 из 6 определяющих девайсов вообще не открывают вкладку квестов.
@@ -1501,14 +1516,14 @@ async def quest_credit_for_shot(db: AsyncSession, device_key: str, lat: float, l
         ORDER BY ST_Area(geom) ASC LIMIT 3"""), {"lat": lat, "lng": lng})).all()
     syn = await synonym_map(db)
     for pid, name in rows:                       # smallest containing place with a pool wins
-        pool, _ = await _pool_for(db, pid)       # cumulative: credit vs the FULL pool
+        pool, _ = await _pool_for(db, pid, group)   # cumulative: credit vs the FULL pool of THIS group
         if not pool:
             continue
         ex, sf = _credit_keys(cands, top_latin, top_score, pool, syn)
-        prog = await badge_progress(db, str(dk), pid, label, yr)
+        prog = await badge_progress(db, str(dk), pid, label, yr, group=group)
         if "error" in prog:
             continue
-        return {"place_id": pid, "place": name, "window": label, "year": yr,
+        return {"place_id": pid, "place": name, "window": label, "year": yr, "group": group,
                 "this_shot": sorted(ex | sf), "matched": prog["matched"],
                 "target": prog["target"], "next_need": prog["next_need"],
                 "current_tier": prog["current_tier"],
@@ -1516,13 +1531,15 @@ async def quest_credit_for_shot(db: AsyncSession, device_key: str, lat: float, l
     return None
 
 
-async def _badge_issued(db, device_key, place_id, window, year) -> bool:
-    """Cumulative model: one badge per place (badge_id = '{place_id}:all');
-    window/year kept in the signature for caller compatibility, ignored."""
+async def _badge_issued(db, device_key, place_id, window, year, group: str = "plants") -> bool:
+    """Cumulative model: one badge per place per group (badge_id = '{place_id}:all'
+    for plants, '{place_id}:fungi' for fungi); window/year kept in the signature
+    for caller compatibility, ignored."""
     if not device_key:
         return False
+    bid = f"{place_id}:all" if group == "plants" else f"{place_id}:{group}"
     n = (await db.execute(select(func.count()).select_from(QuestIssuedBadge).where(
-        QuestIssuedBadge.badge_id == f"{place_id}:all",
+        QuestIssuedBadge.badge_id == bid,
         QuestIssuedBadge.device_key == device_key))).scalar() or 0
     return n > 0
 
@@ -1656,10 +1673,8 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
 
     found_keys: set[str] = set()
     matched = 0
-    # Прогресс и значок пока только у растительного набора: грибной значок —
-    # следующий шаг Phase «Осень», сейчас грибной набор — витрина «что искать».
-    if device_key and group == "plants":
-        prog = await badge_progress(db, str(device_key), str(place_id), win, yr)
+    if device_key:
+        prog = await badge_progress(db, str(device_key), str(place_id), win, yr, group=group)
         if "error" not in prog:
             found_keys = set(prog.get("matched_keys", []))
             matched = prog.get("matched", 0)
@@ -1706,8 +1721,7 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
                 "WHERE plant_id = ANY(cast(:ids as uuid[])) AND biotope = :b"),
                 {"ids": pids, "b": biotope})).all()}
         items = [i for i in items if i["plant_id"] in keep]
-    # Значок пока только у растительного набора (грибной — следующий шаг Phase «Осень»).
-    issued = (await _badge_issued(db, device_key, place_id, win, yr)) if group == "plants" else False
+    issued = await _badge_issued(db, device_key, place_id, win, yr, group)
     return {"place": {"id": str(place_id), "name": place.name if place else None,
                       "window": win, "set_size": len(meta), "target": ps.target,
                       "matched": matched, "badge_issued": issued,
