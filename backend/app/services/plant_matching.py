@@ -520,6 +520,42 @@ _ALIASES_PATH = Path(__file__).resolve().parent / "plant_aliases.txt"
 # Кухонные значения — тот же формат, но записи ПЕРЕБИВАЮТ обычный матчинг
 # (см. culinary_meanings.txt: «гвоздика» — пряность, а не садовый Dianthus).
 _CULINARY_PATH = Path(__file__).resolve().parent / "culinary_meanings.txt"
+# Спорные имена, разобранные поштучно (см. сами файлы): кому имя принадлежит и
+# по каким именам привязывать нельзя вовсе.
+_RESOLVED_PATH = Path(__file__).resolve().parent / "resolved_names.txt"
+_BLOCKED_PATH = Path(__file__).resolve().parent / "blocked_names.txt"
+
+
+def load_blocked_names(path: Path = _BLOCKED_PATH) -> frozenset[str]:
+    """Имена, по которым привязывать нельзя (см. blocked_names.txt).
+
+    Отличие от рукописного :data:`_AMBIGUOUS_FOLK`: список вычислен по данным и
+    действует на синонимы любой длины, включая составные («медвежья ягода»).
+    """
+    if not path.exists():
+        return frozenset()
+    out = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        nv = normalize(line.split("#", 1)[0].strip())
+        if nv:
+            out.add(nv)
+    return frozenset(out)
+
+
+def _blocked_minus_resolved() -> frozenset[str]:
+    """Блокировка минус то, у чего хозяин установлен.
+
+    Порядок важен: имена из блок-листа отсеиваются в самом начале match(), до
+    всех ярусов, поэтому без этого вычитания явное правило «имя ведёт сюда»
+    просто не получало бы хода."""
+    blocked = load_blocked_names()
+    named = set()
+    for aliases in load_plant_aliases(_RESOLVED_PATH).values():
+        for a in aliases:
+            nv = normalize(a)
+            if nv:
+                named.add(nv)
+    return frozenset(blocked - named)
 
 
 def load_plant_aliases(path: Path = _ALIASES_PATH) -> dict[str, list[str]]:
@@ -544,6 +580,10 @@ def load_plant_aliases(path: Path = _ALIASES_PATH) -> dict[str, list[str]]:
         if canon and aliases:
             out.setdefault(canon, []).extend(aliases)
     return out
+
+
+# Читается один раз при импорте; матчер пересобирается на каждом перепривязывании.
+_BLOCKED_NAMES: frozenset[str] = _blocked_minus_resolved()
 
 
 def _adj_stem(tok: str) -> str:
@@ -670,7 +710,8 @@ class PlantMatcher:
             for variant in (p.names_historical or []):
                 nv = normalize(variant)
                 if (not nv or nv in _NON_PLANT_SUBSTANCES
-                        or (" " not in nv and nv in _AMBIGUOUS_FOLK)):
+                        or (" " not in nv and nv in _AMBIGUOUS_FOLK)
+                        or nv in _BLOCKED_NAMES):
                     continue
                 self._exact.setdefault(nv, p.id)
         self._noun_key = {tok: next(iter(ids)) for tok, ids in tok2sp.items() if len(ids) == 1}
@@ -694,6 +735,9 @@ class PlantMatcher:
             if nv:
                 self._primary.setdefault(nv, p.id)
         self._merge_aliases(load_plant_aliases())
+        # Разобранные спорные имена — после рукописных: у них та же природа
+        # (человекочитаемое правило «имя ведёт сюда»), но получены разбором.
+        self._merge_aliases(load_plant_aliases(_RESOLVED_PATH))
         # Кухонные омонимы — ПОСЛЕ всего и поверх всего: обычный алиас проигрывает
         # основному имени карточки, а беда именно в том, что основное имя занято
         # омонимом («Гвоздика» = Dianthus ловила 1186 рецептов с пряностью).
@@ -747,7 +791,13 @@ class PlantMatcher:
         # minerals…) are ingredients, not species — never resolve them to a
         # plant card, whatever a junk folk alias calls them. Dropping them here
         # AND excluding their keys/stems above makes the block survive a relink.
-        clean = [n for n in names if n and normalize(n) not in _NON_PLANT_SUBSTANCES
+        # Спорные имена отсеиваем ЗДЕСЬ, наравне с не-растительными веществами, а
+        # не только из индекса синонимов. Иначе блокировка не отключает имя, а
+        # понижает его: ярус 2 разбирает то же слово по корню и даёт ответ хуже
+        # прежнего — «божье дерево» уезжало с полыни на «Божьи глазки».
+        clean = [n for n in names
+                 if n and normalize(n) not in _NON_PLANT_SUBSTANCES
+                 and normalize(n) not in _BLOCKED_NAMES
                  and not _NONPLANT_RE.search(n)]
         # Tier 1: exact normalized full-name match.
         for n in clean:
