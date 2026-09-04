@@ -47,19 +47,21 @@ async def osm_ingest_region_activity(s: float, w: float, n: float, e: float, til
 
 
 @activity.defn
-async def build_place_sets_activity(window_label: str) -> dict:
+async def build_place_sets_activity(window_label: str, taxon_group: str = "plants") -> dict:
     """Compute the species-set for every quest_place missing one for this window.
-    Idempotent: only touches places without a set for `window_label`."""
+    Idempotent: only touches places without a set for `window_label` in this group.
+    `taxon_group` — 'plants' (как всегда) или 'fungi' (Phase «Осень»): грибные наборы
+    строятся тем же проходом, у мест без грибов сборщик сам отвечает low_density."""
     async with async_session() as db:
         ids = [str(r[0]) for r in (await db.execute(text(
             "SELECT p.id FROM quest_places p WHERE NOT EXISTS "
-            "(SELECT 1 FROM quest_place_sets s WHERE s.place_id=p.id AND s.window_label=:w AND s.taxon_group='plants')"),
-            {"w": window_label})).all()]
+            "(SELECT 1 FROM quest_place_sets s WHERE s.place_id=p.id AND s.window_label=:w AND s.taxon_group=:g)"),
+            {"w": window_label, "g": taxon_group})).all()]
     built = low_density = 0
     for i, pid in enumerate(ids):
         try:
             async with async_session() as db:
-                res = await quests_svc.compute_species_set(db, pid, window_label)
+                res = await quests_svc.compute_species_set(db, pid, window_label, taxon_group=taxon_group)
             if res.get("set_size"):
                 built += 1
             else:
@@ -67,7 +69,7 @@ async def build_place_sets_activity(window_label: str) -> dict:
         except Exception as ex:
             logger.warning("set build %s failed: %s", pid, str(ex)[:80])
         activity.heartbeat({"done": i + 1, "total": len(ids), "built": built, "low_density": low_density})
-    return {"total": len(ids), "built": built, "low_density": low_density}
+    return {"group": taxon_group, "total": len(ids), "built": built, "low_density": low_density}
 
 
 @activity.defn

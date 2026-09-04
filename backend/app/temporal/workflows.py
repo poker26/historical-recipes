@@ -675,10 +675,17 @@ class QuestSetBuilderWorkflow:
 
     @workflow.run
     async def run(self, window_label: str) -> dict:
-        return await workflow.execute_activity(
-            build_place_sets_activity, window_label,
+        # Два прохода по одному окну: растения — как всегда, затем грибы (Phase «Осень»).
+        # У места без грибов сборщик отвечает low_density, набор не пишется.
+        plants = await workflow.execute_activity(
+            build_place_sets_activity, args=[window_label, "plants"],
             start_to_close_timeout=timedelta(hours=12), heartbeat_timeout=_HEARTBEAT,
             retry_policy=_RETRY)
+        fungi = await workflow.execute_activity(
+            build_place_sets_activity, args=[window_label, "fungi"],
+            start_to_close_timeout=timedelta(hours=12), heartbeat_timeout=_HEARTBEAT,
+            retry_policy=_RETRY)
+        return {"window": window_label, "plants": plants, "fungi": fungi}
 
 
 @workflow.defn
