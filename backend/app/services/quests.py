@@ -1974,7 +1974,11 @@ async def public_profile(db: AsyncSession, id_str, viewer_device_key=None) -> di
     if dev and dev.blocked:
         return None
     handle = (dev.handle if dev else None) or auto_handle(dk)
-    species = await _species_count(db, dk)
+    # Тот же счётчик, что у лестницы «Собиратель» (синонимы схлопнуты): одно число
+    # видов во всех местах. Раньше профиль считал по-своему, а свой экран в клиенте —
+    # по локальной истории с потолком 100 записей; у «Горного Иван-чая» 88 видов на
+    # сервере превращались в 73 → 41 → 0 на экране (жалоба 7.09.2026).
+    species = await _collection_size(db, dk)
     shelf = await badge_shelf(db, str(dk))
     names = await _place_names(db, [b.get("place_id") for b in shelf])
     for b in shelf:
