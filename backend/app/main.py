@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import books, recipes, plants, dictionaries, search, indexing, pipeline, wizard, compounds, medical, identify, oils, quality, devices, places, quests, monographs, ops, moderation, agent
+from app.routers import books, recipes, plants, dictionaries, search, indexing, pipeline, wizard, compounds, medical, identify, oils, quality, devices, places, quests, monographs, ops, moderation, agent, houseplants
 
 # Configure logging so our logger.info() calls show up in docker logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -54,6 +54,7 @@ app.include_router(places.router, prefix="/api/places", tags=["places"])
 app.include_router(quests.router, prefix="/api/quests", tags=["quests"])
 app.include_router(monographs.router, prefix="/api/monographs", tags=["monographs"])
 app.include_router(ops.router, prefix="/api/ops", tags=["ops"])
+app.include_router(houseplants.router, prefix="/api/houseplants", tags=["houseplants"])
 # Consumer conversational agent (nastoiki.pro) — SSE chat over the curated
 # recipe-first tool set. See app/services/agent.py.
 app.include_router(agent.router, prefix="/api/agent", tags=["agent"])

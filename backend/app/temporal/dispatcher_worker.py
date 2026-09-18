@@ -25,12 +25,13 @@ from temporalio.worker import Worker
 
 from app.temporal.client import get_temporal_client
 from app.temporal import activities
-from app.temporal import cleanup_activities
+from app.temporal import cleanup_activities, houseplant_activities
 from app.temporal import quest_activities
 from app.temporal import monograph_activities
 from app.temporal import taxonomy_activities
 from app.temporal.workflows import (
     BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow, BiotopeCanonWorkflow,
+    HouseplantIngestWorkflow,
     IdentityConflictWorkflow, RecipeRelinkWorkflow, OsmIngestWorkflow, QuestSetBuilderWorkflow,
     ReaderMonographWorkflow, GenusTierWorkflow, EdibleSafetyWorkflow,
     PlaceBiotopeWorkflow, CitiesIngestWorkflow, CherepanovOcrWorkflow,
@@ -54,12 +55,14 @@ async def main():
                    BiotopeCanonWorkflow, IdentityConflictWorkflow, RecipeRelinkWorkflow,
                    OsmIngestWorkflow, QuestSetBuilderWorkflow, ReaderMonographWorkflow,
                    GenusTierWorkflow, EdibleSafetyWorkflow, PlaceBiotopeWorkflow,
-                   CitiesIngestWorkflow, CherepanovOcrWorkflow],
+                   CitiesIngestWorkflow, CherepanovOcrWorkflow,
+                   HouseplantIngestWorkflow],
         activities=[
             activities.maintain_pool_activity,
             # Autonomous plant-cleanup chain + quests-build + Layer-2 monograph batch.
             # All I/O-bound (LLM/iNat/Overpass/DB awaits), so unlike the CPU-heavy
             # pipeline activities they never block the event loop → safe to co-host.
+            houseplant_activities.houseplant_ingest_activity,
             cleanup_activities.run_enrichment_activity,
             cleanup_activities.run_backfill_activity,
             cleanup_activities.run_rename_activity,

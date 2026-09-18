@@ -53,6 +53,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from app.temporal.monograph_activities import generate_monographs_activity
     from app.temporal.taxonomy_activities import cherepanov_ocr_activity
+    from app.temporal.houseplant_activities import houseplant_ingest_activity
 
 # Generous per-step ceilings: the pre-reform 1M-char book took >60 min on a
 # single LLM step, so long steps get up to 3h.  Retries are bounded and skip
@@ -488,6 +489,32 @@ class PlantCleanupWorkflow:
         out["rename"] = await workflow.execute_activity(
             run_rename_activity, start_to_close_timeout=_SHORT, retry_policy=_RETRY)
         workflow.logger.info(f"PlantCleanupWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class HouseplantIngestWorkflow:
+    """Разбор книги о комнатных растениях: уход, болезни и цитаты в базу.
+
+    Книга разбирается кусками по несколько часов, и раньше такие прогоны шли
+    через ``docker compose exec``, то есть умирали от любой пересборки backend.
+    Здесь работа живёт в воркере: активность бьёт heartbeat после каждого куска
+    и после перезапуска продолжает с него же, а повторная запись безопасна,
+    потому что одна цитата одного источника второй раз не ложится.
+
+    Имя запуска — ``houseplant-<источник>``, чтобы две заливки одной книги не
+    шли параллельно.
+    """
+
+    @workflow.run
+    async def run(self, source: str, by_genus: bool = False,
+                  pages: list[int] | None = None, limit: int = 0) -> dict:
+        out = await workflow.execute_activity(
+            houseplant_ingest_activity,
+            args=[source, by_genus, pages, limit],
+            start_to_close_timeout=timedelta(hours=12),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"HouseplantIngestWorkflow done: {out}")
         return out
 
 

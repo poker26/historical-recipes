@@ -30,6 +30,7 @@ from app.models.identification import Identification
 from app.models.plant import Plant
 from app.services import minio as minio_svc
 from app.services import plant_id
+from app.services.houseplant_care import care_for_latins
 from app.services import mushroom_id
 from app.services import quests as quests_svc
 
@@ -205,6 +206,20 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
             result["registry_count"] = registry
         if out_of_scope:
             result["out_of_scope_count"] = out_of_scope
+        # Комнатные и составляют почти весь `outside_scope`: в сентябре 2026 они
+        # дали 81% снимков за день. Травник про них молчит по устройству, зато
+        # слой ухода знает и свет, и полив, и зимнюю температуру. Поэтому к
+        # такому кандидату прикладываем адрес его карточки ухода: клиент вместо
+        # тупика «вне рамок травника» ведёт человека туда, где ответ есть.
+        care = await care_for_latins(db, unmatched_latins)
+        care_count = 0
+        for c in candidates:
+            found = care.get(c["latin"])
+            if found:
+                c["care"] = found
+                care_count += 1
+        if care_count:
+            result["care_count"] = care_count
         # Третий ярус после карточки и реестра: РОД. Две трети отказов (замер
         # 2026-08-26) — это виды, чей род в корпусе есть; вместо тупика «нет в
         # атласе» отдаём родню, честно помеченную отдельным полем. Подменять вид

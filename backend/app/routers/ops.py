@@ -21,6 +21,7 @@ CLEANUP_TYPES = [
     "OsmIngestWorkflow",
     "BookDispatcherWorkflow",
     "MedicalNormalizerWorkflow",
+    "HouseplantIngestWorkflow",
 ]
 
 
