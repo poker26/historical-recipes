@@ -43,8 +43,105 @@ def _voice_line(row) -> str:
     season = SEASON_RU.get(row.season or "")
     text_value = (row.value_text or "").strip()
     if season and season not in text_value.lower():
-        return f"{season.capitalize()}: {text_value}"
+        # Пометка встаёт внутрь фразы, до точки: «Поливайте обильно (летом).»
+        if text_value.endswith((".", "!", "?")):
+            return f"{text_value[:-1].rstrip()} ({season}){text_value[-1]}"
+        return f"{text_value} ({season})"
     return text_value
+
+
+# Как режим полива называется в сводке. Слова книги остаются ниже, в голосах;
+# здесь нужно короткое слово, которое человек прочитает за секунду.
+WATER_RU = {
+    "abundant": "обильно",
+    "moderate": "умеренно",
+    "sparse": "скудно",
+    "rare": "редко",
+}
+
+LIGHT_RU = {
+    "sun": "на солнце",
+    "bright": "на светлом месте",
+    "part_shade": "в полутени",
+    "shade": "в тени",
+}
+
+
+def _most_common(values: list[str]) -> str:
+    """Самое частое из того, что говорят книги.
+
+    Книги расходятся, и усреднять их слова мы не беремся — но в сводке нужна
+    одна фраза. Берём то, что повторяется чаще; при ничьей — то, что встретилось
+    первым, чтобы сводка не прыгала от прогона к прогону.
+    """
+    best, best_count = "", 0
+    for value in values:
+        count = values.count(value)
+        if count > best_count:
+            best, best_count = value, count
+    return best
+
+
+def care_summary(rows) -> str:
+    """Полив, свет и зимний холод одной фразой.
+
+    Это первое, что человек ищет в карточке: он уже принёс растение домой и
+    хочет знать, что делать сегодня. Ниже в карточке те же советы стоят словами
+    книг, со ссылкой на страницу; здесь — только вывод.
+
+    Частоту полива в днях книги почти не называют: на 1064 правила приходится
+    пять случаев с интервалом. Поэтому сводка говорит режимом — обильно,
+    умеренно, скудно, — а не выдуманным «раз в неделю».
+    """
+    water: dict[str, list[str]] = {}
+    dry_between = False
+    lights: list[str] = []
+    winter_min: list[int] = []
+
+    for row in rows:
+        # Нормализованное значение есть не у каждой строки: книга могла сказать
+        # про полив словами, которые ни в один режим не укладываются.
+        raw = getattr(row, "value", None)
+        value = raw if isinstance(raw, dict) else {}
+        if row.field == "water":
+            mode = value.get("mode") or ""
+            if mode == "dry_between":
+                dry_between = True
+            elif mode in WATER_RU:
+                water.setdefault(row.season or "", []).append(mode)
+        elif row.field == "light":
+            level = value.get("level")
+            if level in LIGHT_RU:
+                lights.append(level)
+        elif row.field == "temperature":
+            low = value.get("c_min")
+            if low is not None and (row.season == "winter" or value.get("season") == "winter"):
+                winter_min.append(int(low))
+
+    lines: list[str] = []
+
+    summer = _most_common(water.get("summer", []))
+    winter = _most_common(water.get("winter", []))
+    always = _most_common(water.get("", []))
+    if summer and winter:
+        lines.append(f"Летом поливайте {WATER_RU[summer]}, зимой {WATER_RU[winter]}.")
+    elif summer:
+        lines.append(f"Летом поливайте {WATER_RU[summer]}.")
+    elif winter:
+        lines.append(f"Зимой поливайте {WATER_RU[winter]}.")
+    elif always:
+        lines.append(f"Поливайте {WATER_RU[always]}.")
+    if dry_between:
+        lines.append("Между поливами дайте земле просохнуть сверху.")
+
+    light = _most_common(lights)
+    if light:
+        lines.append(f"Держите {LIGHT_RU[light]}.")
+
+    if winter_min:
+        lines.append(f"Зимой не давайте опускаться ниже {max(winter_min)} градусов.")
+
+    return " ".join(lines)
 
 
 # Как читателю объясняется тяжесть. Слова книги остаются в карточке рядом,
@@ -174,13 +271,20 @@ def build_monograph(latin: str, rows, photo: dict | None, toxicity: list | None 
     if genus_only:
         verdict += " Книги описывают весь род, поэтому совет годится и для сортов."
 
+    # Сводка идёт первой фразой описания: человек открыл карточку, чтобы узнать,
+    # что делать с растением сегодня, а не чтобы прочитать всё, что о нём пишут
+    # пять книг. Книжные голоса стоят следом, каждый со своей страницей.
+    summary = care_summary(rows)
+    description = " ".join([summary] + sections) if summary else " ".join(sections)
+
     monograph = {
         "name": name_ru or latin,
         "name_latin": latin,
         "kingdom": "растение",
         "origin": "houseplant",
         "verdict": verdict,
-        "description": " ".join(sections),
+        "description": description,
+        "care_summary": summary,
         "care_sections": sections,
         "sources": books,
         "uses_total": 0,

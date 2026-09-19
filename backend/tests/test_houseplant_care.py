@@ -457,7 +457,7 @@ def test_card_monograph_keeps_book_voices_and_order():
     assert mono["care_sections"][0].startswith("Свет")
     assert "Поливайте обильно" in mono["care_sections"][1]
     assert mono["sources"] == ["Всё о комнатных растениях"]
-    assert mono["lead_fact"]["text"].startswith("Летом")
+    assert mono["lead_fact"]["text"] == "Поливайте обильно (летом)."
 
 
 def test_card_for_a_genus_says_it_covers_varieties():
@@ -593,3 +593,64 @@ def test_warning_lines_do_not_run_together_or_double_the_dot():
 
     assert sentence("поедании ими привлекательных плодов аглаонемы").endswith("аглаонемы.")
     assert sentence("удаление содержимого тракта.") == "удаление содержимого тракта."
+
+
+class _Row:
+    """Строка слоя ухода в том виде, в каком её отдаёт база."""
+
+    def __init__(self, field, value, season=None, value_text="", book="Хессайон", page=1):
+        self.field = field
+        self.value = value
+        self.season = season
+        self.value_text = value_text
+        self.book = book
+        self.page = page
+
+
+def test_summary_says_watering_by_season():
+    from app.services.houseplant_cards import care_summary
+
+    rows = [_Row("water", {"mode": "abundant"}, "summer"),
+            _Row("water", {"mode": "moderate"}, "winter")]
+    assert care_summary(rows) == "Летом поливайте обильно, зимой умеренно."
+
+
+def test_summary_adds_drying_between_waterings():
+    from app.services.houseplant_cards import care_summary
+
+    rows = [_Row("water", {"mode": "abundant"}, "summer"),
+            _Row("water", {"mode": "dry_between"})]
+    out = care_summary(rows)
+    assert "Летом поливайте обильно." in out
+    assert "дайте земле просохнуть сверху" in out
+
+
+def test_summary_picks_what_most_books_say():
+    """Три книги за полутень, одна за яркий свет — в сводке полутень."""
+    from app.services.houseplant_cards import care_summary
+
+    rows = [_Row("light", {"level": "part_shade"}), _Row("light", {"level": "part_shade"}),
+            _Row("light", {"level": "part_shade"}), _Row("light", {"level": "bright"})]
+    assert care_summary(rows) == "Держите в полутени."
+
+
+def test_summary_warns_about_winter_cold():
+    from app.services.houseplant_cards import care_summary
+
+    rows = [_Row("temperature", {"c_min": 7, "season": "winter"}, "winter"),
+            _Row("temperature", {"c_min": 12, "season": "winter"}, "winter")]
+    assert care_summary(rows) == "Зимой не давайте опускаться ниже 12 градусов."
+
+
+def test_summary_is_empty_when_books_said_nothing_measurable():
+    from app.services.houseplant_cards import care_summary
+
+    assert care_summary([_Row("propagation", {}, None, "Размножают делением куста.")]) == ""
+
+
+def test_season_is_shown_without_a_colon():
+    """Двоеточие-склейка читается как машинная подпись; сезон идёт в скобках."""
+    from app.services.houseplant_cards import _voice_line
+
+    assert _voice_line(_Row("water", {}, "winter", "Поливайте умеренно")) == "Поливайте умеренно (зимой)"
+    assert _voice_line(_Row("water", {}, "winter", "Поливайте умеренно.")) == "Поливайте умеренно (зимой)."
