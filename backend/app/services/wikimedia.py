@@ -70,6 +70,17 @@ def attribution_from(meta: dict) -> str:
     return ", ".join(x for x in (author, short, "Викимедиа") if x)
 
 
+def file_key(name: str) -> str:
+    """Имя файла в одном написании.
+
+    Справочник называет один и тот же файл двумя способами: в статье он
+    «Hoya_carnosa_20080928.jpg», а в заголовке страницы файла — «Файл:Hoya
+    carnosa 20080928.jpg», через пробелы. Из-за этого расхождения лицензии не
+    находились почти ни к одному снимку: сопоставление шло по разным написаниям.
+    """
+    return (name or "").replace("_", " ").strip()
+
+
 def title_map(payload: dict) -> dict[str, str]:
     """Кто во что превратился: справочник правит написание и ведёт по редиректам.
 
@@ -160,7 +171,7 @@ async def _licenses_for_files(client: httpx.AsyncClient, host: str,
     for page in pages.values():
         info = (page.get("imageinfo") or [{}])[0]
         meta = info.get("extmetadata") or {}
-        name = (page.get("title") or "").split(":", 1)[-1]
+        name = file_key((page.get("title") or "").split(":", 1)[-1])
         out[name] = {
             "license": (meta.get("License") or {}).get("value", ""),
             "attribution": attribution_from(meta),
@@ -194,7 +205,7 @@ async def photos_for_latins(client: httpx.AsyncClient, latins: list[str]) -> dic
 
             for asked in chunk:
                 item = images.get(asked)
-                meta = licenses.get(item["file"]) if item else None
+                meta = licenses.get(file_key(item["file"])) if item else None
                 if not item or not meta or not license_is_free(meta["license"]):
                     still_left.append(asked)
                     continue

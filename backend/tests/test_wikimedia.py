@@ -57,3 +57,10 @@ def test_attribution_names_the_author_and_the_licence():
     meta = {"Artist": {"value": '<a href="#">Frank Vincentz</a>'},
             "LicenseShortName": {"value": "CC BY-SA 3.0"}}
     assert attribution_from(meta) == "Frank Vincentz, CC BY-SA 3.0, Викимедиа"
+
+
+def test_file_name_is_matched_across_both_spellings():
+    """В статье файл «Hoya_carnosa.jpg», на его странице — «Файл:Hoya carnosa.jpg»."""
+    from app.services.wikimedia import file_key
+
+    assert file_key("Hoya_carnosa_20080928.jpg") == file_key("Hoya carnosa 20080928.jpg")

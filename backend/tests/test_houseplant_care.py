@@ -654,3 +654,23 @@ def test_season_is_shown_without_a_colon():
 
     assert _voice_line(_Row("water", {}, "winter", "Поливайте умеренно")) == "Поливайте умеренно (зимой)"
     assert _voice_line(_Row("water", {}, "winter", "Поливайте умеренно.")) == "Поливайте умеренно (зимой)."
+
+
+def test_care_blocks_carry_the_book_and_the_page():
+    """Приложению нужен не склеенный текст, а раздел, фраза, книга и страница."""
+    from types import SimpleNamespace
+    from app.services.houseplant_cards import build_monograph
+
+    rows = [
+        SimpleNamespace(field="water", season="summer", value_text="Поливайте обильно.",
+                        taxon_ru="Замиокулькас", book="Хессайон", page=54, value={"mode": "abundant"}),
+        SimpleNamespace(field="water", season="winter", value_text="Поливайте умеренно.",
+                        taxon_ru="Замиокулькас", book="Воронцов", page=31, value={"mode": "moderate"}),
+    ]
+    mono = build_monograph("Zamioculcas zamiifolia", rows, None)
+
+    block = mono["care"][0]
+    assert block["field"] == "water" and block["title"] == "Полив"
+    assert block["voices"][0] == {"text": "Поливайте обильно (летом).", "source": "Хессайон",
+                                  "page": 54, "season": "summer"}
+    assert block["voices"][1]["source"] == "Воронцов"

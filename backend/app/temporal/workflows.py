@@ -55,6 +55,7 @@ with workflow.unsafe.imports_passed_through():
     from app.temporal.taxonomy_activities import cherepanov_ocr_activity
     from app.temporal.houseplant_activities import (
         card_latin_cleanup_activity,
+        card_merge_activity,
         card_photos_activity,
         houseplant_cards_activity,
         houseplant_ingest_activity,
@@ -600,6 +601,26 @@ class CardPhotosWorkflow:
             start_to_close_timeout=timedelta(hours=3),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"CardPhotosWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class CardMergeWorkflow:
+    """Слияние карточек, разведённых по двум записям грязным латинским именем.
+
+    Человек снимает фикус и попадает на гербарную карточку, а уход из книг лежит
+    на второй, которую никто не открывает. Прогон оставляет ту, которую видят
+    люди, переносит на неё уход и снимок, пустышку убирает. Singleton
+    ``card-merge``.
+    """
+
+    @workflow.run
+    async def run(self, apply: bool = True) -> dict:
+        out = await workflow.execute_activity(
+            card_merge_activity, args=[apply],
+            start_to_close_timeout=timedelta(hours=2),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"CardMergeWorkflow done: {out}")
         return out
 
 

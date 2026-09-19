@@ -238,19 +238,34 @@ def build_monograph(latin: str, rows, photo: dict | None, toxicity: list | None 
         by_field.setdefault(row.field, []).append(row)
 
     sections: list[str] = []
+    # Тот же уход, но разобранный по полям и голосам: заголовок раздела, фраза
+    # книги, имя книги и страница. Приложение рисует это разделами, а склеенный
+    # текст ниже остаётся для тех, кто читает карточку целиком.
+    care_blocks: list[dict] = []
     for field_name in FIELD_ORDER:
         voices = by_field.get(field_name)
         if not voices:
             continue
         lines = []
+        block_voices = []
         seen: set[str] = set()
         for voice in voices:
             line = _voice_line(voice)
-            if line and line not in seen:
-                seen.add(line)
-                lines.append(line)
+            if not line or line in seen:
+                continue
+            seen.add(line)
+            lines.append(line)
+            block_voices.append({
+                "text": line,
+                "source": getattr(voice, "book", None),
+                "page": getattr(voice, "page", None),
+                "season": voice.season or None,
+            })
         if lines:
-            sections.append(f"{CARE_FIELDS.get(field_name, field_name)}. " + " ".join(lines))
+            title = CARE_FIELDS.get(field_name, field_name)
+            sections.append(f"{title}. " + " ".join(lines))
+            care_blocks.append({"field": field_name, "title": title,
+                                "voices": block_voices})
 
     # Ведущая мысль — полив, свет или температура: с этого начинают, когда
     # растение уже стоит дома и надо понять, что с ним делать сегодня.
@@ -286,6 +301,7 @@ def build_monograph(latin: str, rows, photo: dict | None, toxicity: list | None 
         "description": description,
         "care_summary": summary,
         "care_sections": sections,
+        "care": care_blocks,
         "sources": books,
         "uses_total": 0,
         "recipes": [],

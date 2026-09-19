@@ -118,3 +118,20 @@ async def card_photos_activity(limit: int = 0, apply: bool = True) -> dict:
 
     async with async_session() as db:
         return await fill_card_photos(db, limit=limit, apply=apply, on_piece=report)
+
+
+@activity.defn
+async def card_merge_activity(apply: bool = True) -> dict:
+    """Сводит карточки-дубли, разведённые грязным латинским именем.
+
+    Работа целиком в базе, но затрагивает тождество карточек, поэтому идёт
+    прогоном с отчётом, а не запросом из сессии.
+    """
+    from app.database import async_session
+    from app.services.card_merge import merge_houseplant_duplicates
+
+    async def report(progress: dict) -> None:
+        activity.heartbeat(progress.get("done", 0), progress)
+
+    async with async_session() as db:
+        return await merge_houseplant_duplicates(db, apply=apply, on_piece=report)
