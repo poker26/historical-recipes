@@ -556,3 +556,40 @@ def test_contents_lines_are_not_mistaken_for_articles():
     articles = find_articles([real, toc])
     assert len(articles) == 1
     assert articles[0][1] == "Диффенбахия пятнистая"
+
+
+def test_first_aid_reference_becomes_a_usable_line():
+    """Пособие отсылает к разделу агавы; в карточке такая отсылка бесполезна."""
+    from app.services.houseplant_cards import short_first_aid
+
+    book = ("помощь как при отравлении частями тех растений, в которых накапливаются "
+            "сильнодействующие, токсичные и ядовитые вещества (см. соответствующий "
+            "раздел при описании агавы американской)")
+    assert short_first_aid(book) == "вызвать рвоту, принять активированный уголь и обратиться к врачу"
+
+
+def test_first_aid_keeps_the_books_own_first_step():
+    from app.services.houseplant_cards import short_first_aid
+
+    book = ("необходимо скорейшее удаление содержимого желудочно-кишечного тракта. "
+            "В случае отсутствия спонтанной рвоты необходимо выпить растворы поваренной соли")
+    assert short_first_aid(book) == "необходимо скорейшее удаление содержимого желудочно-кишечного тракта."
+
+
+def test_symptoms_are_clipped_to_a_readable_line():
+    from app.services.houseplant_cards import clip
+
+    book = ("Экстракардиальные нарушения: со стороны ЖКТ (анорексия, тошнота, рвота, "
+            "икота, диарея, боли в животе), со стороны центральной нервной системы "
+            "(головная боль, головокружение, спутанность сознания, делирий, судороги), "
+            "со стороны органов зрения (нечёткость зрения, светобоязнь)")
+    out = clip(book, 220)
+    assert len(out) <= 220 and out.endswith("…")
+
+
+def test_warning_lines_do_not_run_together_or_double_the_dot():
+    """«плодов аглаонемы Первая помощь» и «тракта..» — обе беды из одного места."""
+    from app.services.houseplant_cards import sentence
+
+    assert sentence("поедании ими привлекательных плодов аглаонемы").endswith("аглаонемы.")
+    assert sentence("удаление содержимого тракта.") == "удаление содержимого тракта."

@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 
 from sqlalchemy import text
@@ -55,6 +56,45 @@ SEVERITY_RU = {
 }
 
 
+# Отсылка к другому разделу книги: в карточке она бесполезна, читателю некуда
+# перейти. «(см. соответствующий раздел при описании агавы американской)».
+_CROSS_REF_RE = re.compile(r"\(?\s*см\.[^)]*\)?", re.I)
+
+# Пособие почти всегда пишет «помощь как при отравлении частями тех растений…»
+# и отсылает к разделу агавы, где протокол занимает полстраницы: промывание,
+# адсорбенты, окисляющие средства. В карточке на телефоне это не читают, а
+# главное действие теряется, поэтому оставляем то, с чего книга и начинает.
+_AID_REFERENCE_RE = re.compile(r"^помощь\s+как\s+при\s+отравлени", re.I)
+_GENERIC_AID = ("вызвать рвоту, принять активированный уголь и обратиться к врачу")
+
+
+def clip(text: str, limit: int = 180) -> str:
+    """Первое предложение, и не длиннее заданного: карточку читают с телефона."""
+    body = _CROSS_REF_RE.sub("", text or "").strip().strip(" ,;")
+    if not body:
+        return ""
+    first = re.split(r"(?<=[.!?])\s+", body)[0].strip()
+    if len(first) <= limit:
+        return first
+    return first[: limit - 1].rstrip(" ,;") + "…"
+
+
+def sentence(text: str) -> str:
+    """Закрывает фразу точкой, если книга её не закрыла: строки идут подряд."""
+    body = (text or "").strip()
+    if not body or body[-1] in ".!?…":
+        return body
+    return body + "."
+
+
+def short_first_aid(text: str) -> str:
+    """Что делать — одной фразой вместо книжного протокола на полстраницы."""
+    body = _CROSS_REF_RE.sub("", text or "").strip()
+    if not body or _AID_REFERENCE_RE.match(body):
+        return _GENERIC_AID
+    return clip(body)
+
+
 def build_caution(toxicity: list) -> dict | None:
     """Собирает предупреждение об опасности из записей пособия.
 
@@ -71,18 +111,19 @@ def build_caution(toxicity: list) -> dict | None:
     # Раскладываем под то, что приложение уже умеет рисовать: отдельной строкой
     # ядовитые части, отдельной симптомы, остальное прозой. Так предупреждение
     # читается без выпуска новой версии клиента.
-    lines = [SEVERITY_RU.get(worst.severity or "", "Растение небезопасно") + "."]
+    lines = [sentence(SEVERITY_RU.get(worst.severity or "", "Растение небезопасно"))]
     if worst.children:
-        lines.append("Дети: " + worst.children)
+        lines.append(sentence("Дети: " + clip(worst.children, 220)))
     if worst.pets:
-        lines.append("Животные: " + worst.pets)
-    if worst.first_aid:
-        lines.append("Первая помощь: " + worst.first_aid)
+        lines.append(sentence("Животные: " + clip(worst.pets, 220)))
+    aid = short_first_aid(worst.first_aid or "")
+    if aid:
+        lines.append(sentence("Первая помощь: " + aid))
 
     return {
         "text": " ".join(lines),
         "toxic_parts": parts,
-        "symptoms": worst.symptoms or None,
+        "symptoms": clip(worst.symptoms or "", 220) or None,
         "severity": worst.severity or "",
         "source": worst.book,
         "page": worst.page,
@@ -252,6 +293,11 @@ async def build_cards(db: AsyncSession, limit: int = 0, min_facts: int = 3) -> d
                t.children, t.pets, t.page, s.title AS book
         FROM houseplant_toxicity t
         JOIN houseplant_source s ON s.id = t.source_id
+        -- Только подтверждённая латынь. Распознавание путает имена («Валлота
+        -- прекрасная» приехала как Urginea speciosa), а приписать ядовитость не
+        -- тому растению хуже, чем промолчать: человек поверит и выбросит
+        -- безобидный цветок или, наоборот, оставит опасный.
+        WHERE t.latin_verified = true
     """))).all()
     danger: dict[str, list] = {}
     for row in danger_rows:
