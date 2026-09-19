@@ -11,6 +11,7 @@ import logging
 from temporalio import activity
 
 from app.services.houseplant_ingest import ingest_book
+from app.services.houseplant_toxicity import ingest_toxicity_book
 
 logger = logging.getLogger(__name__)
 
@@ -40,3 +41,44 @@ async def houseplant_ingest_activity(source: str, by_genus: bool = False,
 
     return await ingest_book(source, by_genus=by_genus, pages=pages, limit=limit,
                              start_at=start_at, apply=True, on_piece=report)
+
+
+@activity.defn
+async def houseplant_toxicity_activity(source: str, book: str, limit: int = 0) -> dict:
+    """Разбирает пособие по ядовитым комнатным: чем опасно, симптомы, первая помощь.
+
+    Возобновляемая так же, как заливка ухода: номер разобранной статьи уходит в
+    heartbeat, после перезапуска работа продолжается с него.
+    """
+    start_at = 0
+    details = activity.info().heartbeat_details
+    if details:
+        try:
+            start_at = int(details[0])
+        except (TypeError, ValueError):
+            start_at = 0
+    if start_at:
+        logger.info(f"houseplant toxicity {source}: продолжаем со статьи {start_at}")
+
+    async def report(progress: dict) -> None:
+        activity.heartbeat(progress.get("done", 0) if progress.get("stage") == "разбор" else 0,
+                           progress)
+
+    return await ingest_toxicity_book(source, book, limit=limit, start_at=start_at,
+                                      apply=True, on_piece=report)
+
+
+@activity.defn
+async def houseplant_cards_activity(min_facts: int = 3, limit: int = 0) -> dict:
+    """Пересобирает карточки комнатных растений из слоя ухода и опасности.
+
+    Сборка детерминированная, без вызовов модели, но идёт сотнями запросов к
+    iNaturalist за фотографиями, поэтому живёт в воркере, а не в ssh-сессии.
+    """
+    from app.database import async_session
+    from app.services.houseplant_cards import build_cards
+
+    async with async_session() as db:
+        out = await build_cards(db, limit=limit, min_facts=min_facts)
+    activity.heartbeat(out.get("cards", 0), out)
+    return out

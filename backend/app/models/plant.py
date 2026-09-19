@@ -35,6 +35,11 @@ class Plant(Base):
     # HUB (no own facts) that bare/generic ingredient mentions («вишня») link to;
     # its member species point back via parent_id. genus rows grounded by latin genus.
     rank: Mapped[str] = mapped_column(String(20), default="species", server_default="species")
+    # Откуда карточка: herbarium — из травников (участвует в прогулках и витринах),
+    # houseplant — из слоя ухода за комнатными (отвечает на определение по фото,
+    # но в полевые механики не идёт).
+    origin: Mapped[str] = mapped_column(String(20), default="herbarium", server_default="herbarium")
+
     parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("plants.id", ondelete="SET NULL"))
     # Forager-safety (RFC-edible-safety): ordinal «will it hurt me if I eat it» level
     # 0=unknown · 1=edible · 2=conditionally edible · 3=dose-dependent/medicinal-toxic ·

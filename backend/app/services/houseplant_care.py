@@ -55,6 +55,11 @@ HOUSEPLANT_BOOKS: dict[str, dict] = {
         "author": "Воронцов В. В.", "year": 2005, "audience": "room",
         "object": "vorontsov-2005-ukhod-za-komnatnymi-rasteniiami.pdf",
     },
+    "morozova2019": {
+        "title": "Комнатные ядовитые растения",
+        "author": "Морозова К. В., Вандышев В. В.", "year": 2019, "audience": "room",
+        "object": "morozova-komnatnye-yadovitye-rasteniia.pdf",
+    },
     "hessayon": {
         "title": "Всё о комнатных растениях",
         "author": "Хессайон Д. Г.", "year": 2000, "audience": "room",

@@ -31,6 +31,7 @@ from app.models.plant import Plant
 from app.services import minio as minio_svc
 from app.services import plant_id
 from app.services.houseplant_care import care_for_latins
+from app.services.houseplant_cards import cards_for_latins
 from app.services import mushroom_id
 from app.services import quests as quests_svc
 
@@ -212,12 +213,24 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
         # такому кандидату прикладываем адрес его карточки ухода: клиент вместо
         # тупика «вне рамок травника» ведёт человека туда, где ответ есть.
         care = await care_for_latins(db, unmatched_latins)
+        # Карточку комнатного ищем и по роду: определитель называет вид
+        # («Syngonium podophyllum»), а книги описывают род, и карточка заведена
+        # на него. Без этого человек, снявший сингониум, слышал «карточки нет»
+        # при живой карточке рода.
+        houseplant_cards = await cards_for_latins(db, unmatched_latins)
         care_count = 0
         for c in candidates:
             found = care.get(c["latin"])
             if found:
                 c["care"] = found
                 care_count += 1
+            card = houseplant_cards.get(c["latin"])
+            if card and c.get("plant") is None:
+                c["plant"] = {k: v for k, v in card.items() if k != "scope"}
+                c["plant"]["origin"] = "houseplant"
+                # Честно говорим, что карточка про род, а не про снятый вид.
+                c["plant_scope"] = card["scope"]
+                c["registry"] = {**(c.get("registry") or {}), "status": "houseplant_card"}
         if care_count:
             result["care_count"] = care_count
         # Третий ярус после карточки и реестра: РОД. Две трети отказов (замер

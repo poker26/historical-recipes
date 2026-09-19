@@ -31,7 +31,9 @@ from app.temporal import monograph_activities
 from app.temporal import taxonomy_activities
 from app.temporal.workflows import (
     BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow, BiotopeCanonWorkflow,
+    HouseplantCardsWorkflow,
     HouseplantIngestWorkflow,
+    HouseplantToxicityWorkflow,
     IdentityConflictWorkflow, RecipeRelinkWorkflow, OsmIngestWorkflow, QuestSetBuilderWorkflow,
     ReaderMonographWorkflow, GenusTierWorkflow, EdibleSafetyWorkflow,
     PlaceBiotopeWorkflow, CitiesIngestWorkflow, CherepanovOcrWorkflow,
@@ -56,13 +58,16 @@ async def main():
                    OsmIngestWorkflow, QuestSetBuilderWorkflow, ReaderMonographWorkflow,
                    GenusTierWorkflow, EdibleSafetyWorkflow, PlaceBiotopeWorkflow,
                    CitiesIngestWorkflow, CherepanovOcrWorkflow,
-                   HouseplantIngestWorkflow],
+                   HouseplantIngestWorkflow, HouseplantToxicityWorkflow,
+                   HouseplantCardsWorkflow],
         activities=[
             activities.maintain_pool_activity,
             # Autonomous plant-cleanup chain + quests-build + Layer-2 monograph batch.
             # All I/O-bound (LLM/iNat/Overpass/DB awaits), so unlike the CPU-heavy
             # pipeline activities they never block the event loop → safe to co-host.
             houseplant_activities.houseplant_ingest_activity,
+            houseplant_activities.houseplant_toxicity_activity,
+            houseplant_activities.houseplant_cards_activity,
             cleanup_activities.run_enrichment_activity,
             cleanup_activities.run_backfill_activity,
             cleanup_activities.run_rename_activity,

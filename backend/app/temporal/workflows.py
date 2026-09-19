@@ -53,7 +53,11 @@ with workflow.unsafe.imports_passed_through():
     )
     from app.temporal.monograph_activities import generate_monographs_activity
     from app.temporal.taxonomy_activities import cherepanov_ocr_activity
-    from app.temporal.houseplant_activities import houseplant_ingest_activity
+    from app.temporal.houseplant_activities import (
+        houseplant_cards_activity,
+        houseplant_ingest_activity,
+        houseplant_toxicity_activity,
+    )
 
 # Generous per-step ceilings: the pre-reform 1M-char book took >60 min on a
 # single LLM step, so long steps get up to 3h.  Retries are bounded and skip
@@ -515,6 +519,45 @@ class HouseplantIngestWorkflow:
             start_to_close_timeout=timedelta(hours=12),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"HouseplantIngestWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class HouseplantToxicityWorkflow:
+    """Разбор пособия по ядовитым комнатным: чем опасно, для кого и что делать.
+
+    Отдельно от заливки ухода, потому что источник другой и правило другое:
+    книга по уходу не становится источником по токсикологии оттого, что
+    упомянула жгучий сок. Имя запуска — ``houseplant-toxicity-<источник>``.
+    """
+
+    @workflow.run
+    async def run(self, source: str, book: str, limit: int = 0) -> dict:
+        out = await workflow.execute_activity(
+            houseplant_toxicity_activity,
+            args=[source, book, limit],
+            start_to_close_timeout=timedelta(hours=12),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"HouseplantToxicityWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class HouseplantCardsWorkflow:
+    """Пересборка карточек комнатных растений из слоя ухода и слоя опасности.
+
+    Запускается после каждой заливки книги: карточка складывается заново, и в
+    ней появляется то, что книга добавила — новый совет или предупреждение об
+    опасности. Singleton ``houseplant-cards``.
+    """
+
+    @workflow.run
+    async def run(self, min_facts: int = 3, limit: int = 0) -> dict:
+        out = await workflow.execute_activity(
+            houseplant_cards_activity, args=[min_facts, limit],
+            start_to_close_timeout=timedelta(hours=3),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"HouseplantCardsWorkflow done: {out}")
         return out
 
 

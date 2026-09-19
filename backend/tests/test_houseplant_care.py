@@ -434,3 +434,125 @@ def test_cyrillic_lookalikes_inside_a_latin_name_are_fixed():
     assert normalize_latin("Aglaoнema") == "Aglaonema"
     assert normalize_latin("Ficus") == "Ficus"          # чистую латынь не трогаем
     assert normalize_latin("Ахименес") == "Ахименес"    # чисто русское имя тоже
+
+
+def test_card_monograph_keeps_book_voices_and_order():
+    """Карточка комнатного: разделы по порядку, фразы книг как есть."""
+    from types import SimpleNamespace
+    from app.services.houseplant_cards import build_monograph
+
+    rows = [
+        SimpleNamespace(field="water", season="summer", value_text="Поливайте обильно.",
+                        taxon_ru="Замиокулькас", book="Всё о комнатных растениях"),
+        SimpleNamespace(field="water", season="winter", value_text="зимой поливайте скудно.",
+                        taxon_ru="Замиокулькас", book="Всё о комнатных растениях"),
+        SimpleNamespace(field="light", season=None, value_text="Слегка тенистое место.",
+                        taxon_ru="Замиокулькас", book="Всё о комнатных растениях"),
+    ]
+    mono = build_monograph("Zamioculcas zamiifolia", rows, None)
+
+    assert mono["name"] == "Замиокулькас"
+    assert mono["origin"] == "houseplant"
+    # свет идёт раньше полива: с него начинается карточка
+    assert mono["care_sections"][0].startswith("Свет")
+    assert "Поливайте обильно" in mono["care_sections"][1]
+    assert mono["sources"] == ["Всё о комнатных растениях"]
+    assert mono["lead_fact"]["text"].startswith("Летом")
+
+
+def test_card_for_a_genus_says_it_covers_varieties():
+    from types import SimpleNamespace
+    from app.services.houseplant_cards import build_monograph
+
+    rows = [SimpleNamespace(field="light", season=None, value_text="Светлое место.",
+                            taxon_ru="Хойя", book="Сааков")]
+    mono = build_monograph("Hoya", rows, None)
+    assert "сортов" in mono["verdict"]
+
+
+def test_toxicity_article_header_from_the_book():
+    """Заголовки пособия: «1.1. Агава американская — Agave americana L.»"""
+    from app.services.houseplant_toxicity import find_articles
+
+    pages = [
+        "ГЛАВА 1.\n1.1. Агава американская — Agave americana L.\n"
+        "Семейство Агавовые — Agavaceae\n"
+        + "Ботаническое описание. Род агава насчитывает 300 видов. " * 12,
+        "Первая помощь: промыть.\n1.2. Диффенбахия пятнистая — Dieffenbachia maculata\n"
+        + "Сок вызывает ожог слизистой рта и глотки. " * 20,
+    ]
+    articles = find_articles(pages)
+    assert [a[0] for a in articles] == ["Agave americana", "Dieffenbachia maculata"]
+    # первая помощь со второй страницы принадлежит первой статье
+    assert "Первая помощь" in articles[0][2]
+    assert articles[1][3] == 2
+
+
+def test_severity_is_graded_by_the_books_own_words():
+    from app.services.houseplant_toxicity import grade_severity
+
+    assert grade_severity("Сок вызывает ожог слизистой и жжение") == "irritant"
+    assert grade_severity("Вызывает рвоту и судороги") == "toxic"
+    assert grade_severity("Возможен смертельный исход при остановке сердца") == "dangerous"
+    assert grade_severity("Растение неприхотливо") == ""
+
+
+def test_toxicity_header_survives_cyrillic_latin():
+    """Распознаватель пишет латынь кириллицей: «Адауе атепсапа (Е.»"""
+    from app.services.houseplant_toxicity import find_articles
+
+    pages = ["ГЛАВА 1.\n1.1. Агава американская — Адауе атепсапа (Е.\n"
+             "Семейство Агавовые — Адауасеае\n"
+             + "Сок вызывает дерматит при попадании на кожу. " * 20,
+             "1.2. Диффенбахия пятнистая — Dieffenbachia maculata\n"
+             + "Ожог слизистой рта и глотки. " * 30]
+    articles = find_articles(pages)
+    assert [a[1] for a in articles] == ["Агава американская", "Диффенбахия пятнистая"]
+    # у первой латынь не читается, у второй читается
+    assert articles[0][0] == ""
+    assert articles[1][0] == "Dieffenbachia maculata"
+
+
+def test_card_warning_puts_danger_first():
+    """Предупреждение человек должен прочитать раньше советов про полив."""
+    from types import SimpleNamespace
+    from app.services.houseplant_cards import build_monograph
+
+    care = [SimpleNamespace(field="water", season=None, value_text="Поливайте умеренно.",
+                            taxon_ru="Аглаонема", book="Всё о комнатных растениях")]
+    danger = [SimpleNamespace(severity="toxic", parts=["все части растения", "особенно плоды"],
+                              symptoms="Тошнота, рвота, слюнотечение.",
+                              first_aid="Промыть желудок.",
+                              children="Дети травятся привлекательными плодами.",
+                              pets="", page=11, book="Комнатные ядовитые растения")]
+    mono = build_monograph("Aglaonema commutatum", care, None, danger)
+
+    assert mono["is_toxic"] is True
+    assert mono["verdict"].startswith("Растение ядовито")
+    assert mono["cautions"]["toxic_parts"] == ["все части растения", "особенно плоды"]
+    assert mono["cautions"]["symptoms"].startswith("Тошнота")
+    assert "Дети:" in mono["cautions"]["text"]
+    assert "Первая помощь:" in mono["cautions"]["text"]
+    assert mono["cautions"]["page"] == 11
+
+
+def test_card_without_danger_stays_plain():
+    from types import SimpleNamespace
+    from app.services.houseplant_cards import build_monograph
+
+    care = [SimpleNamespace(field="light", season=None, value_text="Светлое место.",
+                            taxon_ru="Хлорофитум", book="Сааков")]
+    mono = build_monograph("Chlorophytum", care, None, [])
+    assert mono["is_toxic"] is False
+    assert "cautions" not in mono
+
+
+def test_contents_lines_are_not_mistaken_for_articles():
+    """Оглавление повторяет все заголовки — статьи находились дважды."""
+    from app.services.houseplant_toxicity import find_articles
+
+    real = "1.19. Диффенбахия пятнистая — Dieffenbachia maculata\n" + ("Сок ядовит. " * 60)
+    toc = "1.19. Диффенбахия пятнистая — Dieffenbachia maculata ....... 56\n"
+    articles = find_articles([real, toc])
+    assert len(articles) == 1
+    assert articles[0][1] == "Диффенбахия пятнистая"
