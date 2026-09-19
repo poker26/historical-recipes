@@ -38,6 +38,11 @@ _CULTIVAR_RE = re.compile(r"""['"“”‘’][^'"“”‘’]*['"“”‘’]
 _RANK_WORDS = {"var", "var.", "subsp", "subsp.", "ssp", "ssp.", "f", "f.",
                "forma", "cv", "cv.", "sect", "sect."}
 
+# Как царство карточки называется в GBIF. Без этого справочник не подтверждал
+# ни одного гриба: «Lactarius resimus» он ищет среди растений и не находит,
+# а груздь настоящий за две недели показался семь раз.
+GBIF_KINGDOM = {"растение": "Plantae", "гриб": "Fungi", "животное": "Animalia"}
+
 
 def looks_like_author(word: str) -> bool:
     """Слово — фамилия ботаника, а не эпитет вида.
@@ -130,7 +135,7 @@ async def clean_card_latins(db, limit: int = 0, apply: bool = False,
     from app.services.houseplant_care import resolve_latin
 
     rows = (await db.execute(text(
-        "SELECT id, name, name_latin FROM plants "
+        "SELECT id, name, name_latin, kingdom FROM plants "
         "WHERE name_latin IS NOT NULL AND name_latin <> '' ORDER BY name_latin"
     ))).all()
 
@@ -148,7 +153,7 @@ async def clean_card_latins(db, limit: int = 0, apply: bool = False,
         if not candidate or candidate.lower() == row.name_latin.strip().lower():
             continue
 
-        accepted, verified = await resolve_latin(candidate)
+        accepted, verified = await resolve_latin(candidate, GBIF_KINGDOM.get(row.kingdom, "Plantae"))
         if not verified:
             out["unknown"] += 1
         elif accepted.strip().lower() != candidate.strip().lower():

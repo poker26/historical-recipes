@@ -30,3 +30,30 @@ def test_author_comes_without_markup():
     html = '<span class="int-own-work" lang="ru">Собственная работа</span>'
     assert plain(html) == "Собственная работа"
     assert plain('<a href="//commons.wikimedia.org/wiki/User:Ies">Frank Vincentz</a>') == "Frank Vincentz"
+
+
+def test_redirect_chain_is_followed():
+    """Спросили Abutilon, а статья называется «Канатник»."""
+    from app.services.wikimedia import title_map
+
+    payload = {"query": {"redirects": [{"from": "Abutilon", "to": "Канатник"}]}}
+    assert title_map(payload)["Abutilon"] == "Канатник"
+
+
+def test_spelling_fix_then_redirect():
+    """Справочник сначала правит написание, потом ведёт по редиректу."""
+    from app.services.wikimedia import title_map
+
+    payload = {"query": {
+        "normalized": [{"from": "ficus elastica", "to": "Ficus elastica"}],
+        "redirects": [{"from": "Ficus elastica", "to": "Фикус каучуконосный"}],
+    }}
+    assert title_map(payload)["ficus elastica"] == "Фикус каучуконосный"
+
+
+def test_attribution_names_the_author_and_the_licence():
+    from app.services.wikimedia import attribution_from
+
+    meta = {"Artist": {"value": '<a href="#">Frank Vincentz</a>'},
+            "LicenseShortName": {"value": "CC BY-SA 3.0"}}
+    assert attribution_from(meta) == "Frank Vincentz, CC BY-SA 3.0, Викимедиа"

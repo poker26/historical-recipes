@@ -987,7 +987,7 @@ GBIF_BACKBONE = "d7dddbf4-2cf0-4f39-9b2a-bb099caae36c"
 
 # Имена сверяются пачками и повторяются от статьи к статье, поэтому ответы
 # держим в памяти процесса: на книгу это сотни запросов вместо тысяч.
-_GBIF_CACHE: dict[str, tuple[str, bool]] = {}
+_GBIF_CACHE: dict[tuple[str, str], tuple[str, bool]] = {}
 
 # Ниже этой уверенности GBIF угадывает, а не узнаёт, и его ответ не лучше
 # нашего распознавания.
@@ -1064,7 +1064,7 @@ def latin_for_lookup(name: str) -> str:
     return " ".join(parts[:2])
 
 
-async def resolve_latin(name: str) -> tuple[str, bool]:
+async def resolve_latin(name: str, kingdom: str = "Plantae") -> tuple[str, bool]:
     """Принятое написание имени и признак того, что GBIF его подтвердил.
 
     Распознавание книг портит латынь: в базу приехал «Stepttanotis» вместо
@@ -1079,15 +1079,18 @@ async def resolve_latin(name: str) -> tuple[str, bool]:
     key = latin_for_lookup(name)
     if not key:
         return "", False
-    if key in _GBIF_CACHE:
-        return _GBIF_CACHE[key]
+    # Царство входит в ключ памяти: у растений и грибов бывают одинаковые имена,
+    # и ответ про одно нельзя выдавать за ответ про другое.
+    cached = _GBIF_CACHE.get((key, kingdom))
+    if cached:
+        return cached
 
     # Царство и ранг обязательны. Без них справочник отказывается выбирать
     # между растением и животным у имён-омонимов и молча отвечает «не знаю»:
     # так у нас «не узнались» Plumbago и Duvalia, вполне обычные комнатные.
     params = {
         "name": key,
-        "kingdom": "Plantae",
+        "kingdom": kingdom,
         "rank": "GENUS" if len(key.split()) == 1 else "SPECIES",
     }
     try:
@@ -1104,16 +1107,16 @@ async def resolve_latin(name: str) -> tuple[str, bool]:
     # типа» и «совпало до царства». Поиск по тому же бэкбону отвечает прямо, и
     # среди ответов мы берём только точное совпадение написания у растения.
     if not result[1]:
-        found = await _search_backbone(key, params["rank"])
+        found = await _search_backbone(key, params["rank"], kingdom)
         if found:
             result = (found, True)
 
-    _GBIF_CACHE[key] = result
+    _GBIF_CACHE[(key, kingdom)] = result
     return result
 
 
-async def _search_backbone(name: str, rank: str) -> str:
-    """Ищет имя в бэкбоне GBIF и возвращает точное совпадение у растений."""
+async def _search_backbone(name: str, rank: str, kingdom: str = "Plantae") -> str:
+    """Ищет имя в бэкбоне GBIF и возвращает точное совпадение в нужном царстве."""
     import httpx
 
     try:
@@ -1128,7 +1131,7 @@ async def _search_backbone(name: str, rank: str) -> str:
 
     for row in data.get("results", []):
         canonical = row.get("canonicalName") or ""
-        if (row.get("kingdom") == "Plantae"
+        if (row.get("kingdom") == kingdom
                 and canonical.lower() == name.lower()):
             return normalize_latin(canonical)
     return ""
