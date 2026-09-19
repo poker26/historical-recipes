@@ -31,6 +31,7 @@ from app.temporal import monograph_activities
 from app.temporal import taxonomy_activities
 from app.temporal.workflows import (
     BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow, BiotopeCanonWorkflow,
+    CardLatinCleanupWorkflow, CardPhotosWorkflow,
     HouseplantCardsWorkflow,
     HouseplantIngestWorkflow,
     HouseplantToxicityWorkflow,
@@ -59,7 +60,8 @@ async def main():
                    GenusTierWorkflow, EdibleSafetyWorkflow, PlaceBiotopeWorkflow,
                    CitiesIngestWorkflow, CherepanovOcrWorkflow,
                    HouseplantIngestWorkflow, HouseplantToxicityWorkflow,
-                   HouseplantCardsWorkflow],
+                   HouseplantCardsWorkflow, CardLatinCleanupWorkflow,
+                   CardPhotosWorkflow],
         activities=[
             activities.maintain_pool_activity,
             # Autonomous plant-cleanup chain + quests-build + Layer-2 monograph batch.
@@ -68,6 +70,8 @@ async def main():
             houseplant_activities.houseplant_ingest_activity,
             houseplant_activities.houseplant_toxicity_activity,
             houseplant_activities.houseplant_cards_activity,
+            houseplant_activities.card_latin_cleanup_activity,
+            houseplant_activities.card_photos_activity,
             cleanup_activities.run_enrichment_activity,
             cleanup_activities.run_backfill_activity,
             cleanup_activities.run_rename_activity,

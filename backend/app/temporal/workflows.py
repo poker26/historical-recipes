@@ -54,6 +54,8 @@ with workflow.unsafe.imports_passed_through():
     from app.temporal.monograph_activities import generate_monographs_activity
     from app.temporal.taxonomy_activities import cherepanov_ocr_activity
     from app.temporal.houseplant_activities import (
+        card_latin_cleanup_activity,
+        card_photos_activity,
         houseplant_cards_activity,
         houseplant_ingest_activity,
         houseplant_toxicity_activity,
@@ -558,6 +560,46 @@ class HouseplantCardsWorkflow:
             start_to_close_timeout=timedelta(hours=3),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"HouseplantCardsWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class CardLatinCleanupWorkflow:
+    """Чистка латинских имён карточек от фамилий авторов.
+
+    Латынь стоит в карточке под русским именем, и человек её читает. Фамилия
+    ботаника, который вид описал, для справочника норма, а в телефоне мусор.
+    Прогон спрашивает GBIF по каждому имени и меняет только то, что справочник
+    подтвердил. Singleton ``card-latin-cleanup``.
+    """
+
+    @workflow.run
+    async def run(self, limit: int = 0, apply: bool = True) -> dict:
+        out = await workflow.execute_activity(
+            card_latin_cleanup_activity, args=[limit, apply],
+            start_to_close_timeout=timedelta(hours=3),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"CardLatinCleanupWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class CardPhotosWorkflow:
+    """Добор фотографий карточкам комнатных растений.
+
+    Человек снял горшок и хочет убедиться, что мы узнали именно его растение.
+    Без картинки карточка этого не даёт. iNaturalist знает дикую флору, а про
+    комнатные почти всегда есть статья в Википедии, откуда снимок и берётся —
+    только со свободной лицензией и с именем автора. Singleton ``card-photos``.
+    """
+
+    @workflow.run
+    async def run(self, limit: int = 0, apply: bool = True) -> dict:
+        out = await workflow.execute_activity(
+            card_photos_activity, args=[limit, apply],
+            start_to_close_timeout=timedelta(hours=3),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"CardPhotosWorkflow done: {out}")
         return out
 
 

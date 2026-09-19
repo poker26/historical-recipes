@@ -82,3 +82,39 @@ async def houseplant_cards_activity(min_facts: int = 3, limit: int = 0) -> dict:
         out = await build_cards(db, limit=limit, min_facts=min_facts)
     activity.heartbeat(out.get("cards", 0), out)
     return out
+
+
+@activity.defn
+async def card_latin_cleanup_activity(limit: int = 0, apply: bool = True) -> dict:
+    """Снимает фамилии ботаников с латинских имён карточек.
+
+    Работа идёт сотнями запросов к GBIF: каждое имя проверяется справочником,
+    и без подтверждения карточка остаётся как была. Из-за этих запросов прогон
+    живёт в воркере, а не в ssh-сессии.
+    """
+    from app.database import async_session
+    from app.services.card_latin import clean_card_latins
+
+    async def report(progress: dict) -> None:
+        activity.heartbeat(progress.get("done", 0), progress)
+
+    async with async_session() as db:
+        return await clean_card_latins(db, limit=limit, apply=apply, on_piece=report)
+
+
+@activity.defn
+async def card_photos_activity(limit: int = 0, apply: bool = True) -> dict:
+    """Добирает карточкам комнатных фотографии из Викимедиа.
+
+    Сотни запросов к Википедии по одному на карточку, поэтому прогон живёт в
+    воркере. Возобновляемая: повторный запуск берёт только те карточки, у
+    которых снимка всё ещё нет.
+    """
+    from app.database import async_session
+    from app.services.wikimedia import fill_card_photos
+
+    async def report(progress: dict) -> None:
+        activity.heartbeat(progress.get("done", 0), progress)
+
+    async with async_session() as db:
+        return await fill_card_photos(db, limit=limit, apply=apply, on_piece=report)
