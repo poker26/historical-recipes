@@ -674,3 +674,42 @@ def test_care_blocks_carry_the_book_and_the_page():
     assert block["voices"][0] == {"text": "Поливайте обильно (летом).", "source": "Хессайон",
                                   "page": 54, "season": "summer"}
     assert block["voices"][1]["source"] == "Воронцов"
+
+
+def test_a_phrase_swallowed_by_its_neighbour_is_dropped():
+    """У фикуса одна и та же фраза приехала дважды, вторая договаривала про свет."""
+    from types import SimpleNamespace
+    from app.services.houseplant_cards import drop_swallowed
+
+    short = SimpleNamespace(value_text="В комнатах F. elastica хорошо растет при 18—20°.",
+                            book="Сааков")
+    long = SimpleNamespace(
+        value_text="В комнатах F. elastica хорошо растет при 18—20°. Растение "
+                   "необходимо устанавливать ближе к свету.", book="Сааков")
+    assert drop_swallowed([short, long]) == [short]
+
+
+def test_same_phrase_from_two_books_stays_twice():
+    """Совпадение книг — не повод выбросить голос: их расхождения мы показываем."""
+    from types import SimpleNamespace
+    from app.services.houseplant_cards import drop_swallowed
+
+    a = SimpleNamespace(value_text="Поливайте обильно.", book="Хессайон")
+    b = SimpleNamespace(value_text="Поливайте обильно. Зимой реже.", book="Воронцов")
+    assert drop_swallowed([a, b]) == [a, b]
+
+
+def test_summary_names_the_comfortable_range():
+    """У фикуса книга говорит не про зимний холод, а про 18—20 градусов круглый год."""
+    from app.services.houseplant_cards import care_summary
+
+    rows = [_Row("temperature", {"c_min": 18, "c_max": 20})]
+    assert care_summary(rows) == "Хорошо себя чувствует при 18—20 градусах."
+
+
+def test_light_from_saakovs_wording():
+    """«Устанавливать ближе к свету» — это и есть светлое место."""
+    from app.services.houseplant_care import normalize_light
+
+    assert normalize_light("Растение необходимо устанавливать ближе к свету, "
+                           "беречь от сквозняков")["level"] == "bright"

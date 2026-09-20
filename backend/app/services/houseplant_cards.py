@@ -82,6 +82,28 @@ def _most_common(values: list[str]) -> str:
     return best
 
 
+def drop_swallowed(voices: list) -> list:
+    """Убирает фразу, целиком проглоченную соседней фразой той же книги.
+
+    Извлекатель иногда берёт абзац дважды: один раз по делу, второй раз вместе
+    со следующим советом. У фикуса в разделе про температуру так вышли две
+    записи, где вторая начиналась теми же словами и договаривала про свет.
+    Оставляем короткую: она про это поле, длинная захватила соседнее.
+    """
+    kept: list = []
+    texts = [(v, (v.value_text or "").strip()) for v in voices]
+    for voice, text_value in texts:
+        swallows = any(
+            other_text and text_value and other_text != text_value
+            and other_text in text_value
+            and getattr(other, "book", None) == getattr(voice, "book", None)
+            for other, other_text in texts
+        )
+        if not swallows:
+            kept.append(voice)
+    return kept or voices
+
+
 def care_summary(rows) -> str:
     """Полив, свет и зимний холод одной фразой.
 
@@ -97,6 +119,8 @@ def care_summary(rows) -> str:
     dry_between = False
     lights: list[str] = []
     winter_min: list[int] = []
+    comfort: list[tuple[int, int]] = []
+    too_warm: list[int] = []
 
     for row in rows:
         # Нормализованное значение есть не у каждой строки: книга могла сказать
@@ -114,9 +138,13 @@ def care_summary(rows) -> str:
             if level in LIGHT_RU:
                 lights.append(level)
         elif row.field == "temperature":
-            low = value.get("c_min")
+            low, high = value.get("c_min"), value.get("c_max")
             if low is not None and (row.season == "winter" or value.get("season") == "winter"):
                 winter_min.append(int(low))
+            elif low is not None and high is not None:
+                comfort.append((int(low), int(high)))
+            elif high is not None:
+                too_warm.append(int(high))
 
     lines: list[str] = []
 
@@ -140,6 +168,13 @@ def care_summary(rows) -> str:
 
     if winter_min:
         lines.append(f"Зимой не давайте опускаться ниже {max(winter_min)} градусов.")
+    elif comfort:
+        # Книга назвала не зимний минимум, а то, при чём растению хорошо круглый
+        # год: у фикуса это 18—20 градусов.
+        low, high = comfort[0]
+        lines.append(f"Хорошо себя чувствует при {low}—{high} градусах.")
+    elif too_warm:
+        lines.append(f"Не держите теплее {min(too_warm)} градусов.")
 
     return " ".join(lines)
 
@@ -249,7 +284,7 @@ def build_monograph(latin: str, rows, photo: dict | None, toxicity: list | None 
         lines = []
         block_voices = []
         seen: set[str] = set()
-        for voice in voices:
+        for voice in drop_swallowed(voices):
             line = _voice_line(voice)
             if not line or line in seen:
                 continue
@@ -330,6 +365,63 @@ def build_monograph(latin: str, rows, photo: dict | None, toxicity: list | None 
     return monograph
 
 
+async def put_card_photo(db: AsyncSession, plant_id, monograph: dict) -> None:
+    """Переносит снимок карточки в монограф, если его там ещё нет.
+
+    Приложение читает адрес снимка из монографа, а не из самой карточки. Снимок
+    из Викимедиа кладётся в карточку отдельным прогоном, и без этого шага он
+    оставался бы невидимым: у фикуса фотография была, а человек видел пустоту.
+    """
+    if monograph.get("photo_url"):
+        return
+    row = (await db.execute(text(
+        "SELECT photo_url, photo_attribution FROM plants WHERE id = :id"),
+        {"id": plant_id})).first()
+    if row and row[0]:
+        monograph["photo_url"] = row[0]
+        if row[1]:
+            monograph["photo_attribution"] = row[1]
+
+
+async def enrich_herbarium_card(db: AsyncSession, plant_id, latin: str, rows,
+                                toxicity: list | None = None) -> bool:
+    """Дописывает уход в монограф карточки гербария, ничего в нём не стирая.
+
+    Берём из своей сборки только то, чего у травника быть не может: сводку,
+    разделы ухода и предупреждение об опасности комнатного растения. Пользы,
+    состав, рецепты и вердикт гербария остаются его собственными.
+    """
+    stored = (await db.execute(text(
+        "SELECT monograph FROM plant_reader_monograph WHERE plant_id = :id"),
+        {"id": plant_id})).scalar()
+    if stored is None:
+        return False
+
+    monograph = dict(stored if isinstance(stored, dict) else json.loads(stored))
+    ours = build_monograph(latin, rows, None, toxicity)
+
+    monograph["care"] = ours["care"]
+    monograph["care_summary"] = ours["care_summary"]
+    monograph["care_sections"] = ours["care_sections"]
+    # Книги о комнатных называются рядом с травниками: читатель должен видеть,
+    # откуда совет про полив, а не гадать.
+    monograph["sources"] = sorted(set(monograph.get("sources") or []) | set(ours["sources"]))
+    if not (monograph.get("description") or "").strip():
+        monograph["description"] = ours["description"]
+    if ours.get("cautions") and not monograph.get("cautions"):
+        monograph["cautions"] = ours["cautions"]
+        monograph["is_toxic"] = True
+
+    await put_card_photo(db, plant_id, monograph)
+    await db.execute(text(
+        "UPDATE plant_reader_monograph SET monograph = CAST(:mono AS jsonb) WHERE plant_id = :id"),
+        {"id": plant_id, "mono": json.dumps(monograph, ensure_ascii=False)})
+    if ours.get("cautions"):
+        await db.execute(text("UPDATE plants SET is_toxic = true WHERE id = :id"),
+                         {"id": plant_id})
+    return True
+
+
 async def upsert_card(db: AsyncSession, latin: str, rows, photo: dict | None,
                       toxicity: list | None = None) -> tuple[uuid.UUID, bool]:
     """Заводит или обновляет карточку комнатного растения. Возвращает её и признак новизны.
@@ -350,13 +442,24 @@ async def upsert_card(db: AsyncSession, latin: str, rows, photo: dict | None,
     name_ru = pick_russian_name(names_ru) or latin
 
     if existing and existing[1] != "houseplant":
-        return existing[0], False           # карточка гербария — не трогаем
+        # Карточка гербария. Её содержимое не наше: там пользы, состав и рецепты
+        # из травников, и переписывать их уходом из книг о подоконнике нельзя.
+        # Но уход ей нужен: после чистки имён фикус, перец и олеандр оказались
+        # именно такими карточками, и человек, снявший фикус, открывал запись без
+        # единого слова о поливе. Поэтому дописываем свой раздел и оставляем
+        # остальное как было.
+        await enrich_herbarium_card(db, existing[0], latin, rows, toxicity)
+        return existing[0], False
 
     if existing:
         plant_id = existing[0]
+        # Снимок только дописываем. iNaturalist знает не всё, и там, где он
+        # молчит, у карточки уже может стоять фотография из Викимедиа: прошлая
+        # пересборка стёрла их шесть десятков, потому что писала пустоту поверх.
         await db.execute(text("""
-            UPDATE plants SET name = :name, photo_url = :photo,
-                              photo_attribution = :attribution,
+            UPDATE plants SET name = :name,
+                              photo_url = COALESCE(:photo, photo_url),
+                              photo_attribution = COALESCE(:attribution, photo_attribution),
                               is_toxic = is_toxic OR :toxic
             WHERE id = :id
         """), {"id": plant_id, "name": name_ru, "toxic": bool(toxicity),
@@ -375,6 +478,7 @@ async def upsert_card(db: AsyncSession, latin: str, rows, photo: dict | None,
                "attribution": (photo or {}).get("photo_attribution")})
 
     monograph = build_monograph(latin, rows, photo, toxicity)
+    await put_card_photo(db, plant_id, monograph)
     await db.execute(text("""
         INSERT INTO plant_reader_monograph (plant_id, monograph, reviewed, generated_from_hash)
         VALUES (:id, CAST(:mono AS jsonb), true, :hash)
@@ -395,7 +499,7 @@ async def build_cards(db: AsyncSession, limit: int = 0, min_facts: int = 3) -> d
     """
     rows = (await db.execute(text("""
         SELECT c.taxon_latin, c.taxon_ru, c.field, c.season, c.value_text,
-               c.source_id, s.title AS book
+               c.value, c.page, c.source_id, s.title AS book
         FROM houseplant_care c
         JOIN houseplant_source s ON s.id = c.source_id
         WHERE c.latin_verified = true AND c.greenhouse = false

@@ -238,10 +238,17 @@ async def fill_card_photos(db, limit: int = 0, apply: bool = False,
     """
     from sqlalchemy import text
 
+    # Берём и карточки гербария, про которые книги о комнатных что-то говорят:
+    # после слияния дублей фикус, перец и олеандр живут именно там, и снимка у
+    # них нет — а снимают их чаще всего.
     rows = (await db.execute(text(
-        "SELECT id, name, name_latin FROM plants "
-        "WHERE origin = 'houseplant' AND (photo_url IS NULL OR photo_url = '') "
-        "AND name_latin IS NOT NULL AND name_latin <> '' ORDER BY name_latin"
+        "SELECT id, name, name_latin FROM plants p "
+        "WHERE (photo_url IS NULL OR photo_url = '') "
+        "AND name_latin IS NOT NULL AND name_latin <> '' "
+        "AND (origin = 'houseplant' OR EXISTS ("
+        "     SELECT 1 FROM houseplant_care c "
+        "     WHERE c.latin_verified AND c.taxon_latin = p.name_latin)) "
+        "ORDER BY name_latin"
     ))).all()
     if limit:
         rows = rows[:limit]
