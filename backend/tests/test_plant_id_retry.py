@@ -52,7 +52,8 @@ class _Answer:
 async def test_transient_break_is_retried(monkeypatch):
     _Client.calls = 0
     monkeypatch.setattr(plant_id.settings, "plantnet_api_key", "ключ", raising=False)
-    monkeypatch.setattr(plant_id.httpx, "AsyncClient", _Client(fails=2, answer=_Answer()))
+    monkeypatch.setattr(plant_id, "hop_client",
+                        lambda *a, **kw: _Client(fails=2, answer=_Answer())())
     monkeypatch.setattr(plant_id.asyncio, "sleep", lambda *_: _noop())
 
     out = await plant_id.identify(images=[b"photo-bytes"])
@@ -64,7 +65,8 @@ async def test_transient_break_is_retried(monkeypatch):
 async def test_giving_up_after_three_breaks(monkeypatch):
     _Client.calls = 0
     monkeypatch.setattr(plant_id.settings, "plantnet_api_key", "ключ", raising=False)
-    monkeypatch.setattr(plant_id.httpx, "AsyncClient", _Client(fails=99, answer=_Answer()))
+    monkeypatch.setattr(plant_id, "hop_client",
+                        lambda *a, **kw: _Client(fails=99, answer=_Answer())())
     monkeypatch.setattr(plant_id.asyncio, "sleep", lambda *_: _noop())
 
     out = await plant_id.identify(images=[b"photo-bytes"])

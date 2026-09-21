@@ -23,6 +23,7 @@ import logging
 import httpx
 
 from app.config import settings
+from app.services.egress import hop_client, parse_hops
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Сколько раз пробуем достучаться до движка, когда рвётся сам туннель, и какая
 # пауза между попытками. Три попытки с секундой и двумя перекрывают моргание
 # связи и не заставляют человека ждать дольше десяти секунд.
-PROXY_ATTEMPTS = 3
+PROXY_ATTEMPTS = 4
 PROXY_PAUSE = 1.0
 
 MAX_IMAGES = 5
@@ -108,11 +109,19 @@ async def identify(
     # пробуем пережить: связь возвращается за секунды, а снимок уже у нас.
     last_error: Exception | None = None
     resp = None
+    # Сначала путь по умолчанию, затем запасные выходы по очереди: первый
+    # ответивший и работает.
+    hops: list = [None]
+    if settings.plantnet_proxy and settings.plantnet_proxy_hops:
+        hostname = httpx.URL(settings.plantnet_proxy).host
+        hops += parse_hops(settings.plantnet_proxy_hops, hostname)
+
     for attempt in range(PROXY_ATTEMPTS):
+        hop = hops[attempt % len(hops)]
         try:
             # Route through the configured proxy when set (prod egress to PlantNet's
             # host is network-blocked; the trusttunnel proxy provides the path).
-            async with httpx.AsyncClient(timeout=60, proxy=settings.plantnet_proxy or None) as client:
+            async with hop_client(settings.plantnet_proxy, hop, timeout=60) as client:
                 if images:
                     files = [("images", (f"img{i}.jpg", b, "image/jpeg")) for i, b in enumerate(sources)]
                     # httpx wants form fields as a dict; a list value emits repeated
@@ -133,8 +142,9 @@ async def identify(
                 httpx.WriteTimeout, httpx.PoolTimeout, httpx.RemoteProtocolError) as e:
             last_error = e
             if attempt + 1 < PROXY_ATTEMPTS:
-                logger.warning(f"Pl@ntNet {type(e).__name__}, попытка "
-                               f"{attempt + 1} из {PROXY_ATTEMPTS}, повторяем")
+                where = f"{hop.host}:{hop.port}" if hop else "путь по умолчанию"
+                logger.warning(f"Pl@ntNet {type(e).__name__} через {where}, попытка "
+                               f"{attempt + 1} из {PROXY_ATTEMPTS}, пробуем следующий выход")
                 await asyncio.sleep(PROXY_PAUSE * (attempt + 1))
                 continue
         except httpx.HTTPError as e:

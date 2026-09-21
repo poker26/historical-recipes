@@ -80,12 +80,30 @@ class Settings(BaseSettings):
     # (tt.begemot26.ru). Empty = direct connection.
     plantnet_proxy: str = ""
 
+    # Запасные выходы наружу, «адрес:порт» через запятую. Туннель у нас не один:
+    # тех же четыре, что держит клиент «Весёлый Бегемот», — и 21 сентября первый
+    # из них умирал на девять часов, унося с собой 139 определений. Имя для
+    # рукопожатия берётся из plantnet_proxy и общее для всех: сертификат выдан на
+    # него одно, и на голый адрес прокси рвёт связь.
+    plantnet_proxy_hops: str = ""
+
     # Kindwise Mushroom.id — the FUNGI identification engine (PlantNet is plants-only).
     # Paid API; key from kindwise.com. Empty key → the mushroom route returns a clear
     # error instead of calling the engine. Optional proxy mirrors PlantNet's egress fix.
     kindwise_api_key: str = ""
     kindwise_base_url: str = "https://mushroom.kindwise.com/api/v1"
     kindwise_proxy: str = ""
+    # Свой бесплатный грибной движок (BioCLIP-2 kNN, fungi-engine на server 2).
+    # Заменил Kindwise 2026-08-24 (top-1 76.5% / top-5 95.7% на пилоте).
+    fungi_engine_url: str = ""
+    fungi_engine_token: str = ""
+    # Пуши (RFC-v2 §5): APNs токен-ключ (b64 от .p8) + RuStore Push (VK).
+    apns_key_b64: str = ""
+    apns_key_id: str = ""
+    apns_team_id: str = "9J4X6PJX56"
+    apns_topic: str = "ru.begemot.whatgrows"
+    rustore_push_project_id: str = ""
+    rustore_push_token: str = ""
 
     # n8n
     n8n_base_url: str = "http://n8n:5678"
