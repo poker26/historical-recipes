@@ -17,6 +17,7 @@ Like ``inaturalist.py`` this never raises: every failure path returns a dict wit
 an ``error`` field so the API degrades instead of 500-ing.
 """
 
+import asyncio
 import logging
 
 import httpx
@@ -26,6 +27,12 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # Pl@ntNet accepts at most 5 images per identification request.
+# Сколько раз пробуем достучаться до движка, когда рвётся сам туннель, и какая
+# пауза между попытками. Три попытки с секундой и двумя перекрывают моргание
+# связи и не заставляют человека ждать дольше десяти секунд.
+PROXY_ATTEMPTS = 3
+PROXY_PAUSE = 1.0
+
 MAX_IMAGES = 5
 # Organ tags the engine understands; "auto" lets it detect per image.
 VALID_ORGANS = {"leaf", "flower", "fruit", "bark", "auto"}
@@ -94,28 +101,49 @@ async def identify(
     url = f"{settings.plantnet_base_url.rstrip('/')}/identify/{settings.plantnet_project}"
     params = {"api-key": settings.plantnet_api_key, "nb-results": min(max(limit, 1), 10)}
 
-    try:
-        # Route through the configured proxy when set (prod egress to PlantNet's
-        # host is network-blocked; the trusttunnel proxy provides the path).
-        async with httpx.AsyncClient(timeout=60, proxy=settings.plantnet_proxy or None) as client:
-            if images:
-                files = [("images", (f"img{i}.jpg", b, "image/jpeg")) for i, b in enumerate(sources)]
-                # httpx wants form fields as a dict; a list value emits repeated
-                # `organs` parts. Passing a list-of-tuples here makes httpx 0.28
-                # treat `data` as raw content (sync stream) and the AsyncClient
-                # rejects it ("sync request with an AsyncClient instance").
-                data = {"organs": organs}
-                resp = await client.post(url, params=params, files=files, data=data)
-            else:
-                # Remote-URL path: images + organs are repeated query params.
-                q = [("api-key", settings.plantnet_api_key),
-                     ("nb-results", str(min(max(limit, 1), 10)))]
-                q += [("images", u) for u in sources]
-                q += [("organs", o) for o in organs]
-                resp = await client.get(url, params=q)
-    except httpx.HTTPError as e:
-        logger.warning(f"Pl@ntNet request failed: {type(e).__name__}: {e}")
-        return {"error": f"identification engine request failed: {e}"}
+    # Одной попытки мало. 21 сентября туннель до PlantNet моргал с девяти утра до
+    # шести вечера: соединение не устанавливалось на части запросов, и 151 снимок
+    # уехал в архив с отказом — человек в этот день просто не получил ответа.
+    # Порт при этом был открыт, поэтому и мониторинг молчал. Транспортную ошибку
+    # пробуем пережить: связь возвращается за секунды, а снимок уже у нас.
+    last_error: Exception | None = None
+    resp = None
+    for attempt in range(PROXY_ATTEMPTS):
+        try:
+            # Route through the configured proxy when set (prod egress to PlantNet's
+            # host is network-blocked; the trusttunnel proxy provides the path).
+            async with httpx.AsyncClient(timeout=60, proxy=settings.plantnet_proxy or None) as client:
+                if images:
+                    files = [("images", (f"img{i}.jpg", b, "image/jpeg")) for i, b in enumerate(sources)]
+                    # httpx wants form fields as a dict; a list value emits repeated
+                    # `organs` parts. Passing a list-of-tuples here makes httpx 0.28
+                    # treat `data` as raw content (sync stream) and the AsyncClient
+                    # rejects it ("sync request with an AsyncClient instance").
+                    data = {"organs": organs}
+                    resp = await client.post(url, params=params, files=files, data=data)
+                else:
+                    # Remote-URL path: images + organs are repeated query params.
+                    q = [("api-key", settings.plantnet_api_key),
+                         ("nb-results", str(min(max(limit, 1), 10)))]
+                    q += [("images", u) for u in sources]
+                    q += [("organs", o) for o in organs]
+                    resp = await client.get(url, params=q)
+            break
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
+                httpx.WriteTimeout, httpx.PoolTimeout, httpx.RemoteProtocolError) as e:
+            last_error = e
+            if attempt + 1 < PROXY_ATTEMPTS:
+                logger.warning(f"Pl@ntNet {type(e).__name__}, попытка "
+                               f"{attempt + 1} из {PROXY_ATTEMPTS}, повторяем")
+                await asyncio.sleep(PROXY_PAUSE * (attempt + 1))
+                continue
+        except httpx.HTTPError as e:
+            last_error = e
+            break
+
+    if resp is None:
+        logger.warning(f"Pl@ntNet request failed: {type(last_error).__name__}: {last_error}")
+        return {"error": f"identification engine request failed: {last_error}"}
 
     if resp.status_code == 404:
         # Pl@ntNet returns 404 when it can't match the photo to any species.
