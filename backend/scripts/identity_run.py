@@ -1,6 +1,6 @@
 """Чистка идентичности карточек: постановка шага в Temporal.
 
-Шаги идут по одному, в этом порядке: dedup → shells → gbif → reid. У dedup и
+Шаги идут по одному, в этом порядке: dedup → shells → gbif → reid → resolve (разбор очереди просмотра правилами). У dedup и
 shells сначала сухой прогон (без --apply): он только считает и показывает
 выборку, результат читается из воркфлоу.
 
@@ -21,7 +21,7 @@ import sys
 
 async def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--step", required=True, choices=["dedup", "shells", "gbif", "reid"])
+    parser.add_argument("--step", required=True, choices=["dedup", "shells", "gbif", "reid", "resolve"])
     parser.add_argument("--apply", action="store_true", help="для dedup и shells: применять, а не считать")
     parser.add_argument("--limit", type=int, default=0, help="сколько карточек обработать (0 — все)")
     args = parser.parse_args()
@@ -29,7 +29,7 @@ async def main() -> int:
     from app.temporal.client import get_temporal_client
 
     wid = f"identity-{args.step}"
-    if args.step in ("dedup", "shells") and not args.apply:
+    if args.step in ("dedup", "shells", "resolve") and not args.apply:
         wid += "-dry"
     if args.limit:
         wid += f"-{args.limit}"

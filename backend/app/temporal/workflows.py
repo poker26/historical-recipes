@@ -57,7 +57,7 @@ with workflow.unsafe.imports_passed_through():
     from app.temporal.photo_activities import photo_backfill_activity
     from app.temporal.identity_activities import (
         identity_dedup_activity, identity_shells_activity,
-        identity_gbif_activity, identity_reid_activity,
+        identity_gbif_activity, identity_reid_activity, identity_resolve_activity,
     )
     from app.temporal.houseplant_activities import (
         card_latin_cleanup_activity,
@@ -899,6 +899,8 @@ class IdentityCleanupWorkflow:
             out = await workflow.execute_activity(identity_gbif_activity, limit, **kw)
         elif step == "reid":
             out = await workflow.execute_activity(identity_reid_activity, limit, **kw)
+        elif step == "resolve":
+            out = await workflow.execute_activity(identity_resolve_activity, args=[apply, limit], **kw)
         else:
             raise ValueError(f"unknown identity step: {step}")
         workflow.logger.info(f"IdentityCleanupWorkflow[{step}] done: {out}")
