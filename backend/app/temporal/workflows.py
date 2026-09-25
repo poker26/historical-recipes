@@ -53,6 +53,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from app.temporal.monograph_activities import generate_monographs_activity
     from app.temporal.taxonomy_activities import cherepanov_ocr_activity
+    from app.temporal.anchor_activities import page_anchor_activity
     from app.temporal.houseplant_activities import (
         card_latin_cleanup_activity,
         card_merge_activity,
@@ -834,6 +835,24 @@ class ReaderMonographWorkflow:
             generate_monographs_activity, batch,
             start_to_close_timeout=timedelta(hours=24), heartbeat_timeout=_HEARTBEAT,
             retry_policy=_RETRY)
+
+
+@workflow.defn
+class PageAnchorWorkflow:
+    """Привязка фактов корпуса к страницам сканов (RFC-botanik-site §8.2): у каждой
+    цитаты, рецепта, кулинарной записи, сбора, ареала, токсичности, применения масла
+    и упоминания появляется номер страницы книги. Одна возобновляемая активность с
+    курсором по книгам в heartbeat; внутри книги повторный проход безопасен.
+    Синглтон 'page-anchor'; пробный прогон с limit получает id 'page-anchor-{limit}'."""
+
+    @workflow.run
+    async def run(self, limit: int = 0) -> dict:
+        out = await workflow.execute_activity(
+            page_anchor_activity, limit,
+            start_to_close_timeout=timedelta(hours=48),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"PageAnchorWorkflow done: {out}")
+        return out
 
 
 @workflow.defn

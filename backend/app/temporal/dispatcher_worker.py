@@ -29,6 +29,7 @@ from app.temporal import cleanup_activities, houseplant_activities
 from app.temporal import quest_activities
 from app.temporal import monograph_activities
 from app.temporal import taxonomy_activities
+from app.temporal import anchor_activities
 from app.temporal.workflows import (
     BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow, BiotopeCanonWorkflow,
     CardLatinCleanupWorkflow, CardPhotosWorkflow, CardMergeWorkflow,
@@ -38,6 +39,7 @@ from app.temporal.workflows import (
     IdentityConflictWorkflow, RecipeRelinkWorkflow, OsmIngestWorkflow, QuestSetBuilderWorkflow,
     ReaderMonographWorkflow, GenusTierWorkflow, EdibleSafetyWorkflow,
     PlaceBiotopeWorkflow, CitiesIngestWorkflow, CherepanovOcrWorkflow,
+    PageAnchorWorkflow,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -61,7 +63,7 @@ async def main():
                    CitiesIngestWorkflow, CherepanovOcrWorkflow,
                    HouseplantIngestWorkflow, HouseplantToxicityWorkflow,
                    HouseplantCardsWorkflow, CardLatinCleanupWorkflow,
-                   CardPhotosWorkflow, CardMergeWorkflow],
+                   CardPhotosWorkflow, CardMergeWorkflow, PageAnchorWorkflow],
         activities=[
             activities.maintain_pool_activity,
             # Autonomous plant-cleanup chain + quests-build + Layer-2 monograph batch.
@@ -87,6 +89,7 @@ async def main():
             quest_activities.place_biotope_activity,
             monograph_activities.generate_monographs_activity,
             taxonomy_activities.cherepanov_ocr_activity,
+            anchor_activities.page_anchor_activity,
         ],
         max_concurrent_activities=4,
     )
