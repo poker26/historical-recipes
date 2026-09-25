@@ -28,6 +28,7 @@ CLEANUP_TYPES = [
     "CardPhotosWorkflow",
     "CardMergeWorkflow",
     "PageAnchorWorkflow",
+    "PhotoBackfillWorkflow",
 ]
 
 

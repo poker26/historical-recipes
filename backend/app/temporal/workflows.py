@@ -54,6 +54,7 @@ with workflow.unsafe.imports_passed_through():
     from app.temporal.monograph_activities import generate_monographs_activity
     from app.temporal.taxonomy_activities import cherepanov_ocr_activity
     from app.temporal.anchor_activities import page_anchor_activity
+    from app.temporal.photo_activities import photo_backfill_activity
     from app.temporal.houseplant_activities import (
         card_latin_cleanup_activity,
         card_merge_activity,
@@ -852,6 +853,26 @@ class PageAnchorWorkflow:
             start_to_close_timeout=timedelta(hours=48),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"PageAnchorWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class PhotoBackfillWorkflow:
+    """Добор фотографий карточек из iNaturalist (RFC-botanik-site §9): родовые
+    карточки наследуют фото своих видов; карточки с известным таксоном берут фото
+    со свободной лицензией из списка фото таксона; карточки с латынью, ещё не
+    ходившие в iNaturalist, резолвятся и получают фото. Темп 1 запрос в 2 с.
+    Возобновление по данным (inat_synced_at против момента старта).
+    Синглтон 'photo-backfill'; пробный прогон с limit получает id 'photo-backfill-{limit}'."""
+
+    @workflow.run
+    async def run(self, limit: int = 0) -> dict:
+        since_iso = workflow.now().isoformat()
+        out = await workflow.execute_activity(
+            photo_backfill_activity, args=[since_iso, limit],
+            start_to_close_timeout=timedelta(hours=48),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"PhotoBackfillWorkflow done: {out}")
         return out
 
 
