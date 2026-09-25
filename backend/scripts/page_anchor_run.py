@@ -4,8 +4,10 @@
 воркфлоу в очереди диспетчера: он переживает пересборку backend и обрыв ssh и
 продолжается с последней законченной книги.
 
-    docker compose exec -T backend python /app/scripts/page_anchor_run.py --limit 3   # проба на трёх книгах
-    docker compose exec -T backend python /app/scripts/page_anchor_run.py             # весь корпус
+    docker compose exec -T -e PYTHONPATH=/app backend python /app/scripts/page_anchor_run.py --limit 3   # проба на трёх книгах
+    docker compose exec -T -e PYTHONPATH=/app backend python /app/scripts/page_anchor_run.py             # весь корпус
+
+Без ``PYTHONPATH=/app`` пакет ``app`` не найдётся: скрипт лежит в ``/app/scripts``.
 
 Ход прогона виден на странице ops вместе с остальными долгими задачами.
 Проверять живость по данным:
