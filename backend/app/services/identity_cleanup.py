@@ -110,6 +110,25 @@ def binomial_core(latin: str | None) -> str | None:
     return f"{m.group(1)} {m.group(2)}" if m else None
 
 
+def ru_head(name: str | None) -> str | None:
+    """Первое слово русского имени в нижнем регистре: «Ромашка лекарственная» → «ромашка».
+    Для латинского или битого имени ``None``."""
+    if not name or not _CYR.search(name):
+        return None
+    tok = re.split(r"[\s,;()]+", name.strip().lower())
+    return tok[0] if tok and tok[0] else None
+
+
+def names_compatible(source_name: str | None, target_name: str | None) -> bool:
+    """Слияние допустимо, когда русские имена начинаются с одного слова, либо одно из
+    имён не русское (латынь или битое). «Лук» и «Лук-чеснок» несовместимы, и это
+    правильно: сливать лук в чеснок нельзя даже при совпавшей латыни."""
+    a, b = ru_head(source_name), ru_head(target_name)
+    if a is None or b is None:
+        return True
+    return a == b
+
+
 # ------------------------------------------------------------------ журнал, слияние, удаление
 
 async def _plant_snapshot(db, pid) -> dict:
@@ -255,6 +274,9 @@ async def _merge_into_same_latin(db, pid, latin: str, step: str) -> dict | None:
     me = (await db.execute(text(f"SELECT p.id, p.name, p.name_latin, {FACTS_SCORE} AS score, (p.inat_taxon_id IS NOT NULL) AS has_taxon "
                                 f"FROM plants p WHERE p.id = :id"), {"id": pid})).first()
     twin = max(twins, key=lambda o: (o.has_taxon, o.score))
+    if not names_compatible(me.name, twin.name):
+        # Одна латынь, разные русские имена: не сливаем автоматически, оставляем на просмотр.
+        return {"skipped_incompatible": str(twin.id), "twin_name": twin.name}
     if (twin.has_taxon, twin.score) >= (me.has_taxon, me.score):
         await merge_card(db, me.id, twin.id, step, "same latin key after relatin")
         return {"merged_into": str(twin.id), "target_name": twin.name}
@@ -503,7 +525,13 @@ async def run_gbif(limit: int = 0, progress: Progress | None = None) -> dict:
                     await _purge_qdrant([str(pid)])
                 elif merged and merged.get("absorbed"):
                     await _purge_qdrant([merged["absorbed"]])
-                await _finding(pid, CHECK_GBIF, "resolved", f"{name}: {core} → {accepted_core}", {**ev, "merge": merged}, "done")
+                if merged and merged.get("skipped_incompatible"):
+                    c["review"] += 1
+                    await _finding(pid, CHECK_GBIF, "open",
+                                   f"{name}: {core} → {accepted_core}, двойник «{merged['twin_name']}» с другим именем",
+                                   {**ev, "merge": merged}, "review_merge")
+                else:
+                    await _finding(pid, CHECK_GBIF, "resolved", f"{name}: {core} → {accepted_core}", {**ev, "merge": merged}, "done")
                 if progress:
                     progress({"step": "gbif", **c})
     return {"step": "gbif", **c, "stopped": "limit" if (limit and c["seen"] >= limit) else "done"}
@@ -632,8 +660,11 @@ async def run_reid(limit: int = 0, progress: Progress | None = None) -> dict:
                 kok = _kingdom_ok(kingdom, (g or {}).get("kingdom"))
                 ev["gbif"] = {"matchType": gmt, "rank": grank, "name": canonical, "confidence": gconf}
                 decided = None
-                if is_binomial and gmt in ("EXACT", "FUZZY") and grank == "SPECIES" and gconf >= 85 and kok and conf >= 70 \
-                        and canonical and _fuzzy_ok(sci, canonical):
+                # Русское имя карточки и русское имя от модели должны начинаться с одного
+                # слова: «Лук» → «Чеснок» это другое растение, как бы уверенно модель ни звучала.
+                ru_ok = names_compatible(name, russian) if russian else True
+                if is_binomial and gmt == "EXACT" and grank == "SPECIES" and gconf >= 85 and kok and conf >= 80 \
+                        and canonical and _fuzzy_ok(sci, canonical) and ru_ok:
                     new_latin = binomial_core(canonical) or canonical
                     async with async_session() as db:
                         await _relatin(db, pid, name, latin or "", new_latin, "reid", "relatin", ev)
@@ -642,11 +673,18 @@ async def run_reid(limit: int = 0, progress: Progress | None = None) -> dict:
                                              {"r": russian, "id": pid})
                         merged = await _merge_into_same_latin(db, pid, new_latin, "reid")
                         await db.commit()
-                    if merged:
+                    if merged and (merged.get("merged_into") or merged.get("absorbed")):
                         c["merged"] += 1
                         await _purge_qdrant([str(pid)] if merged.get("merged_into") else [merged.get("absorbed")])
                     c["species"] += 1
-                    decided = ("resolved", f"{name} → {new_latin}", "done")
+                    if merged and merged.get("skipped_incompatible"):
+                        decided = ("open", f"{name} → {new_latin}, двойник «{merged['twin_name']}» с другим именем", "review_merge")
+                    else:
+                        decided = ("resolved", f"{name} → {new_latin}", "done")
+                elif is_binomial and gmt in ("EXACT", "FUZZY") and grank == "SPECIES" and kok and conf >= 50:
+                    # Вид назван, но уверенности для автоматики не хватает: на просмотр, ничего не меняем.
+                    c["review"] += 1
+                    decided = ("open", f"{name}: {sci}? (conf {conf}, GBIF {gmt}{'' if ru_ok else ', имя расходится'})", "review")
                 else:
                     gg = g if not is_binomial else await gbif_match(client, genus, KINGDOM_HINT.get(kingdom or "растение"))
                     if is_binomial:
@@ -658,12 +696,19 @@ async def run_reid(limit: int = 0, progress: Progress | None = None) -> dict:
                             genus_ok = await _db_has_genus(db, genus)
                         if genus_ok:
                             hub = await _find_hub(db, genus, None)
-                            if hub:
+                            if hub and names_compatible(name, hub["name"]):
                                 await merge_card(db, pid, hub["id"], "reid", f"genus-level re-id → hub ({sci}, conf {conf})")
                                 await db.commit()
                                 await _purge_qdrant([str(pid)])
                                 c["genus_hub"] += 1
                                 decided = ("resolved", f"{name} → род {genus} (слито в «{hub['name']}»)", "done")
+                            elif hub:
+                                # Род совпал, а русские имена расходятся («Смородина» и «Крыжовник»):
+                                # латынь рода пишем, слияние оставляем человеку.
+                                await _relatin(db, pid, name, latin or "", genus, "reid", "relatin_genus", ev)
+                                await db.commit()
+                                c["genus_only"] += 1
+                                decided = ("open", f"{name} → род {genus}, родовая карточка «{hub['name']}» названа иначе", "review_merge")
                             else:
                                 await _relatin(db, pid, name, latin or "", genus, "reid", "relatin_genus", ev)
                                 await db.commit()
