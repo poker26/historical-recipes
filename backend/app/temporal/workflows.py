@@ -55,6 +55,10 @@ with workflow.unsafe.imports_passed_through():
     from app.temporal.taxonomy_activities import cherepanov_ocr_activity
     from app.temporal.anchor_activities import page_anchor_activity
     from app.temporal.photo_activities import photo_backfill_activity
+    from app.temporal.identity_activities import (
+        identity_dedup_activity, identity_shells_activity,
+        identity_gbif_activity, identity_reid_activity,
+    )
     from app.temporal.houseplant_activities import (
         card_latin_cleanup_activity,
         card_merge_activity,
@@ -873,6 +877,31 @@ class PhotoBackfillWorkflow:
             start_to_close_timeout=timedelta(hours=48),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"PhotoBackfillWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class IdentityCleanupWorkflow:
+    """Чистка идентичности карточек (RFC-botanik-site §9, замер 25.09): один из шагов
+    dedup | shells | gbif | reid. Сухой прогон (apply=False) у dedup и shells только
+    считает и показывает выборку. Возобновление по данным, журнал card_identity_audit.
+    Id 'identity-{step}' (+ '-dry', + '-{limit}')."""
+
+    @workflow.run
+    async def run(self, step: str, apply: bool = False, limit: int = 0) -> dict:
+        kw = {"start_to_close_timeout": timedelta(hours=48),
+              "heartbeat_timeout": _HEARTBEAT, "retry_policy": _RETRY}
+        if step == "dedup":
+            out = await workflow.execute_activity(identity_dedup_activity, apply, **kw)
+        elif step == "shells":
+            out = await workflow.execute_activity(identity_shells_activity, args=[apply, limit], **kw)
+        elif step == "gbif":
+            out = await workflow.execute_activity(identity_gbif_activity, limit, **kw)
+        elif step == "reid":
+            out = await workflow.execute_activity(identity_reid_activity, limit, **kw)
+        else:
+            raise ValueError(f"unknown identity step: {step}")
+        workflow.logger.info(f"IdentityCleanupWorkflow[{step}] done: {out}")
         return out
 
 
