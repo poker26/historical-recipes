@@ -100,7 +100,12 @@ async def fetch_taxon_photos(client: httpx.AsyncClient, taxon_id: int) -> list[d
         try:
             resp = await client.get(f"{INAT_BASE}/taxa/{int(taxon_id)}", headers=_HEADERS)
         except (httpx.HTTPError, ValueError) as e:
-            logger.warning(f"iNat taxa/{taxon_id} error: {type(e).__name__}: {e}")
+            # Обрыв соединения («Server disconnected») у iNaturalist бывает и на
+            # здоровом сервере; одна короткая пауза и повтор снимают большую часть.
+            logger.warning(f"iNat taxa/{taxon_id} error: {type(e).__name__}: {e} (attempt {attempt+1}/4)")
+            if attempt < 3:
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
             return None
         if resp.status_code == 429:
             retry_after = resp.headers.get("Retry-After")
@@ -258,7 +263,10 @@ async def backfill_photos(since: datetime, limit: int = 0,
     api_done = 0
     streak = 0
     seen: set = set()
-    async with httpx.AsyncClient(timeout=30) as client:
+    # Без keep-alive: iNaturalist закрывает простаивающие соединения, и повторное
+    # использование закрытого даёт «Server disconnected». При темпе в две секунды
+    # новое соединение на запрос ничего не стоит.
+    async with httpx.AsyncClient(timeout=30, limits=httpx.Limits(max_keepalive_connections=0)) as client:
         # Фаза 2: таксон известен, фото нет.
         while not (limit and api_done >= limit):
             rows = await _batch_known_taxon(since, seen)
@@ -330,6 +338,20 @@ async def backfill_photos(since: datetime, limit: int = 0,
                     await asyncio.sleep(pace_seconds)
                     photos = await fetch_taxon_photos(client, taxon_id)
                     c["requests"] += 1
+                    if photos is None:
+                        # Временный отказ на втором запросе: таксон запомним, отметку не ставим,
+                        # карточка вернётся в следующий прогон фазой 2 (таксон есть, фото нет).
+                        c["transient"] += 1
+                        streak += 1
+                        async with async_session() as db:
+                            await db.execute(text("UPDATE plants SET inat_taxon_id = :t WHERE id = :id"),
+                                             {"t": int(taxon_id), "id": pid})
+                            await db.commit()
+                        report("untried", name)
+                        if streak >= MAX_TRANSIENT_STREAK:
+                            return {**c, "stopped": "transient_streak"}
+                        await asyncio.sleep(pace_seconds)
+                        continue
                     if photos:
                         picked = pick_licensed_photo(photos)
                 if picked:
