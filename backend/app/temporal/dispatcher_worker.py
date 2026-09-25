@@ -99,6 +99,7 @@ async def main():
             identity_activities.identity_gbif_activity,
             identity_activities.identity_reid_activity,
             identity_activities.identity_resolve_activity,
+            identity_activities.identity_amirdovlat_activity,
         ],
         max_concurrent_activities=4,
     )
