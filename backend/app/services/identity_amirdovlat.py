@@ -54,7 +54,16 @@ Progress = Callable[[dict], None]
 CHECK = "identity.amirdovlat"
 GBIF_PACE = 0.4
 
+# Номер СВОЕЙ статьи стоит в начале текста: «§ 185. 1. …». Номера внутри квадратных
+# скобок это перекрёстные ссылки на другие статьи и источники («[43, § 629; 28, § 286]»),
+# брать их нельзя: по ним карточка уезжала к чужому растению.
 ENTRY_RE = re.compile(r"[§$&]\s*(\d{1,4})\s*\.")
+CROSSREF_RE = re.compile(r"\[[^\]]*\]")
+
+
+def own_text(t: str) -> str:
+    """Текст статьи без перекрёстных ссылок в квадратных скобках."""
+    return CROSSREF_RE.sub(" ", t or "")
 INDEX_PAIR_RE = re.compile(
     r"([A-Z][a-z]{2,}(?: [a-z][a-z\-]{2,})?(?: (?:L\.|var\.|subsp\.|[A-Z][a-zA-Z\.]+))*)\s+((?:\d{1,4},?\s*)+)")
 LATIN_DENSITY_RE = re.compile(r"\b[A-Z][a-z]{3,} [a-z]{4,}\b")
@@ -96,7 +105,7 @@ async def build_index(db, book_id) -> dict[int, set[str]]:
 
 
 def disambiguate_by_text(cands: set[str], texts: list[str]) -> str | None:
-    body = " ".join(texts).translate(LOOKALIKE)
+    body = " ".join(own_text(t) for t in texts).translate(LOOKALIKE)
     scored = sorted(((fuzz.partial_ratio(l.split(" L.")[0][:30], body), l) for l in cands), reverse=True)
     if scored and scored[0][0] >= 78 and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 8):
         return scored[0][1]
@@ -195,7 +204,7 @@ async def run_amirdovlat(apply: bool, limit: int = 0, use_llm: bool = True,
         for pid, name, latin, kingdom, texts in rows:
             c["seen"] += 1
             texts = [t for t in (texts or []) if t]
-            entries = {int(n) for t in texts for n in ENTRY_RE.findall(t)}
+            entries = {int(n) for t in texts for n in ENTRY_RE.findall(own_text(t))}
             ev: dict = {"name": name, "entries": sorted(entries)}
             try:
                 if not entries:
