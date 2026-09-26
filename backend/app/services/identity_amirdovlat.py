@@ -103,10 +103,57 @@ def disambiguate_by_text(cands: set[str], texts: list[str]) -> str | None:
     return None
 
 
-def _kingdom_of(g: dict | None) -> str:
-    """Что говорит GBIF о найденном имени: растение/гриб, животное или не организм."""
-    if not g or g.get("matchType") in (None, "NONE"):
+_AUTHOR_RE = re.compile(r"\s+(?:L\.|var\.|subsp\.|[A-Z][a-zA-Z\-]*\.|[A-Z][a-z]+ ex [A-Z][a-z]+\.?|\([^)]*\)).*$")
+
+
+def name_core(chosen: str) -> str:
+    """Имя без автора: «Rosa Tourn.» → «Rosa», «Aloexylon agallochum Lour.» → «Aloexylon agallochum»."""
+    core = binomial_core(chosen)
+    if core:
+        return core
+    return _AUTHOR_RE.sub("", chosen.strip()).strip() or chosen.strip()
+
+
+def has_author(chosen: str) -> bool:
+    return bool(_AUTHOR_RE.search(chosen.strip()))
+
+
+# Головные слова латинских названий веществ, продуктов и частей в указателе: они
+# выглядят как биномы («Lapis armeniacus», «Succus uvarum»), но организмом не являются.
+_SUBSTANCE_HEADS = {
+    "lapis", "succus", "semen", "caro", "gummi", "pulmentum", "digiti", "uvae", "aqua", "oleum", "resina", "pix",
+    "sal", "terra", "ferrum", "plumbum", "cuprum", "aes", "vinum", "mel", "butyrum", "lac", "ungula", "ebur",
+    "cornu", "os", "sanguis", "fel", "adeps", "urina", "stercus", "cinis", "calx", "sulphur", "alumen", "nitrum",
+    "bitumen", "naphta", "petroleum", "ambra", "moschus", "castoreum", "bezoar", "cerussa", "cadmia", "cadmie",
+    "gypsum", "argilla", "bolus", "spuma", "zyhum", "gluten", "gallae", "omphacium", "syricon", "indicum",
+    "hydrargyrum", "chrysocolla", "borax", "bdellium", "manna", "acetum", "farina", "panis", "cera", "sapo",
+    "vitrum", "arsenicum", "auripigmentum", "stibium", "cinnabaris", "magnes", "smaragdus", "margarita",
+    "corallium", "stannum", "aurum", "argentum", "orichalcum", "chalcitis", "misy", "sory", "atramentum",
+    "fuligo", "pulvis", "cortex", "lignum", "radix", "folia", "flores", "fructus", "amylum", "saccharum",
+    "theriaca", "opium", "camphora",
+}
+_ANIMAL_HEADS = {"coccus", "leo", "pediculus", "lumbricus", "cancer", "scorpio", "vipera", "asinus", "equus", "bos",
+                 "canis", "felis", "lepus", "ursus", "columba", "gallus", "anser", "milvus", "perdix", "pavo",
+                 "phoenicopterus", "lacerta", "testudo", "sepia", "purpura", "conchylia", "oniscus", "tegula",
+                 "omphax", "trachea", "ren", "pelles", "phalangium"}
+
+
+def _kingdom_of(g: dict | None, chosen: str) -> str | None:
+    """Что говорит GBIF о найденном имени. ``None`` означает «решить нельзя»
+    (временный отказ справочника или имя, которого он не знает, но которое
+    записано в указателе как имя организма с автором: старая латынь)."""
+    head = (chosen.strip().split() or [""])[0].lower()
+    if head in _SUBSTANCE_HEADS:
         return "вещество"
+    if head in _ANIMAL_HEADS:
+        return "животное"
+    if g is None:
+        return None
+    if g.get("matchType") in (None, "NONE"):
+        # GBIF не знает имени. Имя с автором или биномом это устаревшая латынь
+        # растения из указателя, а одно слово без автора («Ferrum», «Bezoar») это
+        # вещество или предмет.
+        return None if (has_author(chosen) or binomial_core(chosen)) else "вещество"
     k = g.get("kingdom") or ""
     if k in ("Plantae", "Fungi", "Chromista"):
         return "гриб" if k == "Fungi" else "растение"
@@ -196,12 +243,20 @@ async def run_amirdovlat(apply: bool, limit: int = 0, use_llm: bool = True,
                     continue
                 c[how] += 1
                 ev["chosen"] = chosen
-                core = binomial_core(chosen) or chosen.split(" L.")[0].strip()
+                core = name_core(chosen)
                 g = await gbif_match(client, core, None)
                 await asyncio.sleep(GBIF_PACE)
-                kind = _kingdom_of(g)
+                kind = _kingdom_of(g, chosen)
                 ev["gbif"] = {"matchType": (g or {}).get("matchType"), "kingdom": (g or {}).get("kingdom"),
                               "name": (g or {}).get("canonicalName")}
+                if kind is None:
+                    if g is None:
+                        # Временный отказ GBIF: отметку не ставим, карточка вернётся в следующий прогон.
+                        c["errors"] += 1
+                        continue
+                    # Старая латынь, которой GBIF не знает: пишем как есть, царство не меняем.
+                    kind = kingdom or "растение"
+                    ev["gbif_unknown_name"] = True
                 if kind in ("животное", "вещество"):
                     c["animal" if kind == "животное" else "substance"] += 1
                     if apply:
@@ -214,7 +269,7 @@ async def run_amirdovlat(apply: bool, limit: int = 0, use_llm: bool = True,
                         await _finding(pid, CHECK, "resolved", f"{name}: {kind} ({core})", ev, "kingdom")
                     note(kind, (name, core))
                     continue
-                accepted = (g or {}).get("canonicalName") or core
+                accepted = ((g or {}).get("canonicalName") if (g or {}).get("matchType") not in (None, "NONE") else None) or core
                 new_latin = binomial_core(accepted) or accepted
                 if apply:
                     async with async_session() as db:
