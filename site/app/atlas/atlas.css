@@ -1,0 +1,161 @@
+/* Атлас: каталог видов с фасетами, таблица, «растения при…» и страница поиска.
+   Поверх общих классов из globals.css (.tiles, .facet, .toolbar, .table, .chip). */
+
+/* ——— шапка каталога ——— */
+.atlas-hero { padding: 34px 36px 30px; margin-top: 16px; }
+.atlas-hero h1 { margin: 0 0 10px; }
+.atlas-hero .lead { max-width: 700px; margin: 0; font-size: 18px; }
+.atlas-hero-compact { padding: 22px 28px 24px; }
+.atlas-hero-compact .atlas-search { margin-top: 10px; }
+.atlas-search { display: flex; gap: 8px; margin-top: 18px; max-width: 640px; }
+.atlas-search input[type="search"] {
+  flex: 1; min-width: 0; padding: 12px 18px; border-radius: 999px; border: 1px solid #d9d2c5;
+  background: var(--cream); color: var(--ink); font-size: 16px; outline: none;
+}
+.atlas-search input[type="search"]:focus { border-color: var(--moss); }
+.atlas-search .btn { padding: 12px 20px; }
+.atlas-entries { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
+.atlas-entries-lbl { font-size: 14px; color: var(--muted); font-weight: 600; margin-right: 2px; }
+
+/* ——— колонка фасетов ——— */
+.atlas-body { margin-top: 28px; }
+/* Список фасетов выше экрана: липкая колонка спрятала бы нижние группы. */
+.atlas-aside { position: static; }
+.atlas-ft-input, .atlas-ft-label { display: none; }
+.facet-label { min-width: 0; overflow-wrap: anywhere; }
+.facet-lat { font-family: var(--font-literata), Georgia, serif; color: var(--muted); font-size: 12.5px; }
+.facet a.active .facet-lat { color: var(--forest); }
+.facet-more summary {
+  cursor: pointer; list-style: none; padding: 5px 10px; font-size: 13.5px; font-weight: 600; color: var(--forest);
+}
+.facet-more summary::-webkit-details-marker { display: none; }
+.facet-more summary::after { content: " ▾"; }
+.facet-more[open] summary::after { content: " ▴"; }
+.facet-grp { font-size: 12px; color: var(--muted); margin: 10px 10px 2px; }
+.facet-group:first-of-type .facet-grp { margin-top: 0; }
+
+/* ——— результаты ——— */
+.atlas-results { min-width: 0; }
+.atlas-count { font-weight: 600; color: var(--ink); }
+.atlas-switches { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.seg { display: inline-flex; gap: 2px; padding: 3px; background: var(--cream); border-radius: 999px; box-shadow: var(--shadow); }
+.seg a, .seg span {
+  padding: 6px 12px; border-radius: 999px; font-size: 13.5px; font-weight: 600; text-decoration: none;
+  color: var(--forest); white-space: nowrap;
+}
+.seg a:hover { background: var(--leaf); }
+.seg span.on { background: var(--forest); color: #fff; }
+.atlas-active { display: flex; flex-wrap: wrap; gap: 8px; margin: -2px 0 16px; }
+.atlas-note { margin: 6px 0 0; font-size: 14px; color: var(--muted); max-width: 760px; }
+.atlas-photonote { margin-top: 10px; }
+
+/* ——— плитка вида: подпись фото и заметки ——— */
+/* Однострочная подпись фото не должна распирать колонку сетки. */
+.atlas-tiles > .tile { min-width: 0; }
+.atlas-tiles .tile-name, .atlas-tiles .tile-latin { overflow-wrap: anywhere; }
+.tile-credit {
+  font-size: 10.5px; line-height: 1.3; color: #8d877b; margin-top: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tile-note { font-style: italic; }
+.tag-mist { background: var(--mist); color: var(--muted); }
+
+/* ——— таблица ——— */
+.atlas-table-wrap { overflow-x: auto; border-radius: var(--radius-row); box-shadow: var(--shadow); background: var(--cream); }
+.atlas-table { box-shadow: none; border-radius: 0; }
+.atlas-table th.c-num, .atlas-table td.c-num { text-align: right; white-space: nowrap; }
+.atlas-tname { font-weight: 600; text-decoration: none; }
+.atlas-tname:hover { text-decoration: underline; }
+.c-lat-inline, .c-num-inline { display: none; }
+.atlas-safety { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.atlas-safety.s-danger { background: var(--danger-bg); color: var(--danger); }
+.atlas-safety.s-warn { background: #fbf0c9; color: #6b5310; }
+.atlas-safety.s-ok { background: var(--leaf); color: var(--forest); }
+.atlas-safety.s-unknown { background: var(--mist); color: var(--muted); }
+
+/* ——— «растения при…» ——— */
+.atlas-for-head { margin: 4px 0 20px; }
+.atlas-for-head h1 { margin: 6px 0 8px; }
+.atlas-for-head .lead { max-width: 760px; margin: 0; }
+.atlas-ind { margin-top: 16px; max-width: 760px; }
+.atlas-ind p { margin: 0 0 6px; }
+.atlas-ind p:last-child { margin-bottom: 0; }
+.atlas-ind a { font-weight: 600; text-decoration: none; }
+.atlas-ind a:hover { text-decoration: underline; }
+.atlas-more { margin: 18px 0 0; font-weight: 600; }
+.atlas-more a { text-decoration: none; }
+.atlas-disclaimer { margin-top: 28px; }
+
+/* ——— поиск ——— */
+.srch-head { margin: 22px 0 6px; }
+.srch-head h1 { margin: 0 0 6px; overflow-wrap: anywhere; }
+.srch-sum { color: var(--muted); margin: 0; }
+.srch-answer {
+  display: grid; grid-template-columns: 240px 1fr; gap: 24px; align-items: center;
+  text-decoration: none; color: var(--ink); margin-top: 18px;
+}
+.srch-answer:hover { box-shadow: 0 6px 18px rgba(37, 35, 31, 0.09); }
+.srch-answer-photo {
+  aspect-ratio: 4 / 3; border-radius: 18px; overflow: hidden;
+  background: linear-gradient(160deg, var(--leaf), #f3f7ea); display: flex; align-items: center; justify-content: center;
+}
+.srch-answer-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.srch-answer-photo svg { width: 40%; height: 40%; color: var(--moss); opacity: .7; }
+.srch-answer h2 { font-size: 30px; margin: 10px 0 2px; }
+.srch-answer .btn { margin-top: 14px; }
+.srch-answer-meta { margin: 8px 0 0; }
+.srch-block { margin: 40px 0; }
+.srch-block .section-lead { margin-bottom: 14px; }
+.srch-conds { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.srch-cond { display: flex; flex-direction: column; gap: 4px; }
+.srch-cond-links { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; font-weight: 600; margin-top: 4px; }
+.srch-cond-links a { text-decoration: none; }
+.srch-cond-links a:hover { text-decoration: underline; }
+.srch-recipes { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.srch-recipe, .srch-book, .srch-frag { display: block; text-decoration: none; color: var(--ink); }
+.srch-recipe:hover, .srch-book:hover, .srch-frag:hover { box-shadow: 0 6px 18px rgba(37, 35, 31, 0.09); }
+.srch-recipe p { margin: 6px 0; color: #3f4a43; }
+.srch-books { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.srch-book .chip { margin-top: 8px; }
+.srch-frags { display: grid; gap: 10px; }
+.srch-frag p {
+  margin: 6px 0 0; font-family: var(--font-literata), Georgia, serif; font-size: 15.5px; line-height: 1.55; color: #3f4a43;
+}
+.srch-hint { margin-top: 24px; padding: 32px; }
+.srch-hint p { max-width: 640px; }
+.srch-wait { color: var(--muted); font-size: 14px; margin: 24px 0; }
+
+@media (max-width: 900px) {
+  .atlas-body { margin-top: 18px; gap: 14px; }
+  .atlas-ft-label { display: inline-flex; }
+  .atlas-ft-input { display: block; position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+  .atlas-ft-input:focus-visible + .atlas-ft-label { outline: 2px solid var(--moss); outline-offset: 2px; }
+  .atlas-ft-input:checked + .atlas-ft-label { background: var(--leaf); }
+  .atlas-facets {
+    display: none; margin-top: 12px; background: var(--cream); border-radius: var(--radius-card);
+    padding: 16px 12px 6px; box-shadow: var(--shadow);
+  }
+  .atlas-ft-input:checked ~ .atlas-facets { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 18px; }
+  .atlas-facets .facet a { padding: 8px 10px; }
+}
+
+@media (max-width: 760px) {
+  .atlas-hero { padding: 24px 18px; }
+  .atlas-hero .lead { font-size: 16px; }
+  .atlas-hero-compact { padding: 18px 16px 20px; }
+  .atlas-search .btn { padding: 12px 16px; }
+  /* Частые запросы на телефоне одной прокручиваемой строкой, чтобы плитки начинались на первом экране. */
+  .atlas-entries { flex-wrap: nowrap; overflow-x: auto; margin: 14px -18px 0; padding: 0 18px 4px; scrollbar-width: none; }
+  .atlas-entries::-webkit-scrollbar { display: none; }
+  .atlas-entries > * { flex: 0 0 auto; white-space: nowrap; }
+  .atlas-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .atlas-table .c-lat, .atlas-table .c-fam, .atlas-table .c-king, .atlas-table .c-num { display: none; }
+  .atlas-table th { font-size: 11.5px; letter-spacing: 0; }
+  .atlas-safety { white-space: normal; }
+  .c-lat-inline, .c-num-inline { display: block; }
+  .tile-credit { font-size: 10px; }
+  .srch-answer { grid-template-columns: 1fr; gap: 14px; }
+  .srch-answer h2 { font-size: 24px; }
+  .srch-books { grid-template-columns: 1fr; }
+  .srch-hint { padding: 22px 18px; }
+}

@@ -1,0 +1,243 @@
+// Server-side data access + small shared helpers for the botanik.fun landing.
+// All fetches run on the server against the INTERNAL backend (same docker network),
+// so nothing here is exposed to the browser and no public-API whitelist/CORS is
+// needed. GEOPRIVACY: the public endpoints already strip coordinates.
+
+const API = process.env.LANDING_API_BASE || "http://backend:8000/api";
+
+/** GET an internal API path → parsed JSON, or null on any failure / timeout.
+ *  Short revalidate so the landing is lively without hammering the backend. */
+async function getJson<T>(path: string, revalidate = 45): Promise<T | null> {
+  try {
+    const res = await fetch(API + path, {
+      next: { revalidate },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+// ---- Types (mirror the backend public shapes) ----
+export type LeaderRow = { rank: number | null; nick: string; score: number; badges: number };
+export type Leaderboard = { me: LeaderRow | null; top: LeaderRow[] };
+
+export type Badge = {
+  badge_id?: string;
+  place_id?: string | null;
+  place?: string | null;
+  window?: string | null;
+  year?: number | null;
+  tier: number;
+  name: string;
+  points?: number | null;
+  ordinal?: number | null;
+  issued_at?: string | null;
+  nick?: string; // present in the recent-badges feed
+  kind?: string | null;     // "place" | "biotope"
+  biotope?: string | null;  // biotope key when kind === "biotope"
+};
+
+const BIOTOPE_GENITIVE: Record<string, string> = {
+  лес: "леса", луг: "луга", поле: "поля", парк: "парков", парки: "парков",
+  заросли: "зарослей", вода: "побережья", болото: "болота", скалы: "скал",
+  пески: "песков", горы: "гор",
+};
+
+/** «Мастер · Нескучный сад» / «Новичок · Знаток леса» — mirrors the app's badgeLabel. */
+export function badgeLabel(b: Badge): string {
+  const tier = cap(b.name || "Значок");
+  if (b.kind === "biotope" && b.biotope) {
+    const g = BIOTOPE_GENITIVE[b.biotope.toLowerCase()] || b.biotope;
+    return `${tier} · Знаток ${g}`;
+  }
+  if (b.place) return `${tier} · ${b.place}`;
+  return tier;
+}
+
+export type Profile = {
+  device_key: string;
+  nick: string;
+  avatar?: string | null;
+  level: { n: number; title: string; species: number };
+  score: number;
+  rank: number | null;
+  badges: Badge[];
+};
+
+export type WalkCard = {
+  latin_key: string;
+  name: string;
+  latin: string | null;
+  inat_photo: string | null;
+  plant_id: string | null;
+  found?: boolean;
+};
+export type PlaceSet = {
+  place: { name: string; window: string; set_size: number; target: number };
+  items: WalkCard[];
+};
+
+// ---- Fetchers ----
+export const getLeaderboard = (
+  scope: "global" | "place" | "season" = "global",
+  opts: { place_id?: string; window?: string; year?: number; limit?: number } = {},
+) => {
+  const q = new URLSearchParams({ scope, limit: String(opts.limit ?? 20) });
+  if (opts.place_id) q.set("place_id", opts.place_id);
+  if (opts.window) q.set("window", opts.window);
+  if (opts.year) q.set("year", String(opts.year));
+  return getJson<Leaderboard>(`/quests/leaderboard?${q}`);
+};
+
+/** Событие «Эфира» — общей ленты находок сообщества. Место приблизительное
+ *  (имя парка/леса), координат в ленте нет никогда. */
+export type EtherEvent = {
+  type: "id" | "badge";
+  actor: { handle?: string; nick?: string; avatar?: string | null };
+  plant?: { id: string; name: string; photo?: string | null } | null;
+  place?: string | null;
+  tier?: number;
+  name?: string;
+  ordinal?: number | null;
+  at: string;
+};
+
+/** «Сколько прошло» по-русски, без библиотек: лента и так серверная. */
+export function agoRu(iso: string): string {
+  const min = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  if (min < 2) return "только что";
+  if (min < 60) return `${min} мин назад`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} ${h === 1 ? "час" : h < 5 ? "часа" : "часов"} назад`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d} ${d === 1 ? "день" : d < 5 ? "дня" : "дней"} назад`;
+  return new Date(iso).toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+}
+
+export const getRecentBadges = (limit = 12, place_id?: string) =>
+  getJson<{ badges: Badge[] }>(
+    `/quests/recent-badges?limit=${limit}${place_id ? `&place_id=${place_id}` : ""}`,
+  );
+
+export const getProfile = (deviceKey: string) =>
+  getJson<Profile>(`/quests/profile/${encodeURIComponent(deviceKey)}`);
+
+export const getPlaceSet = (placeId: string, window: string) =>
+  getJson<PlaceSet>(
+    `/quests/place/${encodeURIComponent(placeId)}/set?window=${encodeURIComponent(window)}`,
+  );
+
+export type PlantLite = {
+  id?: string;
+  name?: string;
+  name_latin?: string | null;
+  name_modern?: string | null;
+  family?: string | null;
+  is_toxic?: boolean;
+  verdict?: string | null;
+  photo_url?: string | null;
+  lead_fact?: unknown;
+  fun_fact?: unknown;
+  uses?: { action?: string; summary?: string | null }[];
+};
+export const getPlant = (id: string) =>
+  getJson<PlantLite>(`/plants/${encodeURIComponent(id)}?view=field`);
+
+/** A {text,source} object — or a bare string — → trimmed text or null. */
+export function quoteText(q: unknown): string | null {
+  if (!q) return null;
+  if (typeof q === "string") return q.trim() || null;
+  if (typeof q === "object" && q !== null && typeof (q as { text?: unknown }).text === "string") {
+    return ((q as { text: string }).text).trim() || null;
+  }
+  return null;
+}
+
+// ---- Display helpers (mirror Quest.kt) ----
+const MONTHS_GEN = [
+  "января", "февраля", "марта", "апреля", "мая", "июня",
+  "июля", "августа", "сентября", "октября", "ноября", "декабря",
+];
+
+/** "second-half-06" + 2026 → "вторая половина июня 2026". */
+export function windowLabelRu(window?: string | null, year?: number | null): string {
+  if (!window) return "";
+  const p = window.split("-");
+  const half = p[0] === "first" ? "первая половина" : "вторая половина";
+  const mi = parseInt(p[2] ?? "", 10);
+  const month = mi >= 1 && mi <= 12 ? MONTHS_GEN[mi - 1] : "";
+  return `${half} ${month}${year ? " " + year : ""}`.replace(/\s+/g, " ").trim();
+}
+
+function monthOf(window?: string | null): number | null {
+  const m = parseInt((window ?? "").split("-")[2] ?? "", 10);
+  return Number.isNaN(m) ? null : m;
+}
+export function seasonEmoji(window?: string | null): string {
+  const m = monthOf(window);
+  if (m === null) return "🏅";
+  if (m >= 3 && m <= 5) return "🌸";
+  if (m >= 6 && m <= 8) return "🌿";
+  if (m >= 9 && m <= 11) return "🍂";
+  return "❄️";
+}
+export function seasonAdj(window?: string | null): string {
+  const m = monthOf(window);
+  if (m === null) return "";
+  if (m >= 3 && m <= 5) return "Весенний";
+  if (m >= 6 && m <= 8) return "Летний";
+  if (m >= 9 && m <= 11) return "Осенний";
+  return "Зимний";
+}
+
+/** [light bg, metal ring, dark text] per tier — matches the app medallions. */
+export function tierColors(tier: number): [string, string, string] {
+  if (tier === 1) return ["#F3E0CE", "#CD7F32", "#7A4A1E"]; // бронза
+  if (tier === 2) return ["#ECECEC", "#9AA0A6", "#5F6368"]; // серебро
+  return ["#FFF3C4", "#D4AF37", "#8A6D1B"]; // золото
+}
+export const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+export function pluralRu(n: number, one: string, few: string, many: string): string {
+  const m100 = n % 100, m10 = n % 10;
+  if (m100 >= 11 && m100 <= 14) return many;
+  if (m10 === 1) return one;
+  if (m10 >= 2 && m10 <= 4) return few;
+  return many;
+}
+
+// Store links (env-overridable). App Store v1.0 is live (id 6778605472).
+export const RUSTORE_URL =
+  process.env.NEXT_PUBLIC_RUSTORE_URL || "https://www.rustore.ru/catalog/app/ru.begemot.plantid";
+export const APPSTORE_URL =
+  process.env.NEXT_PUBLIC_APPSTORE_URL || "https://apps.apple.com/ru/app/что-растёт/id6778605472";
+
+/** «Эфир» — все публичные находки сообщества. Анонимно: device_key эфиру не нужен. */
+export const getEther = (limit = 12) =>
+  getJson<{ events: EtherEvent[] }>(`/quests/feed?scope=ether&limit=${limit}`);
+
+/** Переход по пригласительной ссылке: сервер запоминает отпечаток посетителя, чтобы
+ *  узнать его после установки из магазина (кода в приложении иначе неоткуда взять).
+ *  Адрес и браузер передаём явно — лендинг ходит в backend изнутри сети. */
+export async function recordInviteClick(
+  code: string, ip: string | null, ua: string | null,
+): Promise<{ host_nick?: string; host_avatar?: string | null } | null> {
+  try {
+    const res = await fetch(`${API}/quests/invite/click?code=${encodeURIComponent(code)}`, {
+      method: "POST",
+      headers: {
+        ...(ip ? { "x-forwarded-for": ip } : {}),
+        ...(ua ? { "x-visitor-ua": ua } : {}),
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}

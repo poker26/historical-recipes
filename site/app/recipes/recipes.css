@@ -1,0 +1,75 @@
+/* Рецепты: каталог с фасетами, строка рецепта и страница рецепта.
+   Классы с префиксом rc-, чтобы не пересекаться с другими разделами. */
+.rc-hero { padding: 32px 28px; margin-top: 16px; }
+.rc-hero h1 { margin: 12px 0 8px; }
+.rc-hero .lead { max-width: 680px; margin: 0; }
+.rc-search { display: flex; gap: 8px; margin-top: 18px; max-width: 560px; }
+.rc-search input {
+  flex: 1; min-width: 0; padding: 12px 16px; border-radius: 999px; border: 1px solid #d9d2c5;
+  background: var(--cream); color: var(--ink); font-size: 15px; outline: none;
+}
+.rc-search input:focus { border-color: var(--moss); }
+
+.rc-layout { margin-top: 28px; }
+.rc-filters-m { display: none; }
+.rc-filters-m summary { cursor: pointer; font-weight: 600; color: var(--forest); list-style: none; }
+.rc-filters-m summary::-webkit-details-marker { display: none; }
+.rc-filters-m summary::after { content: " ▾"; }
+.rc-filters-m[open] summary::after { content: " ▴"; }
+.rc-filters-m[open] summary { margin-bottom: 12px; }
+.rc-facet-note { margin: 4px 10px 0; line-height: 1.4; }
+.rc-eras { margin: 4px 0 0; line-height: 1.45; }
+
+.rc-banner { display: flex; justify-content: space-between; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin-bottom: 14px; }
+.rc-banner b a { color: var(--forest); }
+.rc-list { display: grid; gap: 12px; }
+.rc-row-title { font-size: 18px; margin: 0 0 8px; overflow-wrap: anywhere; }
+.rc-row-title a { color: var(--ink); text-decoration: none; }
+.rc-row-title a:hover { color: var(--forest); text-decoration: underline; }
+.rc-row-chips { gap: 6px; }
+.rc-row-chips .chip { padding: 4px 10px; font-size: 12.5px; }
+.rc-row-excerpt { margin: 10px 0 0; color: #3f4a43; font-size: 14.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.rc-row .source { margin-top: 8px; }
+
+/* страница рецепта */
+.rc-head h1 { margin: 10px 0 12px; overflow-wrap: anywhere; }
+.rc-head .chips { margin-bottom: 10px; }
+.rc-head .source { font-size: 14px; }
+.rc-safety { margin-top: 18px; }
+.rc-ings td { overflow-wrap: anywhere; }
+.rc-ing-orig { font-family: var(--font-literata), Georgia, serif; }
+.rc-ing-plant { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.rc-ing-link { display: inline-flex; gap: 8px; align-items: center; text-decoration: none; font-weight: 600; }
+.rc-thumb {
+  width: 34px; height: 34px; border-radius: 50%; overflow: hidden; flex: 0 0 auto;
+  background: var(--leaf); display: inline-flex; align-items: center; justify-content: center;
+}
+.rc-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rc-thumb svg { width: 62%; height: 62%; color: var(--moss); }
+.rc-text .quote-text { font-size: 16px; line-height: 1.65; }
+.rc-modern { margin-top: 12px; }
+.rc-modern summary { cursor: pointer; font-weight: 600; color: var(--forest); }
+.rc-modern .prose { margin-top: 10px; white-space: pre-line; }
+.rc-similar { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.rc-mini { display: flex; flex-direction: column; gap: 4px; text-decoration: none; color: var(--ink); overflow-wrap: anywhere; }
+.rc-mini:hover { box-shadow: 0 6px 18px rgba(37, 35, 31, .09); }
+.rc-foot { margin-top: 32px; }
+
+@media (max-width: 900px) {
+  .rc-filters-d { display: none; }
+  .rc-filters-m { display: block; margin-bottom: 16px; }
+}
+@media (max-width: 760px) {
+  .rc-hero { padding: 24px 18px; }
+  .rc-ings thead { display: none; }
+  .rc-ings, .rc-ings tbody, .rc-ings tr, .rc-ings td { display: block; width: 100%; }
+  .rc-ings tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
+  .rc-ings tr:last-child { border-bottom: none; }
+  .rc-ings td { border: none; padding: 4px 14px; }
+  .rc-ings td::before {
+    content: attr(data-label); display: block; font-size: 11.5px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .03em; font-family: var(--font-golos), sans-serif;
+  }
+  .rc-similar { grid-template-columns: 1fr; }
+}
+.rc-note { margin-top: 10px; }

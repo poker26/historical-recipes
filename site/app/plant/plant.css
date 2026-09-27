@@ -1,0 +1,154 @@
+/* Карточка вида и родовой хаб (/atlas/{слаг}). Дополняет .plant-head, .toc, .block,
+   .quote, .safety из globals.css; свои классы с префиксом pc-, чтобы не пересекаться
+   со стилями атласа. Мобильная ширина 390: длинные слова и таблицы не выталкивают страницу. */
+
+.pc { min-width: 0; }
+.pc .quote-text, .pc .pc-line, .pc .pc-text, .pc .chip, .pc h1, .pc h2, .pc h3, .pc h4 { overflow-wrap: anywhere; }
+.pc .chip { max-width: 100%; }
+
+/* ——— шапка ——— */
+.pc-head { margin-bottom: 4px; }
+.pc-head-text { min-width: 0; }
+.pc-head-text > .chip { margin-bottom: 8px; }
+.pc-head h1 { margin-bottom: 4px; }
+.pc-photo-empty { display: flex; align-items: center; justify-content: center; background: var(--leaf); }
+.pc-photo-empty svg { width: 42%; height: 42%; color: var(--moss); opacity: .7; }
+.pc-modern { margin: 0 0 2px; color: #3f4a43; font-size: 15px; }
+.pc-latin { font-size: 19px; }
+.pc-family { margin-top: 6px; font-size: 14.5px; color: var(--muted); }
+.pc-family a { color: var(--forest); text-decoration: none; font-weight: 600; }
+.pc-family a:hover { text-decoration: underline; }
+.pc-safety { margin-top: 16px; display: grid; gap: 8px; max-width: 640px; }
+.pc-parts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13.5px; }
+.pc-parts .chip { padding: 4px 12px; font-size: 13px; }
+.pc-twin { margin: 0; color: var(--danger); font-weight: 600; font-size: 14.5px; }
+.pc-stats { margin: 14px 0 0; color: #3f4a43; font-size: 15px; }
+.pc-note { margin: 8px 0 0; max-width: 640px; }
+.pc-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.pc-toc { margin-top: 22px; }
+
+/* ——— блоки ——— */
+.pc-block { scroll-margin-top: 16px; }
+.pc-lead { color: var(--muted); margin: -4px 0 16px; max-width: 72ch; }
+.pc-text { max-width: 72ch; font-size: 16.5px; line-height: 1.6; margin: 0 0 12px; }
+.pc-verdict { max-width: 72ch; margin: 0 0 14px; }
+.pc-src-only { margin: 8px 0; }
+
+.pc-more { margin: 6px 0 4px; }
+.pc-more > summary {
+  cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px;
+  color: var(--forest); font-weight: 600; font-size: 14px; padding: 6px 12px; border-radius: 999px; background: var(--leaf);
+}
+.pc-more > summary::-webkit-details-marker { display: none; }
+.pc-more > summary::before { content: "+"; font-weight: 700; }
+.pc-more[open] > summary::before { content: "−"; }
+.pc-more-body { margin-top: 8px; }
+.pc-more-groups > summary { background: var(--cream); box-shadow: var(--shadow); font-size: 15px; padding: 10px 16px; }
+
+/* ——— применение ——— */
+.pc-use { background: var(--cream); border-radius: var(--radius-card); padding: 18px 20px; box-shadow: var(--shadow); margin-bottom: 14px; }
+.pc-use .quote { background: var(--paper); }
+.pc-use-head { display: flex; align-items: baseline; gap: 6px 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.pc-use-head h3, .pc-use-head h4 { margin: 0; }
+.pc-use-head h4 { font-size: 16.5px; }
+.pc-use-head .more { margin-left: auto; font-size: 13.5px; }
+.pc-line { margin: 6px 0 0; font-size: 15px; line-height: 1.5; }
+.pc-label { color: var(--muted); }
+.pc-ind { color: var(--forest); text-decoration: none; font-weight: 600; }
+.pc-act { color: inherit; text-decoration: none; }
+.pc-act:hover { color: var(--forest); text-decoration: underline; }
+.pc-ind:hover { text-decoration: underline; }
+.pc-use-mini { padding: 14px 16px; margin-bottom: 0; }
+.pc-mini-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 10px; }
+
+/* ——— безопасность, записи ——— */
+.pc-caution { background: var(--danger-bg); color: #5c1f17; box-shadow: none; margin-bottom: 14px; }
+.pc-caution p { margin: 6px 0 0; }
+.pc-caution .source { color: #7a3b31; }
+.pc-facts { display: grid; gap: 4px; }
+.pc-fact { padding: 4px 0; }
+.pc-fact-meta { display: flex; flex-wrap: wrap; gap: 2px 16px; font-size: 14px; color: #3f4a43; margin-top: 6px; }
+.pc-fact-meta b { color: var(--muted); font-weight: 600; }
+.pc-kv { background: var(--cream); border-radius: var(--radius-row); padding: 14px 18px; box-shadow: var(--shadow); margin: 0 0 14px; }
+
+/* ——— состав ——— */
+.pc-cmp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 8px; }
+.pc-cmp-group { background: var(--cream); border-radius: var(--radius-card); padding: 16px 18px; box-shadow: var(--shadow); min-width: 0; }
+.pc-cmp-group h3 { font-size: 17px; margin: 0 0 6px; }
+.pc-cmp-list { list-style: none; margin: 0; padding: 0; }
+.pc-cmp-list li { padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.pc-cmp-list li:last-child { border-bottom: none; }
+.pc-cmp-name { font-weight: 600; }
+a.pc-cmp-name { text-decoration: none; }
+a.pc-cmp-name:hover { text-decoration: underline; }
+.pc-cmp-src { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.pc-cmp-src a { color: var(--muted); }
+.pc-cmp-cols { columns: 2; column-gap: 28px; background: var(--cream); border-radius: var(--radius-card); padding: 10px 20px; box-shadow: var(--shadow); }
+.pc-cmp-cols li { break-inside: avoid; }
+.pc-insights { margin-top: 22px; }
+.pc-insights h3 { margin-bottom: 4px; }
+.pc-table-wrap { overflow-x: auto; margin-top: 10px; }
+.pc-table-wrap .table td { overflow-wrap: anywhere; }
+.pc-insights .footnote { margin-top: 8px; }
+
+/* ——— где растёт и iNaturalist ——— */
+.pc-biotopes { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 14px; }
+.pc-inat { margin-top: 18px; }
+.pc-inat h3 { margin: 0 0 4px; }
+.pc-inat-lead { margin: 0 0 14px; color: #3f4a43; }
+.pc-season { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 4px; margin: 0 0 16px; }
+.pc-season-track { height: 72px; display: flex; align-items: flex-end; background: var(--paper); border-radius: 6px; overflow: hidden; }
+.pc-season-bar { width: 100%; background: var(--moss); border-radius: 6px 6px 0 0; }
+.pc-season-bar.peak { background: var(--forest); }
+.pc-season-col span { display: block; text-align: center; font-size: 11px; color: var(--muted); margin-top: 4px; }
+.pc-inat-photos { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 8px; }
+.pc-inat-photos figure { margin: 0; min-width: 0; }
+.pc-inat-photos img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 14px; display: block; background: var(--leaf); }
+.pc-inat-photos .credit { overflow-wrap: anywhere; }
+
+/* ——— кухня и пары ——— */
+.pc-recipes-wrap { margin-top: 18px; }
+.pc-kinds { margin: 0 0 12px; }
+.pc-recipes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.pc-recipe { display: block; text-decoration: none; color: var(--ink); min-width: 0; }
+.pc-recipe:hover { box-shadow: 0 6px 18px rgba(37, 35, 31, .09); }
+.pc-recipe-head { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.pc-recipe-head .chip { padding: 3px 10px; font-size: 12px; flex: 0 0 auto; }
+.pc-recipe-text { margin: 6px 0 0; color: #3f4a43; }
+.pc-all { margin: 14px 0 0; }
+.pc-pair { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pc-pair-proof { list-style: none; margin: 0; padding: 0 8px; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.pc-pair-proof li { margin-top: 3px; }
+.pc-pair-proof a { color: var(--forest); text-decoration: none; }
+.pc-pair-proof a:hover { text-decoration: underline; }
+
+/* ——— уход, имена, источники ——— */
+.pc-care h3 { margin-top: 14px; }
+.pc-names { margin-bottom: 10px; }
+.pc-mentions, .pc-sources { margin: 6px 0 0; padding-left: 22px; }
+.pc-mentions { list-style: disc; }
+.pc-mentions li, .pc-sources li { padding: 5px 0; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
+.pc-mentions a, .pc-sources a { color: var(--forest); text-decoration: none; font-weight: 600; }
+.pc-mentions .muted a, .pc-sources .muted a { font-weight: 500; }
+.pc-mentions a:hover, .pc-sources a:hover { text-decoration: underline; }
+
+/* ——— подвал карточки ——— */
+.pc-disclaimer { margin: 36px 0 0; color: var(--muted); font-size: 14px; }
+.pc-invite { text-align: center; padding: 32px 24px; }
+.pc-invite h2 { margin: 4px 0 8px; font-size: 26px; }
+.pc-invite p { color: #3f4a43; margin: 0 auto 18px; max-width: 520px; }
+.pc-invite-btns { display: flex; justify-content: center; }
+
+@media (max-width: 900px) {
+  .pc-mini-grid, .pc-cmp-grid, .pc-recipes { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .pc-latin { font-size: 17px; }
+  .pc-use { padding: 14px 14px; }
+  .pc-use-head .more { margin-left: 0; }
+  .pc-cmp-cols { columns: 1; }
+  .pc-inat-photos { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pc-season-track { height: 56px; }
+  .pc-season-col span { font-size: 10px; }
+  .pc-invite h2 { font-size: 22px; }
+}

@@ -40,6 +40,23 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # === botanik.fun v2: справочный сайт (docs/RFC-botanik-site.md) ===
+  # Преемник `landing`: те же адреса шэров и арта плюс атлас, рецепты, библиотека,
+  # справочники и места. Рендер на сервере с внутреннего backend. Хостовый nginx
+  # botanik.fun смотрит сюда (deploy/botanik.fun.nginx.conf); `landing` остаётся
+  # запущенным как мгновенный откат сменой порта в vhost.
+  site:
+    build: ./site
+    environment:
+      - LANDING_API_BASE=http://backend:8000/api
+      - SITE_URL=https://botanik.fun
+    ports:
+      - "127.0.0.1:8131:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
   # === Consumer agent site (nastoiki.pro) ===
   # Mobile-first selling page for the master-classes with the embedded «Мастер
   # настоек» chat agent. The browser calls /api/agent/chat SAME-ORIGIN, so the
@@ -103,6 +120,79 @@ services:
     build: ./backend
     env_file: .env
     command: python -m app.mcp.server
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # === Cleanup / quest / monograph worker (task queue "dispatcher") ===
+  # Second Temporal worker, deliberately separate from `worker`: it hosts the
+  # 24/7 BookDispatcherWorkflow pool plus the long-running singleton workflows
+  # (PlantCleanup, FillLatin, BiotopeCanon, QuestSetBuilder, ReaderMonograph …).
+  # Splitting them means a book-pipeline redeploy never interrupts a cleanup run
+  # and vice versa. Small DB pool on purpose — these activities hold a session
+  # across long LLM/iNat awaits, so a wide pool just starves the backend.
+  dispatcher:
+    build: ./backend
+    env_file: .env
+    command: python -m app.temporal.dispatcher_worker
+    environment:
+      - DB_POOL_SIZE=3
+      - DB_MAX_OVERFLOW=2
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # === nastoiki.pro Telegram bot (@neprostoinastoi_bot) ===
+  # Long-polling bot on the backend image: `/start book1858` records a lead and
+  # sends the 1858 book PDF, any other text is proxied to our own
+  # /api/agent/chat (the same «Мастер настоек» agent the site talks to).
+  nastoiki-bot:
+    build: ./backend
+    env_file: .env
+    command: python -m app.bot.telegram
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # === nastoiki.pro Max bot (@se13474809_bot) ===
+  # Same job as the Telegram bot over the Max (TamTam-style) Bot API: replies in
+  # private dialogs only, plain text (no Markdown), gift + agent proxy.
+  nastoiki-bot-max:
+    build: ./backend
+    env_file: .env
+    command: python -m app.bot.max
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # === Qtickets abandoned-order nudger ===
+  # Polls the Qtickets REST API for unpaid master-class orders past a grace
+  # period and reports each once to the owner in Telegram with the client's
+  # contact and the ready «доплатить» payment_url. Reporting only — it never
+  # mails the clients. Dedup via the `qtickets_nudges` table.
+  nastoiki-nudge:
+    build: ./backend
+    env_file: .env
+    command: python -m app.jobs.nudge
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # === nastoiki.pro staging front (host nginx :8129, basic-auth) ===
+  # Preview stand for WIP copy before it goes to the real nastoiki.pro.
+  # PINNED TO THE ALREADY-BUILT IMAGE ON PURPOSE: the `nastoiki-staging/` source
+  # tree and deploy/promote-nastoiki.sh are NO LONGER on this server, so there is
+  # nothing to build from. Do NOT swap this for `build: ./nastoiki-staging`
+  # before those sources are restored — compose would fail on a missing context.
+  nastoiki-staging:
+    image: historical-recipes-nastoiki-staging:latest
+    ports:
+      - "127.0.0.1:8130:3000"
     depends_on:
       backend:
         condition: service_healthy
