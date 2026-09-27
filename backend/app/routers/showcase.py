@@ -95,15 +95,16 @@ async def seasonal(lat: float = Query(...), lng: float = Query(...),
     # монограф-крючки + safety + счётчик пригодных рецептов — одним проходом
     rows = (await db.execute(text("""
         SELECT p.id::text, p.safety_level,
-               m.monograph,
+               m.monograph, p.photo_url, p.photo_attribution, p.photo_license,
                (SELECT count(*) FROM recipe_ingredients ri
                  JOIN recipes r ON r.id = ri.recipe_id AND r.home_doable
                 WHERE ri.plant_id = p.id) AS recipes
         FROM plants p
         LEFT JOIN plant_reader_monograph m ON m.plant_id = p.id AND m.reviewed
         WHERE p.id = ANY(cast(:ids AS uuid[]))"""), {"ids": ids})).all()
-    meta = {pid: {"safety": lvl, "hook": _pick_hook(mono), "recipes": rec or 0}
-            for pid, lvl, mono, rec in rows}
+    meta = {pid: {"safety": lvl, "hook": _pick_hook(mono), "recipes": rec or 0,
+                  "pphoto": purl, "pattr": pattr, "plic": plic}
+            for pid, lvl, mono, purl, pattr, plic, rec in rows}
     out = []
     for it in corpus_items:
         m = meta.get(it["plant_id"], {})
@@ -114,6 +115,11 @@ async def seasonal(lat: float = Query(...), lng: float = Query(...),
             "safety_level": m.get("safety"),
             "recipes": m.get("recipes", 0),
             "biotope_match": it.get("biotope_match", False),
+            # Фото самой карточки с автором и лицензией (для сайта: снимку нужна
+            # подпись). `photo` выше — живое фото таксона из iNat, его ест приложение.
+            "plant_photo": m.get("pphoto"),
+            "plant_photo_attribution": m.get("pattr"),
+            "plant_photo_license": m.get("plic"),
         })
     # ранжирование §6: с крючком > с рецептами > остальные корпусные; внутри —
     # порядок nearby (биотоп+частота) сохраняется стабильной сортировкой
@@ -143,7 +149,7 @@ async def _harvest_shelf(db: AsyncSession, month: int, limit: int, biotopes: lis
         WITH keys AS (
             SELECT latin_key, inat_months FROM species_phenology
             WHERE corpus_months IS NOT NULL AND CAST(:m AS smallint) = ANY(corpus_months))
-        SELECT p.id, p.name, p.name_latin, p.photo_url, p.safety_level,
+        SELECT p.id, p.name, p.name_latin, p.photo_url, p.photo_attribution, p.photo_license, p.safety_level,
                h.part, h.season, h.method, b.title AS book, b.year, k.inat_months,
                (SELECT count(*) FROM plant_medicinal_uses u WHERE u.plant_id = p.id) AS facts,
                (SELECT count(*) FROM recipe_ingredients ri
@@ -182,6 +188,7 @@ async def _harvest_shelf(db: AsyncSession, month: int, limit: int, biotopes: lis
         out.append({
             "plant_id": str(r.id), "name": r.name, "latin": r.name_latin,
             "photo": r.photo_url, "hook": hook[:220],
+            "photo_attribution": r.photo_attribution, "photo_license": r.photo_license,
             "safety_level": r.safety_level, "recipes": r.recipes or 0,
             "biotope_match": False,
         })
@@ -217,7 +224,7 @@ async def kitchen(limit: int = Query(8, ge=3, le=12),
                    r.id AS rid, r.name, r.category, r.recipe_kind, b.title AS book, b.year,
                    COALESCE(NULLIF(trim(r.normalized_text), ''), r.original_text) AS txt,
                    (SELECT count(*) FROM recipe_ingredients ri2 WHERE ri2.recipe_id = r.id) AS n_ing,
-                   p.id AS pid, p.name AS plant, p.photo_url, p.safety_level
+                   p.id AS pid, p.name AS plant, p.photo_url, p.photo_attribution, p.photo_license, p.safety_level
             FROM recipes r
             JOIN books b ON b.id = r.book_id
             JOIN recipe_ingredients ri ON ri.recipe_id = r.id
@@ -240,6 +247,7 @@ async def kitchen(limit: int = Query(8, ge=3, le=12),
             "n_ingredients": int(r.n_ing or 1), "book": r.book, "year": r.year,
             "step_by_step": True, "text": t[:700], "truncated": len(t) > 700,
             "plant_id": str(r.pid), "plant": r.plant, "photo": r.photo_url,
+            "photo_attribution": r.photo_attribution, "photo_license": r.photo_license,
             "safety_level": r.safety_level,
         })
     return {"items": items, "title": "Аптека на кухне", "disclaimer": KITCHEN_DISCLAIMER}

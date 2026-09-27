@@ -187,6 +187,8 @@ async def get_book(book_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         ) x GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 12"""), {"b": book_id})).all()
     return {
         **b,
+        # `recipes` ниже — список первых рецептов; общее число остаётся здесь.
+        "recipes_total": b.get("recipes"),
         "top_plants": [{**dict(r._mapping), "id": str(r.id)} for r in top_plants],
         "toc": toc_items,
         "recipes": [{**dict(r._mapping), "id": str(r.id)} for r in recipes],

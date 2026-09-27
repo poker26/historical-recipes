@@ -195,7 +195,8 @@ async def list_plants(
     Site additions (botanik.fun): ``has_photo``; ``published`` = the atlas gate
     (plant or fungus, clean Russian name, verified-looking Latin, a photo);
     ``sort`` = name (default) | uses (richest cards first) | photo (photographed
-    first, then richest). Defaults keep the historical behaviour byte-for-byte.
+    first, then richest) | match (with ``action``/``indication``: most facts about
+    THAT condition first). Defaults keep the historical behaviour byte-for-byte.
 
     All filters combine with AND. ``compound``/``action``/``indication`` match
     against the plant's child fact rows via EXISTS (no row duplication). The
@@ -219,12 +220,9 @@ async def list_plants(
         select(Plant, uses_n)
         .outerjoin(uses_subq, uses_subq.c.plant_id == Plant.id)
     )
-    if sort == "uses":
-        stmt = stmt.order_by(uses_n.desc(), Plant.name)
-    elif sort == "photo":
-        stmt = stmt.order_by(Plant.photo_url.is_(None), uses_n.desc(), Plant.name)
-    else:
-        stmt = stmt.order_by(Plant.name)
+    # Предикаты фактов, совпавших с запросом по действию или показанию: для sort=match
+    # (сколько записей о САМОМ состоянии, а не всего записей у вида).
+    match_preds: list = []
     if has_photo is not None:
         stmt = stmt.where(Plant.photo_url.isnot(None) if has_photo else Plant.photo_url.is_(None))
     if published:
@@ -270,15 +268,13 @@ async def list_plants(
                 select(MedicinalAction.id).where(MedicinalAction.parent_id.in_(action_id_set))
             )).scalars().all()
             action_id_set.update(descendants)
-        stmt = stmt.where(
-            Plant.medicinal_uses.any(
-                or_(
-                    PlantMedicinalUse.canon_action.ilike(like),   # canonical (synonyms merged)
-                    PlantMedicinalUse.action_raw.ilike(like),
-                    PlantMedicinalUse.action_id.in_(action_id_set),
-                )
-            )
+        action_pred = or_(
+            PlantMedicinalUse.canon_action.ilike(like),   # canonical (synonyms merged)
+            PlantMedicinalUse.action_raw.ilike(like),
+            PlantMedicinalUse.action_id.in_(action_id_set),
         )
+        match_preds.append(action_pred)
+        stmt = stmt.where(Plant.medicinal_uses.any(action_pred))
     if indication:
         like = f"%{indication.strip()}%"
         # Resolve the query against the controlled vocabulary so a modern OR an
@@ -303,6 +299,7 @@ async def list_plants(
             concept_ids.update(children)
         preds = [PlantMedicinalUse.indications.ilike(like)]
         preds += [PlantMedicinalUse.indication_ids.any(cid) for cid in concept_ids]
+        match_preds.append(or_(*preds))
         stmt = stmt.where(Plant.medicinal_uses.any(or_(*preds)))
     if family:
         like = f"%{family.strip()}%"
@@ -325,6 +322,18 @@ async def list_plants(
     if biotope:
         # Reverse browse: plants tagged with a canonical biotope ("что растёт на лугу").
         stmt = stmt.where(Plant.biotopes.any(PlantBiotope.biotope == biotope.strip()))
+
+    if sort == "match" and match_preds:
+        matched_n = (select(func.count()).select_from(PlantMedicinalUse)
+                     .where(PlantMedicinalUse.plant_id == Plant.id, or_(*match_preds))
+                     .correlate(Plant).scalar_subquery())
+        stmt = stmt.order_by(matched_n.desc(), Plant.photo_url.is_(None), uses_n.desc(), Plant.name)
+    elif sort in ("uses", "match"):
+        stmt = stmt.order_by(uses_n.desc(), Plant.name)
+    elif sort == "photo":
+        stmt = stmt.order_by(Plant.photo_url.is_(None), uses_n.desc(), Plant.name)
+    else:
+        stmt = stmt.order_by(Plant.name)
 
     # Total matching rows (before pagination) → header for the herbarium UI.
     total = (await db.execute(
