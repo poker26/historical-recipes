@@ -13,7 +13,7 @@ Plus a read surface over the vocabularies for the admin UI / MCP layer.
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -124,13 +124,14 @@ async def list_indications(db: AsyncSession = Depends(get_db)):
     """The indication vocabulary. ``linked_facts`` counts uses whose
     indication_ids array contains the concept (via && over the GIN index)."""
     rows = (await db.execute(select(Indication).order_by(Indication.name))).scalars().all()
-    counts: dict[uuid.UUID, int] = {}
-    for ind in rows:
-        n = (await db.execute(
-            select(func.count()).select_from(PlantMedicinalUse)
-            .where(PlantMedicinalUse.indication_ids.any(ind.id))
-        )).scalar_one()
-        counts[ind.id] = n
+    # Один проход по фактам вместо запроса на каждое из ~2 тыс. понятий (было ~60 с).
+    # count(DISTINCT u.id) сохраняет прежний смысл: факт считается один раз, даже если
+    # понятие повторяется в его массиве.
+    counts: dict[uuid.UUID, int] = {
+        iid: n for iid, n in (await db.execute(text(
+            "SELECT iid, count(DISTINCT u.id) FROM plant_medicinal_uses u "
+            "CROSS JOIN LATERAL unnest(u.indication_ids) AS iid GROUP BY iid"))).all()
+    }
     return [
         {
             "id": str(i.id),
