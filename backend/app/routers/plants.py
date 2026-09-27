@@ -2,7 +2,7 @@ import re
 import uuid
 from collections import Counter
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select, or_, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -183,11 +183,19 @@ async def list_plants(
     edible: bool | None = None,
     kingdom: str | None = None,
     biotope: str | None = None,
+    has_photo: bool | None = None,
+    published: bool | None = None,
+    sort: str | None = None,
     limit: int | None = None,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
     """List plants, optionally filtered by free text and/or structured facets.
+
+    Site additions (botanik.fun): ``has_photo``; ``published`` = the atlas gate
+    (plant or fungus, clean Russian name, verified-looking Latin, a photo);
+    ``sort`` = name (default) | uses (richest cards first) | photo (photographed
+    first, then richest). Defaults keep the historical behaviour byte-for-byte.
 
     All filters combine with AND. ``compound``/``action``/``indication`` match
     against the plant's child fact rows via EXISTS (no row duplication). The
@@ -206,11 +214,21 @@ async def list_plants(
         .group_by(PlantMedicinalUse.plant_id)
         .subquery()
     )
+    uses_n = func.coalesce(uses_subq.c.n, 0)
     stmt = (
-        select(Plant, func.coalesce(uses_subq.c.n, 0))
+        select(Plant, uses_n)
         .outerjoin(uses_subq, uses_subq.c.plant_id == Plant.id)
-        .order_by(Plant.name)
     )
+    if sort == "uses":
+        stmt = stmt.order_by(uses_n.desc(), Plant.name)
+    elif sort == "photo":
+        stmt = stmt.order_by(Plant.photo_url.is_(None), uses_n.desc(), Plant.name)
+    else:
+        stmt = stmt.order_by(Plant.name)
+    if has_photo is not None:
+        stmt = stmt.where(Plant.photo_url.isnot(None) if has_photo else Plant.photo_url.is_(None))
+    if published:
+        stmt = stmt.where(PUBLISHED_PRED)
     if q:
         like = f"%{q.strip()}%"
         stmt = stmt.where(
@@ -381,6 +399,93 @@ async def plant_facets(db: AsyncSession = Depends(get_db)):
         "edibility": [{"value": e, "count": n} for e, n in edibilities],
         "kingdom": [{"value": k, "count": n} for k, n in kingdoms],
     }
+
+
+# ── Сайт botanik.fun: гейт публикации, подсказки, карта сайта, адреса ──────────────
+# Гейт атласа (RFC-botanik-site §9.5, первая версия): растение или гриб, русское имя
+# без следов распознавания, латынь похожа на бином или род, есть фотография. Очерк и
+# коллизии имён гейтом пока не считаем: карточка без очерка рисуется из фактов.
+PUBLISHED_PRED = (
+    Plant.kingdom.in_(["растение", "гриб"])
+    & Plant.photo_url.isnot(None)
+    & Plant.name.op("~")(r"^[А-ЯЁ][а-яё]{2,}")
+    & ~Plant.name.op("~")(r"[A-Za-z0-9!?*#|]")
+    & Plant.name_latin.op("~")(r"^[A-Z][a-z]{2,}( [a-z][a-z-]{2,})?")
+)
+
+
+@router.get("/suggest")
+async def suggest(q: str = Query(..., min_length=2, max_length=80), limit: int = Query(8, ge=1, le=20),
+                  db: AsyncSession = Depends(get_db)):
+    """Подсказки строки поиска: виды (русское имя, латынь, современное и старые имена),
+    показания (включая архаичные названия), действия, книги. Совпадение по началу
+    слова ранжируется выше совпадения внутри."""
+    s = q.strip()
+    like, pref = f"%{s}%", f"{s.lower()}%"
+    plants = (await db.execute(text("""
+        SELECT p.id, p.name, p.name_latin, p.name_modern, p.photo_url, p.kingdom, p.rank,
+               (SELECT count(*) FROM plant_medicinal_uses u WHERE u.plant_id = p.id) AS uses,
+               CASE WHEN lower(p.name) LIKE :pref THEN 0 WHEN lower(coalesce(p.name_modern, '')) LIKE :pref THEN 1
+                    WHEN lower(coalesce(p.name_latin, '')) LIKE :pref THEN 2 ELSE 3 END AS rk
+        FROM plants p
+        WHERE p.kingdom IN ('растение', 'гриб')
+          AND (p.name ILIKE :like OR p.name_modern ILIKE :like OR p.name_latin ILIKE :like
+               OR array_to_string(p.names_historical, ' ') ILIKE :like)
+        ORDER BY rk, (p.photo_url IS NULL), uses DESC, p.name LIMIT :lim"""),
+        {"like": like, "pref": pref, "lim": limit})).all()
+    indications = (await db.execute(text("""
+        SELECT i.id, i.name, i.name_modern, i.system,
+               (SELECT count(*) FROM plant_medicinal_uses u WHERE i.id = ANY(u.indication_ids)) AS facts
+        FROM indications i
+        WHERE i.name ILIKE :like OR i.name_modern ILIKE :like OR array_to_string(i.archaic, ' ') ILIKE :like
+              OR array_to_string(i.synonyms, ' ') ILIKE :like
+        ORDER BY facts DESC LIMIT 5"""), {"like": like})).all()
+    actions = (await db.execute(text("""
+        SELECT canon_action, count(DISTINCT plant_id) AS n FROM plant_medicinal_uses
+        WHERE canon_action ILIKE :like GROUP BY 1 ORDER BY n DESC LIMIT 4"""), {"like": like})).all()
+    books = (await db.execute(text("""
+        SELECT id, title, author, year FROM books
+        WHERE status = 'indexed' AND (title ILIKE :like OR author ILIKE :like) ORDER BY year NULLS LAST LIMIT 4"""), {"like": like})).all()
+    return {
+        "q": s,
+        "plants": [{"id": str(r.id), "name": r.name, "name_latin": r.name_latin, "name_modern": r.name_modern,
+                    "photo_url": r.photo_url, "kingdom": r.kingdom, "rank": r.rank, "uses": r.uses} for r in plants],
+        "indications": [{"id": str(r.id), "name": r.name, "name_modern": r.name_modern, "system": r.system, "facts": r.facts}
+                        for r in indications],
+        "actions": [{"name": a, "plants": n} for a, n in actions],
+        "books": [{"id": str(r.id), "title": r.title, "author": r.author, "year": r.year} for r in books],
+    }
+
+
+@router.get("/sitemap")
+async def plants_sitemap(offset: int = 0, limit: int = Query(5000, ge=1, le=20000), db: AsyncSession = Depends(get_db)):
+    """Карточки, прошедшие гейт публикации, для карты сайта и обхода атласа."""
+    base = select(Plant.id, Plant.name, Plant.name_latin, Plant.kingdom).where(PUBLISHED_PRED)
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
+    rows = (await db.execute(base.order_by(Plant.name, Plant.id).limit(limit).offset(offset))).all()
+    return {"total": total, "items": [{"id": str(i), "name": n, "name_latin": l, "kingdom": k} for i, n, l, k in rows]}
+
+
+@router.get("/resolve")
+async def resolve_plant(tail: str = Query(..., min_length=6, max_length=32, pattern="^[0-9a-fA-F]+$"),
+                        db: AsyncSession = Depends(get_db)):
+    """Человеческий адрес карточки несёт хвост id («urtica-dioica-3fa9c1»): вернуть
+    полный id по первым знакам. Неоднозначный хвост честно помечается."""
+    rows = (await db.execute(text(
+        "SELECT id FROM plants WHERE replace(id::text, '-', '') LIKE :t LIMIT 2"), {"t": tail.lower() + "%"})).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Plant not found")
+    return {"id": str(rows[0][0]), "ambiguous": len(rows) > 1}
+
+
+@router.get("/families")
+async def plant_families(limit: int = Query(120, ge=1, le=600), db: AsyncSession = Depends(get_db)):
+    """Фасет семейств для атласа: только по карточкам, прошедшим гейт."""
+    fam = func.coalesce(Plant.family_latin, Plant.family)
+    rows = (await db.execute(
+        select(fam, func.count(Plant.id)).where(PUBLISHED_PRED, fam.isnot(None))
+        .group_by(fam).order_by(func.count(Plant.id).desc()).limit(limit))).all()
+    return {"families": [{"value": f, "count": n} for f, n in rows]}
 
 
 def _book_title_map(books: list[Book]) -> dict[str, str]:
@@ -1279,16 +1384,39 @@ async def get_plant(
         book_ids.add(m.book_id)
 
     titles: dict[str, str] = {}
+    years: dict[str, int | None] = {}
     if book_ids:
         books = (await db.execute(select(Book).where(Book.id.in_(book_ids)))).scalars().all()
         titles = _book_title_map(books)
+        years = {str(b.id): b.year for b in books}
 
     def src(book_id) -> str | None:
         return titles.get(str(book_id)) if book_id else None
 
+    # Источник как объект для сайта: id книги, год и страница скана (привязка фактов
+    # к страницам живёт вне ORM, миграция 035). Строка ``source`` остаётся как была.
+    pages: dict[str, dict[str, int]] = {}
+    if view not in ("field", "agent"):
+        for tbl, key in (("plant_medicinal_uses", "medicinal_uses"), ("plant_harvests", "harvests"),
+                         ("plant_habitats", "habitats"), ("plant_toxicities", "toxicities"),
+                         ("plant_culinary_uses", "culinary_uses")):
+            rows = (await db.execute(text(
+                f"SELECT id::text, source_page FROM {tbl} WHERE plant_id = :p AND source_page IS NOT NULL"),
+                {"p": plant_id})).all()
+            pages[key] = {i: n for i, n in rows}
+
+    def ref(book_id, key: str | None = None, fact_id=None) -> dict:
+        bid = str(book_id) if book_id else None
+        return {
+            "book_id": bid,
+            "year": years.get(bid) if bid else None,
+            "source_page": pages.get(key, {}).get(str(fact_id)) if key else None,
+        }
+
     # Cross-domain link: recipes whose ingredients resolved to this plant.
     recipe_rows = (await db.execute(
-        select(Recipe.id, Recipe.name, Recipe.category, Book.title, Book.year)
+        select(Recipe.id, Recipe.name, Recipe.category, Book.title, Book.year,
+               Recipe.book_id, Recipe.home_doable, Recipe.recipe_kind, Recipe.procedure_score)
         .join(RecipeIngredient, RecipeIngredient.recipe_id == Recipe.id)
         .join(Book, Recipe.book_id == Book.id)
         .where(RecipeIngredient.plant_id == plant_id)
@@ -1302,8 +1430,12 @@ async def get_plant(
             "category": rcat,
             "book": btitle,
             "year": byear,
+            "book_id": str(rbook),
+            "home_doable": rhome,
+            "kind": rkind,
+            "step_by_step": (rscore or 0) >= 2,
         }
-        for (rid, rname, rcat, btitle, byear) in recipe_rows
+        for (rid, rname, rcat, btitle, byear, rbook, rhome, rkind, rscore) in recipe_rows
     ]
 
     # Genus backlink: a member species points up to its hub so the client can
@@ -1381,6 +1513,7 @@ async def get_plant(
                 "original_text": u.original_text,
                 "confidence": u.confidence,
                 "source": src(u.source_book_id),
+                **ref(u.source_book_id, "medicinal_uses", u.id),
             }
             for u in plant.medicinal_uses
         ],
@@ -1393,6 +1526,7 @@ async def get_plant(
                 "part": c.part,
                 "notes": c.notes,
                 "source": src(c.source_book_id),
+                **ref(c.source_book_id),
             }
             for c in plant.compounds
         ],
@@ -1404,6 +1538,7 @@ async def get_plant(
                 "method": h.method,
                 "original_text": h.original_text,
                 "source": src(h.source_book_id),
+                **ref(h.source_book_id, "harvests", h.id),
             }
             for h in plant.harvests
         ],
@@ -1415,6 +1550,7 @@ async def get_plant(
                 "status": h.status,
                 "original_text": h.original_text,
                 "source": src(h.source_book_id),
+                **ref(h.source_book_id, "habitats", h.id),
             }
             for h in plant.habitats
         ],
@@ -1427,6 +1563,7 @@ async def get_plant(
                 "severity": t.severity,
                 "original_text": t.original_text,
                 "source": src(t.source_book_id),
+                **ref(t.source_book_id, "toxicities", t.id),
             }
             for t in plant.toxicities
         ],
@@ -1442,6 +1579,7 @@ async def get_plant(
                 "original_text": cu.original_text,
                 "confidence": cu.confidence,
                 "source": src(cu.source_book_id),
+                **ref(cu.source_book_id, "culinary_uses", cu.id),
             }
             for cu in plant.culinary_uses
         ],
@@ -1449,6 +1587,8 @@ async def get_plant(
             {
                 "id": str(m.id),
                 "book": titles.get(str(m.book_id)),
+                "book_id": str(m.book_id),
+                "year": years.get(str(m.book_id)),
                 "original_name": m.original_name,
                 "page_number": m.page_number,
             }
