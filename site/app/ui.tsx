@@ -142,6 +142,33 @@ export function ProfileCrest({ avatar, level, size = 168 }: { avatar?: string | 
   );
 }
 
+/** «Приложение» в шапке: меню с обоими магазинами. Без JS, на <details>; прозрачная
+ *  подложка под открытым меню (globals.css) закрывает его щелчком мимо. */
+function AppMenu() {
+  return (
+    <details className="header-app">
+      <summary>Приложение</summary>
+      <div className="header-app-list">
+        <a href={RUSTORE_URL} target="_blank" rel="noopener">
+          Скачать в RuStore{" "}
+          <small>для Android</small>
+        </a>
+        {APPSTORE_URL ? (
+          <a href={APPSTORE_URL} target="_blank" rel="noopener">
+            Скачать в App Store{" "}
+            <small>для iPhone и iPad</small>
+          </a>
+        ) : (
+          <span className="dis">
+            Скоро в App Store{" "}
+            <small>для iPhone и iPad</small>
+          </span>
+        )}
+      </div>
+    </details>
+  );
+}
+
 const NAV: { href: string; label: string }[] = [
   { href: "/atlas", label: "Атлас" },
   { href: "/recipes", label: "Рецепты" },
@@ -174,7 +201,7 @@ export function Header({ active, q }: { active?: string; q?: string } = {}) {
           <input type="search" name="q" defaultValue={q ?? ""} placeholder="Растение, гриб, симптом или книга" aria-label="Поиск по атласу, рецептам и книгам" />
           <button type="submit">Найти</button>
         </form>
-        <a href={RUSTORE_URL} target="_blank" rel="noopener" className="header-app">Приложение</a>
+        <AppMenu />
       </div>
     </header>
   );

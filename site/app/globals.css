@@ -73,7 +73,32 @@ button, input, select { font: inherit; }
   padding: 10px 16px; border-radius: 0 999px 999px 0; border: 1px solid var(--forest);
   background: var(--forest); color: #fff; font-weight: 600; cursor: pointer;
 }
-.header-app { text-decoration: none; color: var(--forest); font-weight: 700; font-size: 14px; white-space: nowrap; }
+.header-app { position: relative; }
+.header-app > summary {
+  list-style: none; cursor: pointer; color: var(--forest); font-weight: 700; font-size: 14px; white-space: nowrap;
+  padding: 8px 12px; border-radius: 999px;
+}
+.header-app > summary::-webkit-details-marker { display: none; }
+.header-app > summary:hover, .header-app[open] > summary { background: var(--cream); }
+.header-app > summary::after {
+  content: ""; display: inline-block; margin-left: 6px; vertical-align: 2px;
+  border: 4px solid transparent; border-top-color: currentColor; border-bottom-width: 0;
+}
+/* Открытое меню кладёт под себя прозрачную подложку на весь экран: щелчок мимо
+   попадает в summary и закрывает меню. */
+.header-app[open] > summary::before { content: ""; position: fixed; inset: 0; z-index: 20; cursor: default; }
+.header-app-list {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 21; min-width: 230px;
+  display: grid; gap: 2px; padding: 8px; background: var(--cream); border-radius: 18px;
+  box-shadow: 0 8px 24px rgba(37,35,31,.14);
+}
+.header-app-list a, .header-app-list .dis {
+  display: grid; gap: 1px; padding: 8px 12px; border-radius: 12px; text-decoration: none;
+  color: var(--ink); font-weight: 600; font-size: 14.5px; white-space: nowrap;
+}
+.header-app-list a:hover { background: var(--leaf); color: var(--forest); }
+.header-app-list .dis { color: var(--muted); }
+.header-app-list small { color: var(--muted); font-weight: 500; font-size: 12.5px; }
 
 /* ——— секции ——— */
 .section { margin: 56px 0; }
