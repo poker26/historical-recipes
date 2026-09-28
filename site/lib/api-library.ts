@@ -190,7 +190,7 @@ export async function getBook(id: string): Promise<Fetched<BookDetail>> {
 }
 
 export async function getBookPage(id: string, n: number): Promise<Fetched<BookPage>> {
-  const r = await fetchWithStatus<BookPage>(`/library/books/${id}/pages/${n}`, 3600, 20000);
+  const r = await fetchWithStatus<BookPage>(`/library/books/${id}/pages/${n}`, 21600, 20000);
   if (r.data === null) return r;
   return { data: { ...r.data, book: withAuthor(r.data.book), citation: cleanCitation(r.data.citation) }, status: 200 };
 }

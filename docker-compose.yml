@@ -83,6 +83,14 @@ services:
   backend:
     build: ./backend
     env_file: .env
+    # Три процесса uvicorn: один процесс упирался в одно ядро под обходом поисковых роботов
+    # (замер 28.09: 97% CPU, подсказки поиска от 0,5 до 4,8 с). Пул соединений на процесс
+    # меньше, чтобы вместе не занять у пулера Supabase больше клиентских мест, чем раньше
+    # один процесс (20 + 10).
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 3
+    environment:
+      - DB_POOL_SIZE=8
+      - DB_MAX_OVERFLOW=4
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s

@@ -127,7 +127,7 @@ export type RecipeDetail = RecipeBrief & {
 };
 
 /** Рецепт целиком. cache() склеивает вызовы из generateMetadata и страницы в одном запросе. */
-export const getRecipe = cache((id: string) => getEntity<RecipeDetail>(`/recipes/${id}`, 3600, 15000));
+export const getRecipe = cache((id: string) => getEntity<RecipeDetail>(`/recipes/${id}`, 21600, 15000));
 
 /** Похожие рецепты: та же форма или то же главное растение. Текущий исключается на странице. */
 export function getSimilarByCategory(category: string, limit = 7) {

@@ -211,17 +211,13 @@ async def list_plants(
     returns every match (the historical behaviour the MCP tools rely on).
     """
     # Count medicinal uses per plant so the herbarium grid can show how rich
-    # each card is without a second round-trip.
-    uses_subq = (
-        select(PlantMedicinalUse.plant_id, func.count().label("n"))
-        .group_by(PlantMedicinalUse.plant_id)
-        .subquery()
-    )
-    uses_n = func.coalesce(uses_subq.c.n, 0)
-    stmt = (
-        select(Plant, uses_n)
-        .outerjoin(uses_subq, uses_subq.c.plant_id == Plant.id)
-    )
+    # each card is without a second round-trip. Коррелированный подзапрос по индексу
+    # plant_id считается только для нужных строк; прежняя группировка всех записей о
+    # применении шла при каждом вызове, даже ради limit=1 (сайт так берёт счётчики).
+    uses_n = (select(func.count()).select_from(PlantMedicinalUse)
+              .where(PlantMedicinalUse.plant_id == Plant.id)
+              .correlate(Plant).scalar_subquery())
+    stmt = select(Plant, uses_n)
     # Предикаты фактов, совпавших с запросом по действию или показанию: для sort=match
     # (сколько записей о САМОМ состоянии, а не всего записей у вида).
     match_preds: list = []
@@ -338,6 +334,13 @@ async def list_plants(
         # Reverse browse: plants tagged with a canonical biotope ("что растёт на лугу").
         stmt = stmt.where(Plant.biotopes.any(PlantBiotope.biotope == biotope.strip()))
 
+    # Total matching rows (before pagination) → header for the herbarium UI. Считается
+    # по одним id, без числа записей у каждой карточки и без сортировки.
+    total = (await db.execute(
+        select(func.count()).select_from(stmt.with_only_columns(Plant.id).order_by(None).subquery())
+    )).scalar() or 0
+    response.headers["X-Total-Count"] = str(total)
+
     if sort == "match" and match_preds:
         matched = (select(PlantMedicinalUse.plant_id.label("pid"), func.count().label("m"))
                    .where(or_(*match_preds)).group_by(PlantMedicinalUse.plant_id).subquery())
@@ -350,12 +353,6 @@ async def list_plants(
         stmt = stmt.order_by(Plant.photo_url.is_(None), uses_n.desc(), Plant.name)
     else:
         stmt = stmt.order_by(Plant.name)
-
-    # Total matching rows (before pagination) → header for the herbarium UI.
-    total = (await db.execute(
-        select(func.count()).select_from(stmt.order_by(None).subquery())
-    )).scalar() or 0
-    response.headers["X-Total-Count"] = str(total)
 
     if limit is not None:
         stmt = stmt.limit(limit).offset(offset)
