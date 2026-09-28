@@ -9,7 +9,9 @@
 Как. Модель читает текст рецепта и список ингредиентов и предлагает название: форма
 средства из текста, главные растения, назначение, только если оно прямо названо.
 Предложение проходит проверку: каждое значимое слово названия должно найтись в тексте
-рецепта или в названиях ингредиентов (по основе слова, без окончания). Не прошло,
+рецепта или в названиях ингредиентов, извлечённых из этого текста (по основе слова, без
+окончания). Имя карточки атласа, к которой привязан ингредиент, опорой не считается:
+привязку делало сопоставление, и оно ошибается (замер 28.09: «чай» привязан к кипрею). Не прошло,
 название остаётся прежним, а случай попадает в сводку. Каждое переименование пишется
 в processing_log (шаг ``recipe_rename``) со старым названием, откат по журналу.
 """
@@ -64,7 +66,8 @@ _PROMPT = """Ты редактор справочника старинных р�
    тексте рецепта.
 4. Не повторяй форму средства в составе: не «Чай из чая», а «Чёрный чай высшего сорта»
    или «Зелёный чай с эхинацеей». Если растение названо только в списке ингредиентов
-   (через «/» там даны его названия), всё равно назови его.
+   (через «/» там даны его названия), всё равно назови его. Слова «сырьё», «вещество»,
+   «производные» в название не ставь.
 5. Не длиннее 70 знаков, без номера, в современной орфографии, с заглавной буквы.
 6. Если нельзя понять состав ни по тексту, ни по ингредиентам, верни пустую строку.
 
@@ -104,9 +107,8 @@ async def candidates(limit: int = 0, force: bool = False) -> list[dict]:
     async with async_session() as db:
         rows = (await db.execute(text("""
             SELECT r.id, r.book_id, r.name, r.original_text, r.normalized_text, r.category,
-                   coalesce((SELECT json_agg(concat_ws(' / ', nullif(ri.name, ''), nullif(ri.original_name, ''), pl.name))
-                             FROM recipe_ingredients ri LEFT JOIN plants pl ON pl.id = ri.plant_id
-                             WHERE ri.recipe_id = r.id), '[]') AS ingredients
+                   coalesce((SELECT json_agg(concat_ws(' / ', nullif(ri.name, ''), nullif(ri.original_name, '')))
+                             FROM recipe_ingredients ri WHERE ri.recipe_id = r.id), '[]') AS ingredients
             FROM recipes r
             WHERE r.home_doable AND coalesce(r.procedure_score, 0) >= 2 AND r.name IS NOT NULL
               AND length(coalesce(r.original_text, '')) >= 200
@@ -136,8 +138,8 @@ async def propose(c: dict) -> dict:
         [{"role": "system", "content": _PROMPT}, {"role": "user", "content": user}],
         task="recipe_extraction", temperature=0.1, max_tokens=300)
     name = clean_name(res.get("name", "") if isinstance(res, dict) else "")
-    if not name or len(name) > 80 or GENERIC.match(name):
-        return {"ok": False, "why": "пусто или снова безлико", "name": name}
+    if not name or len(name) > 80 or GENERIC.match(name) or re.search(r"сыр[ьео]|производн|веществ", name, re.I):
+        return {"ok": False, "why": "пусто, безлико или без состава", "name": name}
     source = " ".join([c["text"], c["original"], " ".join(c["ingredients"])])
     ok, missing = grounded(name, source)
     return {"ok": ok, "name": name, "why": None if ok else f"нет в тексте: {', '.join(missing)}"}
