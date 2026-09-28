@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { getEther, getLeaderboard } from "./lib";
 import { Header, Footer, DownloadButtons, LeaderTable, EtherRow } from "./ui";
-import { Tile, SectionHead, LeafGlyph, MONTHS_GEN_RU } from "../components/common";
+import { Tile, SectionHead, LeafGlyph, MONTHS_PREP_RU } from "../components/common";
 import { fmtInt, plantHref, pluralRu, excerpt } from "../lib/api";
 import { REGIONS, regionBySlug } from "../lib/regions";
 import { getSeasonal, getKitchen, getLibraryStats, getOpenBooks, getCorpusCounts, creditLine } from "../lib/api-home";
@@ -15,13 +15,24 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export const metadata: Metadata = {
-  title: "Что растёт — атлас растений и грибов, рецепты и библиотека травников",
+  title: "Что растёт. Атлас растений и грибов, рецепты и библиотека травников",
   description:
-    "Что растёт рядом с тобой сейчас и что с этим делать: атлас видов, домашние рецепты и страницы травников с 1790 года. Каждый факт стоит на книге, годе и странице.",
+    "Атлас растений и грибов, домашние рецепты и библиотека травников с 1790 года. У каждого факта указаны книга, год и страница, а старые книги можно листать целиком.",
   alternates: { canonical: "https://botanik.fun/" },
 };
 
-const POPULAR = ["кашель", "бессонница", "отёки", "раны", "желудок", "простуда", "ревматизм", "головная боль"];
+// Адрес страницы берёт показание в именительном падеже, а подпись читается как продолжение
+// фразы «Растения, которые применяли…».
+const POPULAR: [string, string][] = [
+  ["кашель", "при кашле"],
+  ["бессонница", "при бессоннице"],
+  ["отёки", "при отёках"],
+  ["раны", "при ранах"],
+  ["желудок", "при болезнях желудка"],
+  ["простуда", "при простуде"],
+  ["ревматизм", "при ревматизме"],
+  ["головная боль", "при головной боли"],
+];
 const KIND_RU: Record<string, string> = { medicinal: "лечебное", food: "еда", cosmetic: "косметика", other: "прочее" };
 
 function weekOfYear(d = new Date()): number {
@@ -40,7 +51,8 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
     getLeaderboard("global", { limit: 5 }),
     getEther(24),
   ]);
-  const month = MONTHS_GEN_RU[new Date().getMonth()];
+  const monthPrep = MONTHS_PREP_RU[new Date().getMonth()];
+  const harvest = seasonal?.mode === "harvest";
   const shelf = (seasonal?.items ?? []).filter((it) => it.plant_id && it.name);
   const openBooks = books?.items ?? [];
   const bookOfWeek = openBooks.length ? openBooks[weekOfYear() % openBooks.length] : null;
@@ -64,33 +76,44 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
             <span className="chip">Продолжение приложения «Что растёт»</span>
             <h1>Что растёт вокруг тебя и что с этим делать</h1>
             <p>
-              Атлас растений и грибов, домашние рецепты и библиотека травников с 1790 года.
-              Каждый факт здесь стоит на книге, годе и странице: можно открыть скан и прочитать
-              самому.
+              Про каждое растение собрано, что о нём писали травники, лечебники и справочники
+              с 1790 года. У каждого факта указаны книга, год и страница, а скан страницы можно
+              открыть и прочитать самому.
             </p>
             <form className="home-search" action="/search" method="get" role="search">
-              <input type="search" name="q" placeholder="Крапива, Urtica dioica, водянка или «травник 1870»" aria-label="Поиск" />
+              <input type="search" name="q" placeholder="Крапива, Urtica dioica, водянка или Смельской" aria-label="Поиск по атласу, рецептам и книгам" />
               <button type="submit" className="btn btn-primary">Найти</button>
             </form>
             <div className="chips" style={{ marginTop: 14 }}>
-              <span className="muted small" style={{ alignSelf: "center" }}>Растения при:</span>
-              {POPULAR.map((p) => (
-                <Link key={p} href={`/atlas/for/${encodeURIComponent(p)}`} className="chip chip-leaf">{p}</Link>
+              <span className="muted small" style={{ alignSelf: "center" }}>Растения, которые применяли</span>
+              {POPULAR.map(([slug, label]) => (
+                <Link key={slug} href={`/atlas/for/${encodeURIComponent(slug)}`} className="chip chip-leaf">{label}</Link>
               ))}
             </div>
           </div>
           <div className="home-entries">
             <Link href="/atlas" className="card home-entry">
               <div className="stat-num">{counts.plants ? fmtInt(counts.plants) : "—"}</div>
-              <div><b>Атлас</b><span className="muted"> · виды с фотографией, очерком и цитатами</span></div>
+              <div>
+                <b>{counts.plants ? pluralRu(counts.plants, "вид", "вида", "видов") : "видов"} в атласе.</b>
+                <span className="muted"> У каждого есть фотография, очерк и цитаты из книг.</span>
+              </div>
             </Link>
             <Link href="/recipes" className="card home-entry">
               <div className="stat-num">{counts.recipes ? fmtInt(counts.recipes) : "—"}</div>
-              <div><b>Рецепты</b><span className="muted"> · пошаговые домашние рецепты из книг</span></div>
+              <div>
+                <b>{counts.recipes ? pluralRu(counts.recipes, "пошаговый рецепт", "пошаговых рецепта", "пошаговых рецептов") : "пошаговых рецептов"}.</b>
+                <span className="muted"> Их можно повторить дома, каждый взят из книги.</span>
+              </div>
             </Link>
             <Link href="/library" className="card home-entry">
               <div className="stat-num">{stats ? fmtInt(stats.books) : "—"}</div>
-              <div><b>Библиотека</b><span className="muted">{stats?.year_min ? ` · книги с ${stats.year_min} по ${stats.year_max} год` : " · книги и сканы страниц"}</span></div>
+              <div>
+                <b>{stats ? pluralRu(stats.books, "книга", "книги", "книг") : "книг"} в библиотеке.</b>
+                <span className="muted">
+                  {stats?.year_min ? ` Самая старая издана в ${stats.year_min} году, книги до 1917 года можно листать целиком.` : " Книги до 1917 года можно листать целиком."}
+                </span>
+              </div>
             </Link>
           </div>
         </div>
@@ -98,8 +121,9 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
 
       {/* Сезонная полка */}
       <section className="section">
-        <SectionHead title={seasonal?.title || `Сейчас в лесу под ${region.gen}`} href="/places" more="все места рядом">
-          <details className="region-pick">
+        <SectionHead title={harvest ? `Что заготавливают в ${monthPrep}` : `Что сейчас растёт под ${region.ins}`} href="/places" more="все места рядом">
+          {/* key: после выбора города адрес меняется, и список закрывается заново собранным элементом */}
+          <details className="region-pick" key={region.slug}>
             <summary className="chip">{region.name} ▾</summary>
             <div className="region-list">
               {REGIONS.map((r) => (
@@ -109,9 +133,9 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
           </details>
         </SectionHead>
         <p className="section-lead">
-          {seasonal?.mode === "harvest"
-            ? `Что заготавливают в ${month}: виды из книг о сборе и сушке, которые сейчас в поре.`
-            : `Виды, которых натуралисты iNaturalist встречают в ${month} рядом с ${region.gen}, и что о каждом написано в книгах.`}
+          {harvest
+            ? `В ${monthPrep} книги советуют собирать эти растения. В карточке каждого написано, какую часть брать и как её сушить.`
+            : `Эти виды натуралисты iNaturalist встречают под ${region.ins} в ${monthPrep}. В карточке каждого собрано, что о нём писали старые книги.`}
         </p>
         {shelf.length ? (
           <div className="tiles">
@@ -124,17 +148,17 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
                 photo={it.plant_photo || it.photo}
                 credit={it.plant_photo
                   ? creditLine(it.plant_photo_attribution, it.plant_photo_license)
-                  : it.photo_attribution ? creditLine(it.photo_attribution, it.photo_license) : "фото: iNaturalist"}
-                meta={it.hook ? excerpt(it.hook, 110) : it.recipes ? `${it.recipes} ${pluralRu(it.recipes, "рецепт", "рецепта", "рецептов")}` : null}
+                  : it.photo_attribution ? creditLine(it.photo_attribution, it.photo_license) : "Фото iNaturalist"}
+                meta={it.hook ? excerpt(it.hook, 110) : null}
                 tags={[
-                  ...(it.safety_level === 4 ? [{ label: "смертельно ядовито", warn: true }] : it.safety_level === 3 ? [{ label: "осторожно", warn: true }] : []),
+                  ...(it.safety_level === 4 ? [{ label: "смертельно ядовито", warn: true }] : it.safety_level === 3 ? [{ label: "осторожно, ядовито", warn: true }] : []),
                   ...(it.recipes ? [{ label: `${it.recipes} ${pluralRu(it.recipes, "рецепт", "рецепта", "рецептов")}` }] : []),
                 ]}
               />
             ))}
           </div>
         ) : (
-          <div className="empty">Для этого региона полка сезона пока не собралась. Загляни в <Link href="/atlas">атлас</Link> или выбери другой город.</div>
+          <div className="empty">Для города {region.name} подборка пока пустая. Выбери другой город или открой <Link href="/atlas">атлас</Link>.</div>
         )}
       </section>
 
@@ -142,7 +166,7 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
       {kitchen?.items?.length ? (
         <section className="section">
           <SectionHead title={kitchen.title || "Что приготовить"} href="/recipes" more="все рецепты" />
-          <p className="section-lead">Пошаговые рецепты из книг, у которых ингредиенты сверены с атласом.</p>
+          <p className="section-lead">Пошаговые рецепты из старых книг. Растения из каждого рецепта ведут на свои карточки в атласе.</p>
           <div className="cols-3">
             {kitchen.items.slice(0, 6).map((r) => (
               <Link key={r.id} href={`/recipe/${r.id}`} className="card card-tight recipe-teaser">
@@ -152,7 +176,10 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
                   </div>
                   <div>
                     <b>{r.name}</b>
-                    <div className="small muted">{[r.category, r.kind ? KIND_RU[r.kind] ?? r.kind : null].filter(Boolean).join(" · ")}</div>
+                    <div className="tile-tags" style={{ marginTop: 4 }}>
+                      {r.category ? <span className="tag">{r.category}</span> : null}
+                      {r.kind && KIND_RU[r.kind] ? <span className="tag">{KIND_RU[r.kind]}</span> : null}
+                    </div>
                   </div>
                 </div>
                 {r.text ? <p className="small" style={{ margin: "8px 0 0", color: "#3f4a43" }}>{excerpt(r.text, 150)}</p> : null}
@@ -160,7 +187,10 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
               </Link>
             ))}
           </div>
-          {kitchen.disclaimer ? <p className="footnote" style={{ marginTop: 10 }}>{kitchen.disclaimer}</p> : null}
+          <p className="footnote" style={{ marginTop: 10 }}>
+            Рецепты записаны так, как их дали авторы книг, и не заменяют назначения врача.
+            Прежде чем что-то готовить, проверь растение по его карточке.
+          </p>
         </section>
       ) : null}
 
@@ -181,10 +211,10 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
               <h3 style={{ fontSize: 24, margin: "10px 0 4px" }}>{bookOfWeek.title}</h3>
               <div className="muted">{[bookOfWeek.author, bookOfWeek.year].filter(Boolean).join(", ")}</div>
               <p style={{ margin: "12px 0 0", color: "#3f4a43" }}>
-                {fmtInt(bookOfWeek.pages)} {pluralRu(bookOfWeek.pages, "страница", "страницы", "страниц")} скана,
-                {" "}{fmtInt(bookOfWeek.plants)} {pluralRu(bookOfWeek.plants, "растение", "растения", "растений")} в атласе,
-                {" "}{fmtInt(bookOfWeek.uses)} {pluralRu(bookOfWeek.uses, "цитата", "цитаты", "цитат")} о применении.
-                Книга свободна от авторских прав, поэтому её страницы можно листать прямо на сайте.
+                В книге {fmtInt(bookOfWeek.pages)} {pluralRu(bookOfWeek.pages, "страница", "страницы", "страниц")}.
+                {" "}Из неё в атлас попали {fmtInt(bookOfWeek.plants)} {pluralRu(bookOfWeek.plants, "растение", "растения", "растений")}
+                {" "}и {fmtInt(bookOfWeek.uses)} {pluralRu(bookOfWeek.uses, "цитата", "цитаты", "цитат")} о применении.
+                {" "}Срок авторских прав на книгу давно истёк, поэтому её можно листать страницу за страницей.
               </p>
             </div>
           </Link>
@@ -202,7 +232,7 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
         </div>
         <div className="card">
           <h2 style={{ margin: "0 0 6px", fontSize: 22 }}>Свежие находки</h2>
-          {feed.length ? feed.map((e, i) => <EtherRow e={e} key={i} />) : <p className="muted">Скоро здесь появятся первые находки.</p>}
+          {feed.length ? feed.map((e, i) => <EtherRow e={e} key={i} />) : <p className="muted">Пока никто ничего не нашёл. Первая находка появится здесь сразу после определения в приложении.</p>}
         </div>
       </section>
 
@@ -210,8 +240,8 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
       <section className="section card card-soft" style={{ textAlign: "center", padding: "36px 24px" }}>
         <h2 style={{ margin: "4px 0 10px", fontSize: 28 }}>В лесу удобнее с телефоном</h2>
         <p style={{ color: "#3f4a43", margin: "0 auto 22px", maxWidth: 560 }}>
-          Приложение «Что растёт» определяет вид по фотографии, ведёт коллекцию находок и
-          собирает прогулки по местам и сезонам. Сайт показывает то же и добавляет книги целиком.
+          Приложение «Что растёт» узнаёт растение или гриб по фотографии, хранит твои находки и
+          подбирает прогулки по местам и сезонам. Карточки видов в нём те же, что в атласе.
         </p>
         <div style={{ display: "flex", justifyContent: "center" }}>
           <DownloadButtons />
