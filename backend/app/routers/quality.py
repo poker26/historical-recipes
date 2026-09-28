@@ -190,13 +190,21 @@ async def _apply_fix_action(db: AsyncSession, f: DataQualityFinding) -> dict:
         if pl and pl.names_historical:
             pl.names_historical = [h for h in pl.names_historical if h not in to_strip]
         return {"plant_id": pid, "stripped": sorted(to_strip)}
+    if action == "set_book_meta":
+        # Год и автор книги из находки book.meta: пишутся только пустые поля, в журнал
+        # processing_log (шаг book_meta) уходит значение до и после.
+        from app.services.book_meta import apply_meta
+        res = await apply_meta(db, fix["book_id"], fix.get("year"), fix.get("author"),
+                               by="admin", finding=str(f.id))
+        return {"book_id": fix["book_id"], "set": res}
     raise ValueError(f"no executor for action {action!r}")
 
 
 @router.post("/findings/{finding_id}/apply")
 async def apply_finding_fix(finding_id: str, db: AsyncSession = Depends(get_db)):
     """Execute a finding's suggested auto-fix, then mark it `fixed`. Destructive —
-    each action is explicit. Supported: delete_recipe_and_qdrant, strip_aliases."""
+    each action is explicit. Supported: delete_recipe_and_qdrant, strip_aliases,
+    set_book_meta (год и автор книги, только пустые поля)."""
     f = (await db.execute(
         select(DataQualityFinding).where(DataQualityFinding.id == finding_id)
     )).scalar_one_or_none()

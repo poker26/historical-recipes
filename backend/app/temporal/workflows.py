@@ -55,6 +55,7 @@ with workflow.unsafe.imports_passed_through():
     from app.temporal.taxonomy_activities import cherepanov_ocr_activity
     from app.temporal.anchor_activities import page_anchor_activity
     from app.temporal.photo_activities import photo_backfill_activity
+    from app.temporal.book_meta_activities import book_meta_activity
     from app.temporal.identity_activities import (
         identity_dedup_activity, identity_shells_activity,
         identity_gbif_activity, identity_reid_activity, identity_resolve_activity,
@@ -907,6 +908,25 @@ class IdentityCleanupWorkflow:
         else:
             raise ValueError(f"unknown identity step: {step}")
         workflow.logger.info(f"IdentityCleanupWorkflow[{step}] done: {out}")
+        return out
+
+
+@workflow.defn
+class BookMetaWorkflow:
+    """Год издания и автор книг по первым и последним страницам (RFC-botanik-site §9.2).
+    Модель читает текст страниц, а если год там не найден дословно, то и сканы титула
+    и выходных данных. Доказанное записывается сразу (apply=True); год до 1918, который
+    откроет книгу целиком, и всё сомнительное уходят находкой book.meta на ревью в
+    админку. Сухой прогон (apply=False) только пишет находки. Возобновление по данным:
+    книга с находкой пропускается. Id 'book-meta' (+ '-dry', + '-{limit}')."""
+
+    @workflow.run
+    async def run(self, apply: bool = False, limit: int = 0, force: bool = False) -> dict:
+        out = await workflow.execute_activity(
+            book_meta_activity, args=[apply, limit, force],
+            start_to_close_timeout=timedelta(hours=24),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"BookMetaWorkflow done: {out}")
         return out
 
 
