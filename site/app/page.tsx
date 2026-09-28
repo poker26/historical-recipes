@@ -151,7 +151,7 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
                   : it.photo_attribution ? creditLine(it.photo_attribution, it.photo_license) : "Фото iNaturalist"}
                 meta={it.hook ? excerpt(it.hook, 110) : null}
                 tags={[
-                  ...(it.safety_level === 4 ? [{ label: "смертельно ядовито", warn: true }] : it.safety_level === 3 ? [{ label: "осторожно, ядовито", warn: true }] : []),
+                  ...(it.safety_level === 4 ? [{ label: "смертельно ядовито", warn: true }] : it.safety_level === 3 ? [{ label: "ядовито в больших дозах", warn: true }] : []),
                   ...(it.recipes ? [{ label: `${it.recipes} ${pluralRu(it.recipes, "рецепт", "рецепта", "рецептов")}` }] : []),
                 ]}
               />

@@ -94,14 +94,20 @@ export function safetyView(s: SafetyInfo | null | undefined, isToxic: boolean): 
   if (lvl === 2) return { level: "warn", title: "Условно съедобно" };
   if (lvl === 1) return { level: "ok", title: "Съедобно" };
   if ((lvl === null || lvl === undefined) && isToxic) return { level: "danger", title: "Ядовитое растение" };
-  return { level: "unknown", title: "О съедобности книги ничего не говорят" };
+  return { level: "unknown", title: "Съедобность не подтверждена" };
 }
+
+/** Что сказать при уровне 0, когда у уровня нет своего обоснования. */
+const UNKNOWN_TEXT = "Книги ничего не говорят о том, можно ли его есть. Не ешь его, пока надёжный источник этого не подтвердит.";
 
 /** Обоснование уровня. Служебная пометка «[auto] …» — это не слова книг, её не показываем. */
 export function safetyText(s: SafetyInfo | null | undefined): string | null {
   const r = (s?.rationale ?? "").trim();
-  if (!r) return null;
-  if (r.startsWith("[auto]")) return (s?.level ?? 0) > 0 ? "Уровень посчитан автоматически по записям книг, человек его ещё не проверял." : null;
+  const unknown = !s || s.level == null || s.level === 0;
+  if (!r || r.startsWith("[auto]")) {
+    if (unknown) return UNKNOWN_TEXT;
+    return r ? "Уровень посчитан автоматически по записям книг, человек его ещё не проверял." : null;
+  }
   return r;
 }
 

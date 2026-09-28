@@ -466,8 +466,8 @@ export function plantTags(p: PlantSummary, opts: { noPhoto?: boolean } = {}): Ti
   if (p.kingdom === "гриб") t.push({ label: "гриб" });
   if (p.rank === "genus") t.push({ label: "род" });
   if (p.safety_level === 4) t.push({ label: "смертельно ядовито", tone: "warn" });
-  else if (p.is_toxic) t.push({ label: "ядовито", tone: "warn" });
   else if (p.safety_level === 3) t.push({ label: "ядовито в больших дозах", tone: "warn" });
+  else if (p.is_toxic && (p.safety_level == null || p.safety_level === 0)) t.push({ label: "ядовито", tone: "warn" });
   if (opts.noPhoto && !p.photo_url) t.push({ label: "без фото", tone: "mist" });
   return t;
 }

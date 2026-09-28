@@ -196,11 +196,14 @@ async def merge_card(db, source_id, target_id, step: str, reason: str) -> None:
     for pt in (src.parts_used or []):
         if pt and pt not in parts:
             parts.append(pt)
+    # Уровень безопасности цели посчитан по её прежним фактам, а к ней только что переехали
+    # записи о ядовитости и съедобности источника. Уровень сбрасывается, и следующий прогон
+    # шкалы (EdibleSafetyWorkflow) пересчитает его по всем фактам сразу.
     await db.execute(text("""
         UPDATE plants SET names_historical = CAST(:hist AS text[]), parts_used = CAST(:parts AS text[]),
                family = COALESCE(family, :family), family_latin = COALESCE(family_latin, :family_latin),
                description = COALESCE(description, :description),
-               is_toxic = (is_toxic OR :toxic),
+               is_toxic = (is_toxic OR :toxic), safety_level = NULL,
                kingdom = CASE WHEN kingdom = 'растение' AND :kingdom = 'гриб' THEN 'гриб' ELSE kingdom END
         WHERE id = :t"""),
         {"hist": hist or None, "parts": parts or None, "family": src.family, "family_latin": src.family_latin,

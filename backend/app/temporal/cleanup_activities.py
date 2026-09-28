@@ -560,10 +560,32 @@ async def edible_safety_activity() -> dict:
     — a deterministic regex recompute was proven UNSAFE (de-flagged real poisons that
     merely mention animals/dose). The DEADLY anchor (latin) is an un-lowerable L4 floor.
     Recomputes is_toxic := level>=3. Commit-per-plant, heartbeat, idempotent (safety_level
-    NULL = unprocessed) → a worker restart just resumes."""
+    NULL = unprocessed) → a worker restart just resumes.
+
+    28.09.2026: родовые карточки (rank='genus') считаются так же, как виды, по своим фактам:
+    они стоят в рецептах («крапива»), и без уровня сайт показывал для них старую пометку
+    «ядовито». Перед проходом сбрасываются устаревшие быстрые уровни: у карточки с «[auto]»
+    после слияний появились записи о ядовитости, а «несъедобно» раньше давало уровень 1.
+    В конце is_toxic выравнивается по уровню у всех карточек."""
     from app.services.edible_safety import classify_safety, is_deadly_anchor, EDIBILITY_CANON
     done = det = llm = 0
     sem = asyncio.Semaphore(6)
+
+    async with async_session() as db:
+        stale = (await db.execute(text("""
+            UPDATE plants p SET safety_level = NULL
+            WHERE p.safety_level IS NOT NULL AND p.safety_rationale LIKE '[auto]%' AND (
+                EXISTS (SELECT 1 FROM plant_toxicities t WHERE t.plant_id = p.id)
+                OR EXISTS (SELECT 1 FROM plant_culinary_uses c WHERE c.plant_id = p.id
+                           AND lower(btrim(c.edibility)) IN ('ядовито', 'ядовит')))"""))).rowcount
+        inedible = (await db.execute(text("""
+            UPDATE plants p SET safety_level = NULL
+            WHERE p.safety_level = 1 AND p.safety_rationale LIKE '[auto]%'
+              AND NOT EXISTS (SELECT 1 FROM plant_culinary_uses c WHERE c.plant_id = p.id
+                  AND lower(btrim(c.edibility)) IN ('съедобно', 'съедобна', 'съедобен', 'sъедобно',
+                                                    'сьедобно', 'едальна', 'пищ.', 'пригоден'))"""))).rowcount
+        await db.commit()
+    activity.heartbeat({"reset_stale": stale, "reset_inedible": inedible})
 
     async def _classify(pid):
         async with sem:
@@ -598,7 +620,7 @@ async def edible_safety_activity() -> dict:
                   (SELECT string_agg(DISTINCT lower(btrim(c.edibility)), '|')
                    FROM plant_culinary_uses c WHERE c.plant_id=p.id AND c.edibility IS NOT NULL) edi
                 FROM plants p
-                WHERE p.rank='species' AND p.kingdom IN ('растение','гриб')
+                WHERE p.rank IN ('species', 'genus') AND p.kingdom IN ('растение','гриб')
                   AND p.safety_level IS NULL
                 ORDER BY p.id LIMIT 300"""))).all()
         if not rows:
@@ -610,12 +632,21 @@ async def edible_safety_activity() -> dict:
                 if is_deadly_anchor(latin) or ntox > 0 or ("ядовито" in canon):
                     risky.append(pid)
                     continue
-                # no toxicity signal → safe deterministic default (no LLM spend)
-                lvl = 2 if "условно-съедобно" in canon else (1 if canon & {"съедобно", "несъедобно"} else 0)
+                # no toxicity signal → safe deterministic default (no LLM spend).
+                # «Несъедобно» это не «съедобно»: такая карточка получает уровень 0 и
+                # человеческое обоснование, его покажет карточка на сайте.
+                if "условно-съедобно" in canon:
+                    lvl, why = 2, "[auto] нет сигналов токсичности"
+                elif "съедобно" in canon:
+                    lvl, why = 1, "[auto] нет сигналов токсичности"
+                elif "несъедобно" in canon:
+                    lvl, why = 0, "Книги называют его несъедобным. О ядовитости в них ничего не сказано."
+                else:
+                    lvl, why = 0, "[auto] нет сигналов токсичности"
                 await db.execute(text(
                     "UPDATE plants SET safety_level=:l, is_toxic=false, "
-                    "safety_rationale='[auto] нет сигналов токсичности' WHERE id=:p"),
-                    {"l": lvl, "p": pid})
+                    "safety_rationale=:why WHERE id=:p"),
+                    {"l": lvl, "why": why, "p": pid})
                 det += 1
                 done += 1
             await db.commit()
@@ -632,4 +663,12 @@ async def edible_safety_activity() -> dict:
             llm += 1
             done += 1
             activity.heartbeat({"done": done, "det": det, "llm": llm})
-    return {"phase": "edible_safety", "done": done, "deterministic": det, "llm": llm}
+    # is_toxic производное от уровня (RFC-edible-safety). Слияния складывали флаги, и у
+    # части карточек он разошёлся с уровнем: выравниваем у всех посчитанных.
+    async with async_session() as db:
+        aligned = (await db.execute(text(
+            "UPDATE plants SET is_toxic = (safety_level >= 3) "
+            "WHERE safety_level IS NOT NULL AND is_toxic IS DISTINCT FROM (safety_level >= 3)"))).rowcount
+        await db.commit()
+    return {"phase": "edible_safety", "done": done, "deterministic": det, "llm": llm,
+            "reset_stale": stale, "reset_inedible": inedible, "is_toxic_aligned": aligned}

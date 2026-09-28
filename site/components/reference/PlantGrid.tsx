@@ -10,7 +10,7 @@ import { canonParts } from "../../lib/api-plant";
 export function plantTags(p: PlantSummary): { label: string; warn?: boolean }[] {
   const tags: { label: string; warn?: boolean }[] = [];
   if (p.safety_level === 4) tags.push({ label: "смертельно ядовито", warn: true });
-  else if (p.safety_level === 3) tags.push({ label: "осторожно", warn: true });
+  else if (p.safety_level === 3) tags.push({ label: "ядовито в больших дозах", warn: true });
   else if (p.is_toxic && p.safety_level == null) tags.push({ label: "ядовито", warn: true });
   if (p.deadly_twin) tags.push({ label: "есть опасный двойник", warn: true });
   return tags;

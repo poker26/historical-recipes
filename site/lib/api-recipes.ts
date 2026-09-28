@@ -159,11 +159,12 @@ export const inSentence = (n: string) => (/^[А-ЯЁ][а-яё]/.test(n) ? n.char
 /** Год рецепта: год издания книги, а если его нет, год из самого рецепта. */
 export const recipeYear = (r: { book_year?: number | null; year?: number | null }) => r.book_year ?? r.year ?? null;
 
-/** Худший по безопасности привязанный ингредиент: 4 смертельно, 3 или is_toxic ядовито. */
+/** Худший по безопасности привязанный ингредиент: 4 смертельно, 3 ядовито. Флаг is_toxic
+ *  учитывается, только пока у карточки нет уровня: уровень главнее. */
 export function worstIngredient(ings: Ingredient[]): { level: 4 | 3; names: string[] } | null {
   const deadly = ings.filter((i) => i.plant_id && i.plant_safety_level === 4);
   if (deadly.length) return { level: 4, names: uniqNames(deadly) };
-  const toxic = ings.filter((i) => i.plant_id && (i.plant_safety_level === 3 || i.plant_is_toxic));
+  const toxic = ings.filter((i) => i.plant_id && (i.plant_safety_level === 3 || (i.plant_safety_level == null && i.plant_is_toxic)));
   if (toxic.length) return { level: 3, names: uniqNames(toxic) };
   return null;
 }

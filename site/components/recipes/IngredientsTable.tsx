@@ -7,7 +7,9 @@ import { amountText, type Ingredient } from "../../lib/api-recipes";
 
 function SafetyChip({ i }: { i: Ingredient }) {
   if (i.plant_safety_level === 4) return <span className="chip chip-danger">смертельно ядовито</span>;
-  if (i.plant_safety_level === 3 || i.plant_is_toxic) return <span className="chip chip-danger">ядовито</span>;
+  if (i.plant_safety_level === 3) return <span className="chip chip-danger">ядовито в больших дозах</span>;
+  // Старый флаг ядовитости учитываем, только пока у карточки нет уровня.
+  if (i.plant_safety_level == null && i.plant_is_toxic) return <span className="chip chip-danger">ядовито</span>;
   return null;
 }
 
