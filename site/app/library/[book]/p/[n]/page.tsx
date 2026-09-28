@@ -3,18 +3,35 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Header, Footer } from "../../../../ui";
 import { Crumbs, Empty } from "../../../../../components/common";
-import { highlightText, type Segment } from "../../../../../components/library/highlight";
-import { HighlightedText } from "../../../../../components/library/HighlightedText";
 import { PageFacts } from "../../../../../components/library/PageFacts";
 import { PageNav } from "../../../../../components/library/PageNav";
-import { SITE_URL, excerpt, isUuid } from "../../../../../lib/api";
-import { FACT_KIND_RU, accessNote, getBookPage, param } from "../../../../../lib/api-library";
+import { DEFAULT_OG, SITE_URL, excerpt, isUuid, pluralRu } from "../../../../../lib/api";
+import { accessNote, getBookPage, param, type BookPage } from "../../../../../lib/api-library";
 import "../../../library.css";
 
 type Props = { params: { book: string; n: string }; searchParams: { [key: string]: string | string[] | undefined } };
 
 function pageNumber(s: string | undefined): number | null {
   return s && /^\d{1,5}$/.test(s) && Number(s) >= 1 ? Number(s) : null;
+}
+
+/** «, 1870 год», если года нет в самом названии книги. */
+function yearTail(d: BookPage, word = ""): string {
+  const y = d.book.year;
+  return y && !d.book.title.includes(String(y)) ? `, ${y}${word}` : "";
+}
+
+/** Описание для поисковика: что с этой страницы вошло в атлас. */
+function pageSummary(d: BookPage, n: number): string {
+  const parts: string[] = [];
+  const np = d.plants.length;
+  if (np) {
+    const shown = d.plants.slice(0, 4).map((p) => p.name).join(", ");
+    parts.push(`${np} ${pluralRu(np, "растение", "растения", "растений")} (${shown}${np > 4 ? ` и ещё ${np - 4}` : ""})`);
+  }
+  const nr = d.recipes.length;
+  if (nr) parts.push(`${nr} ${pluralRu(nr, "рецепт", "рецепта", "рецептов")}`);
+  return `Скан страницы ${n} из книги «${d.book.title}»${yearTail(d, " год")}. В атласе с этой страницы ${parts.join(" и ")}.`;
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -24,18 +41,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (!r.data) return { title: "Страница книги", robots: { index: false } };
   const d = r.data;
   const url = `${SITE_URL}/library/${params.book}/p/${n}`;
-  const title = `${d.book.title}, стр. ${n}`;
+  const title = `${d.book.title}${yearTail(d)}, страница ${n}`;
   // В индекс идут только открытые страницы, к которым привязаны факты: у остальных
   // нет своего содержания, кроме ссылки на книгу.
   const indexable = d.book.access === "open" && d.facts.length + d.recipes.length > 0;
+  const description = indexable ? pageSummary(d, n) : d.citation;
   return {
     title,
-    description: d.citation,
+    description,
     alternates: { canonical: url },
     robots: indexable ? undefined : { index: false, follow: true },
     openGraph: {
-      title, description: d.citation, url, type: "article",
-      ...(d.page.has_image ? { images: [{ url: `${url}/image.jpg?size=medium` }] } : {}),
+      title, description, url, type: "article",
+      images: d.page.has_image ? [{ url: `${url}/image.jpg?size=medium` }] : [DEFAULT_OG],
     },
   };
 }
@@ -78,22 +96,8 @@ export default async function SourcePage({ params, searchParams }: Props) {
   const open = book.access === "open";
   const closed = book.access === "closed";
   const hl = param(searchParams.hl);
-
-  // Подсветка: начало каждой цитаты и рецепта ищем в распознанном тексте страницы.
-  let segments: Segment[] = [];
-  let found = new Set<string>();
-  if (open && page.text) {
-    const needles = [
-      ...d.facts.map((f) => ({ id: f.id, text: f.original_text, strong: f.id === hl })),
-      ...d.recipes.map((rc) => ({ id: rc.id, text: rc.original_text, strong: rc.id === hl })),
-    ];
-    ({ segments, found } = highlightText(page.text, needles));
-  }
-  const hlInText = !!hl && found.has(hl);
-  const titles = new Map<string, string>([
-    ...d.facts.map((f): [string, string] => [f.id, `«${f.plant_name}», ${FACT_KIND_RU[f.kind] ?? f.kind}`]),
-    ...d.recipes.map((rc): [string, string] => [rc.id, `рецепт «${rc.name ?? "без названия"}»`]),
-  ]);
+  // Сырой распознанный текст страницы не показываем: в старых книгах в нём ошибки машины
+  // и дореформенная орфография. Рядом со сканом стоит то, что со страницы вошло в атлас.
   const imgBase = `/library/${bookId}/p/${n}/image.jpg`;
   const who = [book.author, book.year].filter(Boolean).join(", ");
 
@@ -139,35 +143,27 @@ export default async function SourcePage({ params, searchParams }: Props) {
                     </figcaption>
                   </figure>
                 ) : null}
-                <div className="lib-textcol">
-                  <p className="lib-textcap small muted">
-                    Текст распознан машиной и может ошибаться в буквах{page.has_image ? ", сверяйся со сканом" : ""}.
-                    {found.size ? " Подсвечены места, откуда взяты цитаты для атласа. Наведи на подсветку, чтобы увидеть, к какому растению относится цитата." : ""}
-                  </p>
-                  {segments.length ? (
-                    <div className="scan-text">
-                      <HighlightedText segments={segments} titles={titles} />
-                    </div>
-                  ) : (
-                    <Empty>У этой страницы нет распознанного текста{page.has_image ? ", только скан" : ""}.</Empty>
-                  )}
-                </div>
+                <section className="lib-onpage-col">
+                  <h2>Что со страницы {n} вошло в атлас</h2>
+                  <PageFacts data={d} hl={hl} />
+                </section>
               </div>
             ) : (
-              <div className="card lib-cited">
-                <div className="lib-cited-num">стр. {n}</div>
-                <p>{accessNote(book.access, book.year)}</p>
-                <blockquote className="quote">
-                  <div className="quote-text">{d.citation}</div>
-                  <span className="source">Так можно сослаться на эту страницу.</span>
-                </blockquote>
-              </div>
+              <>
+                <div className="card lib-cited">
+                  <div className="lib-cited-num">стр. {n}</div>
+                  <p>{accessNote(book.access, book.year)}</p>
+                  <blockquote className="quote">
+                    <div className="quote-text">{d.citation}</div>
+                    <span className="source">Так можно сослаться на эту страницу.</span>
+                  </blockquote>
+                </div>
+                <section className="block">
+                  <h2>Цитаты с этой страницы, которые вошли в атлас</h2>
+                  <PageFacts data={d} hl={hl} />
+                </section>
+              </>
             )}
-
-            <section className="block">
-              <h2>{open ? `Что со страницы ${n} вошло в атлас` : "Цитаты с этой страницы, которые вошли в атлас"}</h2>
-              <PageFacts data={d} hl={hl} found={found} hlInText={hlInText} />
-            </section>
 
             {open ? (
               <section className="block">

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Header, Footer } from "../ui";
 import { Empty, Pager } from "../../components/common";
 import { BookTile } from "../../components/library/BookTile";
-import { SITE_URL, fmtInt, pluralRu } from "../../lib/api";
+import { DEFAULT_OG, SITE_URL, fmtInt, pluralRu } from "../../lib/api";
 import {
   ERAS, SHELF_LIMIT, SORTS, countBooks, domainLabel, getBooks, getLibraryStats, param,
   type LibraryStats, type ShelfQuery,
@@ -72,7 +72,7 @@ export async function generateMetadata({ searchParams }: { searchParams: SP }): 
     description,
     alternates: { canonical: url },
     robots: isFiltered(s) || s.page > 1 ? { index: false, follow: true } : undefined,
-    openGraph: { title, description, url, type: "website" },
+    openGraph: { title, description, url, type: "website", images: [DEFAULT_OG] },
   };
 }
 
@@ -149,8 +149,8 @@ export default async function LibraryShelf({ searchParams }: { searchParams: SP 
           <h1>Книги, из которых собран атлас</h1>
           <p className="lead">{statsLine(stats, open)}</p>
           <p className="lib-hero-note">
-            Срок авторских прав на книги, изданные до 1917 года, истёк. Их можно листать целиком, и
-            рядом со сканом страницы стоит распознанный текст. Если год издания неизвестен или книга ещё
+            Срок авторских прав на книги, изданные до 1917 года, истёк. Их можно листать целиком по
+            сканам, и рядом с каждой страницей видно, что с неё вошло в атлас. Если год издания неизвестен или книга ещё
             охраняется, открыты только номера страниц, библиографическая ссылка и цитаты, которые вошли в
             атлас. У закрытых книг доступно только описание.
           </p>

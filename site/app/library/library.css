@@ -137,7 +137,6 @@ a.lib-chip-plain:hover { border-color: var(--moss); color: var(--forest); }
 .lib-go input { width: 84px; padding: 7px 10px; border-radius: 999px; border: 1px solid #d9d2c5; background: var(--cream); color: var(--ink); }
 
 .lib-scan-single { grid-template-columns: minmax(0, 1fr); }
-.lib-scan-single .scan-text { max-width: 78ch; }
 .lib-scan-fig { margin: 0; }
 /* Пока скан грузится, держим под него место (типичная книжная страница 2:3), чтобы
    текст ниже не прыгал и якорь #hl не уезжал с экрана. После загрузки берётся
@@ -145,11 +144,9 @@ a.lib-chip-plain:hover { border-color: var(--moss); color: var(--forest); }
 .lib-scan-fig img { cursor: zoom-in; aspect-ratio: auto 2 / 3; background: var(--mist); }
 .lib-scan-fig figcaption { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; color: var(--muted); }
 .lib-scan-fig figcaption a { font-weight: 600; text-decoration: none; }
-.lib-textcol { min-width: 0; }
-.lib-textcap { margin: 0 0 8px; }
-.lib-page .scan-text { overflow-wrap: anywhere; }
-.lib-page .scan-text mark { background: #f8ebb9; }
-.lib-page .scan-text mark.lib-hl { background: var(--lime); box-shadow: 0 0 0 2px var(--lime); }
+/* справа от скана: что со страницы вошло в атлас */
+.lib-onpage-col { min-width: 0; }
+.lib-onpage-col h2 { font-size: 24px; margin: 0 0 8px; }
 .lib-page #hl { scroll-margin-top: 24px; }
 
 .lib-cited { display: grid; gap: 10px; margin: 14px 0; }
@@ -180,8 +177,6 @@ a.lib-chip-plain:hover { border-color: var(--moss); color: var(--forest); }
 .lib-fact-head .chip { padding: 3px 10px; font-size: 12px; }
 .lib-fact .quote { margin: 6px 0 0; }
 .lib-fact.is-hl .quote { border-left-color: #c9a93a; background: #fdf6dc; }
-.lib-show { font-size: 13px; font-weight: 600; text-decoration: none; }
-.lib-show:hover { text-decoration: underline; }
 .lib-onpage-recipes h3 { margin: 24px 0 10px; }
 
 @media (max-width: 900px) {
@@ -208,7 +203,6 @@ a.lib-chip-plain:hover { border-color: var(--moss); color: var(--forest); }
   .lib-pagenav > :first-child { justify-self: start; }
   .lib-pagenav > :last-child { justify-self: end; }
   .lib-pagenav-mid { grid-column: 1 / -1; order: 3; justify-content: flex-start; }
-  .lib-page .scan-text { padding: 14px 14px; font-size: 15.5px; }
   .lib-facts { margin-left: 8px; padding-left: 10px; }
   .lib-cited-num { font-size: 32px; }
 }

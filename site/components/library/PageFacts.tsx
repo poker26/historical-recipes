@@ -1,6 +1,6 @@
-// Что атлас взял со страницы книги: растения с их фактами и рецепты.
-// Для открытых книг у каждого найденного в тексте фрагмента есть ссылка «показать на
-// странице» (?hl=id#hl); для цитируемых книг это и есть всё, что мы показываем.
+// Что атлас взял со страницы книги: растения с их цитатами и рецепты. У открытой книги
+// список стоит рядом со сканом, у цитируемой это всё содержание страницы. Ссылка из
+// карточки растения (?hl=id#hl) выделяет в списке свою цитату.
 import Link from "next/link";
 import { Empty, LeafGlyph, Quote } from "../common";
 import { excerpt, fmtInt, plantHref, pluralRu } from "../../lib/api";
@@ -19,14 +19,10 @@ function factDetail(f: PageFact): string {
   return f.label || part;
 }
 
-export function PageFacts({ data, hl, found, hlInText }: { data: BookPage; hl?: string; found: Set<string>; hlInText: boolean }) {
+export function PageFacts({ data, hl }: { data: BookPage; hl?: string }) {
   const bookId = data.book.id;
-  const n = data.page.number;
-  const open = data.book.access === "open";
-  const showHref = (id: string) => `/library/${bookId}/p/${n}?hl=${encodeURIComponent(id)}#hl`;
-  // Якорь #hl один на страницу: на подсветке в тексте, а если фрагмент в тексте
-  // не нашёлся (или текст не показываем), то на самом факте в списке.
-  const anchorId = (id: string) => (hl === id && !hlInText ? "hl" : undefined);
+  // Якорь #hl один на страницу, на выделенной цитате или рецепте.
+  const anchorId = (id: string) => (hl === id ? "hl" : undefined);
 
   const byPlant = new Map<string, PageFact[]>();
   for (const f of data.facts) {
@@ -55,7 +51,6 @@ export function PageFacts({ data, hl, found, hlInText }: { data: BookPage; hl?: 
     <div className="lib-onpage">
       <p className="section-lead">
         С этой страницы в атлас вошли {summary.length > 1 ? summary.slice(0, -1).join(", ") + " и " + summary[summary.length - 1] : summary[0]}.
-        {open ? " Нажми «показать на странице», чтобы увидеть фрагмент в тексте." : ""}
       </p>
 
       {data.plants.map((p) => (
@@ -79,7 +74,6 @@ export function PageFacts({ data, hl, found, hlInText }: { data: BookPage; hl?: 
                   <div className="lib-fact-head">
                     <span className={"chip " + (KIND_CHIP[f.kind] ?? "chip-leaf")}>{FACT_KIND_RU[f.kind] ?? f.kind}</span>
                     {detail ? <span className="small muted">{detail}</span> : null}
-                    {open && found.has(f.id) ? <Link href={showHref(f.id)} className="lib-show">показать на странице</Link> : null}
                   </div>
                   {f.original_text ? <Quote text={f.original_text} /> : null}
                 </li>
@@ -99,8 +93,7 @@ export function PageFacts({ data, hl, found, hlInText }: { data: BookPage; hl?: 
                 <span className="lib-row-meta">
                   {recipeMeta(r.category, r.recipe_kind)}
                 </span>
-                {open && found.has(r.id) ? <Link href={showHref(r.id)} className="lib-show">показать на странице</Link> : null}
-                {!open && r.original_text ? (
+                {r.original_text ? (
                   <div className="lib-row-quote"><Quote text={excerpt(r.original_text, 320)} /></div>
                 ) : null}
               </li>
