@@ -796,15 +796,19 @@ async def apply_dry_findings() -> dict:
             ev["applied"] = applied
             fix = {"action": "set_book_meta", "book_id": r.entity_id, **pending} if pending else None
             status = "open" if pending or not (dec.get("year") or dec.get("author")) else "fixed"
+            # Один параметр нельзя ставить и в столбец varchar, и в сравнение с текстом:
+            # asyncpg выводит для него разные типы. Поэтому «кем и когда закрыто» считаем здесь.
+            fixed = status == "fixed"
             await db.execute(text("""
                 UPDATE data_quality_findings SET evidence = CAST(:ev AS jsonb), suggested_fix = CAST(:fix AS jsonb),
                   auto_fixable = :af, status = :st, title = :title, last_seen = now(),
-                  resolved_by = CASE WHEN :st = 'fixed' THEN 'book-meta' ELSE resolved_by END,
-                  resolved_at = CASE WHEN :st = 'fixed' THEN now() ELSE resolved_at END
+                  resolved_by = COALESCE(CAST(:rb AS varchar), resolved_by),
+                  resolved_at = CASE WHEN CAST(:closed AS boolean) THEN now() ELSE resolved_at END
                 WHERE id = :i"""), {
                 "ev": json.dumps(ev, ensure_ascii=False, default=str),
                 "fix": json.dumps(fix, ensure_ascii=False) if fix else None,
                 "af": bool(fix), "st": status, "i": r.id,
+                "rb": "book-meta" if fixed else None, "closed": fixed,
                 "title": _title(book.get("title") or "", pending, applied, False,
                                 book.get("year_before") is None, author_empty(book.get("author_before")))[:300]})
             await db.commit()
