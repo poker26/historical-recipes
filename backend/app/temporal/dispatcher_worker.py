@@ -104,6 +104,7 @@ async def main():
             identity_activities.identity_reid_activity,
             identity_activities.identity_resolve_activity,
             identity_activities.identity_amirdovlat_activity,
+            identity_activities.identity_twins_activity,
             book_meta_activities.book_meta_activity,
             site_warm_activities.site_warm_activity,
         ],

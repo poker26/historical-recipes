@@ -810,6 +810,12 @@ export const resolvePlantParam = cache(async (param: string): Promise<ResolveRes
   }
 });
 
+/** Куда слили карточку с этим id (журнал чистки идентичности); null, если некуда. */
+export const resolveMerged = cache(async (id: string): Promise<string | null> => {
+  const r = await getJson<{ id: string; merged?: boolean }>(`/plants/resolve?tail=${id.replace(/-/g, "").slice(0, 32)}`, 3600);
+  return r?.merged ? r.id : null;
+});
+
 export const getFieldView = cache((id: string) => getJson<FieldView>(`/plants/${encodeURIComponent(id)}?view=field`, 3600));
 
 /** Очерк со статусом: для страницы-перенаправления нужно отличать «нет вида» от сбоя. */

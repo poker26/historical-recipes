@@ -345,6 +345,79 @@ async def run_dedup(apply: bool, progress: Progress | None = None) -> dict:
     return result
 
 
+# ------------------------------------------------------------------ близнецы на сайте
+
+_EPITHET = re.compile(r"^[a-z][a-z-]{2,}$")
+_NOT_EPITHET = {"sp", "spp", "var", "subsp", "ssp", "ex", "et", "und", "and"}
+
+
+def twin_latin_key(latin: str | None) -> str | None:
+    """Род и эпитет без автора и пометок: «Linum L.» → «linum», «Thymus sp. diversa» →
+    «thymus», «Acer pseudo-platanus L.» → «acer pseudo-platanus». Мусор → None."""
+    toks = (latin or "").replace("×", " ").split()
+    if not toks:
+        return None
+    genus = toks[0].strip("(),.;").lower()
+    if not re.fullmatch(r"[a-z]{3,}", genus):
+        return None
+    if len(toks) > 1 and _EPITHET.fullmatch(toks[1]) and toks[1] not in _NOT_EPITHET:
+        return f"{genus} {toks[1]}"
+    return genus
+
+
+async def run_twins(apply: bool, progress: Progress | None = None) -> dict:
+    """Опубликованные карточки с одним русским именем, одной латынью (без автора и «sp.»)
+    и одним царством. На сайте это две страницы с одинаковым заголовком и почти одинаковым
+    содержанием (замер 28.09: 19 таких групп, «ятрышник» Orchis трижды). Все сливаются в
+    самую богатую: больше дочерних видов, больше фактов, таксон iNaturalist, фото. Старый
+    адрес слитой карточки ведёт на цель: /plants/resolve смотрит журнал слияний."""
+    from app.models.plant import Plant
+    from app.routers.plants import PUBLISHED_PRED
+    from sqlalchemy import literal_column, select
+
+    score = literal_column(FACTS_SCORE.replace("p.id", "plants.id")).label("score")
+    kids = literal_column("(SELECT count(*) FROM plants c WHERE c.parent_id = plants.id)").label("kids")
+    async with async_session() as db:
+        rows = (await db.execute(select(
+            Plant.id, Plant.name, Plant.name_latin, Plant.kingdom, score, kids,
+            Plant.inat_taxon_id.isnot(None).label("inat")).where(PUBLISHED_PRED))).all()
+    groups: dict[tuple, list] = {}
+    for r in rows:
+        key = twin_latin_key(r.name_latin)
+        if not key:
+            continue
+        name = (r.name or "").strip().lower().replace("ё", "е")
+        groups.setdefault((name, key, r.kingdom), []).append(r)
+    plan = []
+    for (name, key, kingdom), members in groups.items():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda m: (m.kids or 0, m.score or 0, bool(m.inat)), reverse=True)
+        target = members[0]
+        for m in members[1:]:
+            plan.append({"id": str(m.id), "name": m.name, "latin": m.name_latin,
+                         "target": {"id": str(target.id), "name": target.name, "latin": target.name_latin}})
+    result = {"step": "twins", "apply": apply, "groups": len({p["target"]["id"] for p in plan}),
+              "candidates": len(plan), "sample": plan[:40]}
+    if not apply:
+        return result
+    merged = 0
+    dead: list[str] = []
+    for item in plan:
+        async with async_session() as db:
+            await merge_card(db, uuid.UUID(item["id"]), uuid.UUID(item["target"]["id"]), "twins",
+                             "published twin: same name, same latin, same kingdom")
+            await db.commit()
+        dead.append(item["id"])
+        merged += 1
+        if progress:
+            progress({"step": "twins", "merged": merged, "of": len(plan)})
+    if dead:
+        await _purge_qdrant(dead)
+    result["merged"] = merged
+    return result
+
+
 # ------------------------------------------------------------------ шаг 2: оболочки
 
 async def run_shells(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:

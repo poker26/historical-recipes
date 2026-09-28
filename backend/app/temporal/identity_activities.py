@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from temporalio import activity
 
-from app.services.identity_cleanup import run_dedup, run_gbif, run_reid, run_shells
+from app.services.identity_cleanup import run_dedup, run_gbif, run_reid, run_shells, run_twins
 from app.services.identity_resolve import run_resolve
 from app.services.identity_amirdovlat import run_amirdovlat
 
@@ -43,6 +43,11 @@ async def identity_reid_activity(limit: int = 0) -> dict:
 @activity.defn
 async def identity_resolve_activity(apply: bool = False, limit: int = 0) -> dict:
     return await run_resolve(apply=apply, limit=limit, progress=_report)
+
+
+@activity.defn
+async def identity_twins_activity(apply: bool = False) -> dict:
+    return await run_twins(apply=apply, progress=_report)
 
 
 @activity.defn

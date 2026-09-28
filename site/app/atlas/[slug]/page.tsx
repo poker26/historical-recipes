@@ -11,7 +11,7 @@ import { DEFAULT_OG, SITE_URL, excerpt, plantHref, plantSlug } from "../../../li
 import {
   cardTitle, displayName, getCompoundInsights, getFieldView, getGenusPhotos, getObservations, getPairings, getPlantCard, getPlantRecipes,
   isSubstantive, jsonLd, largePhoto, normKind, passesGate, photoSourceOf, plateExists, plateKey, plateUrl, queryFrom, quoteOf,
-  resolvePlantParam, sameName, type FieldView, type GenusCard, type Photo, type PlantCard, type SpeciesCard,
+  resolveMerged, resolvePlantParam, sameName, type FieldView, type GenusCard, type Photo, type PlantCard, type SpeciesCard,
 } from "../../../lib/api-plant";
 import { PlantHead, SafetyPanel, Toc } from "../../../components/plant/head";
 import { EssayBlock, SafetyBlock, UsesBlock } from "../../../components/plant/uses";
@@ -52,7 +52,12 @@ async function genusPhoto(card: GenusCard): Promise<Photo | null> {
 async function loadCard(slug: string): Promise<{ state: "ok"; card: PlantCard } | { state: "missing" } | { state: "error" }> {
   const r = await resolvePlantParam(slug);
   if (r.state !== "ok") return r;
-  return getPlantCard(r.id);
+  const card = await getPlantCard(r.id);
+  if (card.state !== "missing") return card;
+  // Карточку могли слить в другую: хвост id найдёт цель по журналу слияний, а страница
+  // потом уведёт на её канонический адрес.
+  const target = await resolveMerged(r.id);
+  return target && target !== r.id ? getPlantCard(target) : card;
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
