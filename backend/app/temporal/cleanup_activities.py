@@ -583,7 +583,7 @@ async def edible_safety_activity() -> dict:
     «ядовито». Перед проходом сбрасываются устаревшие быстрые уровни: у карточки с «[auto]»
     после слияний появились записи о ядовитости, а «несъедобно» раньше давало уровень 1.
     В конце is_toxic выравнивается по уровню у всех карточек."""
-    from app.services.edible_safety import classify_safety, is_deadly_anchor, EDIBILITY_CANON
+    from app.services.edible_safety import classify_safety, is_deadly_anchor, is_deadly_name, EDIBILITY_CANON
     done = det = llm = 0
     sem = asyncio.Semaphore(6)
 
@@ -603,7 +603,18 @@ async def edible_safety_activity() -> dict:
                   AND lower(btrim(c.edibility)) IN ('съедобно', 'съедобна', 'съедобен', 'sъедобно',
                                                     'сьедобно', 'едальна', 'пищ.', 'пригоден'))"""))).rowcount
         await db.commit()
-    activity.heartbeat({"reset_stale": stale, "reset_inedible": inedible})
+    # Смертельный род по русскому имени при неверной или пустой латыни: такая карточка
+    # должна стоять на уровне 4, пересчитываем, если она ниже.
+    async with async_session() as db:
+        cand = (await db.execute(text(
+            "SELECT id::text, name FROM plants WHERE safety_level < 4 AND rank IN ('species', 'genus') "
+            "AND kingdom IN ('растение', 'гриб')"))).all()
+        by_name = [pid for pid, name in cand if is_deadly_name(name)]
+        if by_name:
+            await db.execute(text("UPDATE plants SET safety_level = NULL WHERE id::text = ANY(:ids)"),
+                             {"ids": by_name})
+        await db.commit()
+    activity.heartbeat({"reset_stale": stale, "reset_inedible": inedible, "reset_deadly_name": len(by_name)})
 
     async def _classify(pid):
         async with sem:
@@ -637,7 +648,7 @@ async def edible_safety_activity() -> dict:
                 res = {"level": 0, "edible_parts": [], "dangerous_parts": [],
                        "deadly_twin": None, "rationale": "timeout/error"}
             lvl = res["level"]
-            if is_deadly_anchor(p.name_latin) and lvl < 4:
+            if (is_deadly_anchor(p.name_latin) or is_deadly_name(p.name)) and lvl < 4:
                 lvl = 4
                 res["rationale"] = "[anchor:deadly] " + (res["rationale"] or "")
             return pid, lvl, res
@@ -645,7 +656,7 @@ async def edible_safety_activity() -> dict:
     while True:
         async with async_session() as db:
             rows = (await db.execute(text("""
-                SELECT p.id::text, p.name_latin,
+                SELECT p.id::text, p.name_latin, p.name,
                   (SELECT count(*) FROM plant_toxicities t WHERE t.plant_id=p.id)
                   + (SELECT count(*) FROM houseplant_toxicity h WHERE h.latin_verified AND """ + _HOUSEPLANT_TOX + """)
                   + (CASE WHEN """ + _MONO_TOX + """ THEN 1 ELSE 0 END) ntox,
@@ -659,9 +670,9 @@ async def edible_safety_activity() -> dict:
             break
         risky = []
         async with async_session() as db:
-            for pid, latin, ntox, edi in rows:
+            for pid, latin, pname, ntox, edi in rows:
                 canon = {EDIBILITY_CANON.get(e, e) for e in (edi.split("|") if edi else [])}
-                if is_deadly_anchor(latin) or ntox > 0 or ("ядовито" in canon):
+                if is_deadly_anchor(latin) or is_deadly_name(pname) or ntox > 0 or ("ядовито" in canon):
                     risky.append(pid)
                     continue
                 # no toxicity signal → safe deterministic default (no LLM spend).
@@ -703,4 +714,5 @@ async def edible_safety_activity() -> dict:
             "WHERE safety_level IS NOT NULL AND is_toxic IS DISTINCT FROM (safety_level >= 3)"))).rowcount
         await db.commit()
     return {"phase": "edible_safety", "done": done, "deterministic": det, "llm": llm,
-            "reset_stale": stale, "reset_inedible": inedible, "is_toxic_aligned": aligned}
+            "reset_stale": stale, "reset_inedible": inedible, "reset_deadly_name": len(by_name),
+            "is_toxic_aligned": aligned}

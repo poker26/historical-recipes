@@ -102,7 +102,9 @@ const UNKNOWN_TEXT = "Книги ничего не говорят о том, м�
 
 /** Обоснование уровня. Служебная пометка «[auto] …» — это не слова книг, её не показываем. */
 export function safetyText(s: SafetyInfo | null | undefined): string | null {
-  const r = (s?.rationale ?? "").trim();
+  // Служебная метка «[anchor:deadly]» говорит, что уровень 4 поставлен по списку
+  // смертельных родов. Читателю она не нужна, обоснование остаётся.
+  const r = (s?.rationale ?? "").replace(/^\[anchor:[a-z]+\]\s*/i, "").trim();
   const unknown = !s || s.level == null || s.level === 0;
   if (!r || r.startsWith("[auto]")) {
     if (unknown) return UNKNOWN_TEXT;

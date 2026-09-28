@@ -36,6 +36,28 @@ def is_deadly_anchor(name_latin: str | None) -> bool:
     return bool(name_latin and _DEADLY.search(name_latin))
 
 
+# Те же смертельные роды по русскому имени. Нужны карточкам, у которых латыни нет или она
+# неверная после распознавания: «Строчок» с латынью Morchella, «Омежник» с Peucedanum.
+# Сверяем только ПЕРВОЕ слово имени: «Борщевик аконитолистный» и «Гриб-зонтик» не яды.
+_DEADLY_RU_FIRST = {
+    "болиголов", "цикута", "вех", "аконит", "борец", "белладонна", "красавка", "белена",
+    "дурман", "безвременник", "наперстянка", "волчеягодник", "волчник", "чемерица",
+    "клещевина", "олеандр", "омежник", "кокорыш", "тис", "мухомор", "галерина", "строчок",
+    "строчки", "свинушка", "паутинник", "лепиота",
+}
+_DEADLY_RU_PHRASES = ("бледная поганка", "волчье лыко", "собачья петрушка", "вех ядовитый")
+
+
+def is_deadly_name(name: str | None) -> bool:
+    n = (name or "").lower().replace("ё", "е").strip()
+    if not n:
+        return False
+    if any(p in n for p in _DEADLY_RU_PHRASES):
+        return True
+    first = re.match(r"[а-я-]+", n)
+    return bool(first and first.group(0) in _DEADLY_RU_FIRST)
+
+
 # OCR / spelling variants of the per-part culinary edibility classes → canonical.
 EDIBILITY_CANON = {
     "съедобно": "съедобно", "съедобна": "съедобно", "съедобен": "съедобно",
