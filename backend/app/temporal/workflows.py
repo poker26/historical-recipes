@@ -56,6 +56,7 @@ with workflow.unsafe.imports_passed_through():
     from app.temporal.anchor_activities import page_anchor_activity
     from app.temporal.photo_activities import photo_backfill_activity
     from app.temporal.book_meta_activities import book_meta_activity
+    from app.temporal.site_warm_activities import site_warm_activity
     from app.temporal.identity_activities import (
         identity_dedup_activity, identity_shells_activity,
         identity_gbif_activity, identity_reid_activity, identity_resolve_activity,
@@ -927,6 +928,23 @@ class BookMetaWorkflow:
             start_to_close_timeout=timedelta(hours=24),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"BookMetaWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class SiteWarmWorkflow:
+    """Прогрев botanik.fun: обход адресов карты сайта изнутри сети compose, чтобы кэш данных
+    Next был тёплым и после выкладки, и для робота поисковика. Заодно замер времени ответа:
+    в сводке самые медленные адреса. Продолжение после перезапуска по heartbeat.
+    Id 'site-warm' (+ '-{limit}')."""
+
+    @workflow.run
+    async def run(self, limit: int = 0, rps: float = 2.0, only: list[str] | None = None) -> dict:
+        out = await workflow.execute_activity(
+            site_warm_activity, args=[limit, rps, only],
+            start_to_close_timeout=timedelta(hours=24),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"SiteWarmWorkflow done: { {k: v for k, v in out.items() if k != 'slowest'} }")
         return out
 
 

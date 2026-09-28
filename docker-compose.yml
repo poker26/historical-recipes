@@ -50,6 +50,15 @@ services:
     environment:
       - LANDING_API_BASE=http://backend:8000/api
       - SITE_URL=https://botanik.fun
+      # Ключ IndexNow и коды подтверждения Яндекс Вебмастера и Search Console из .env;
+      # пустое значение выключает соответствующую функцию.
+      - INDEXNOW_KEY=${INDEXNOW_KEY:-}
+      - YANDEX_VERIFICATION=${YANDEX_VERIFICATION:-}
+      - GOOGLE_SITE_VERIFICATION=${GOOGLE_SITE_VERIFICATION:-}
+    volumes:
+      # Кэш данных Next переживает пересборку контейнера: после выкладки страницы остаются
+      # тёплыми. Сбросить кэш: docker compose stop site, docker volume rm <проект>_site-next-cache.
+      - site-next-cache:/app/.next/cache
     ports:
       - "127.0.0.1:8131:3000"
     depends_on:
@@ -197,3 +206,6 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  site-next-cache:

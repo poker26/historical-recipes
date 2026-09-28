@@ -33,6 +33,7 @@ from app.temporal import anchor_activities
 from app.temporal import photo_activities
 from app.temporal import identity_activities
 from app.temporal import book_meta_activities
+from app.temporal import site_warm_activities
 from app.temporal.workflows import (
     BookDispatcherWorkflow, PlantCleanupWorkflow, FillLatinWorkflow, BiotopeCanonWorkflow,
     CardLatinCleanupWorkflow, CardPhotosWorkflow, CardMergeWorkflow,
@@ -43,6 +44,7 @@ from app.temporal.workflows import (
     ReaderMonographWorkflow, GenusTierWorkflow, EdibleSafetyWorkflow,
     PlaceBiotopeWorkflow, CitiesIngestWorkflow, CherepanovOcrWorkflow,
     PageAnchorWorkflow, PhotoBackfillWorkflow, IdentityCleanupWorkflow, BookMetaWorkflow,
+    SiteWarmWorkflow,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -67,7 +69,8 @@ async def main():
                    HouseplantIngestWorkflow, HouseplantToxicityWorkflow,
                    HouseplantCardsWorkflow, CardLatinCleanupWorkflow,
                    CardPhotosWorkflow, CardMergeWorkflow, PageAnchorWorkflow,
-                   PhotoBackfillWorkflow, IdentityCleanupWorkflow, BookMetaWorkflow],
+                   PhotoBackfillWorkflow, IdentityCleanupWorkflow, BookMetaWorkflow,
+                   SiteWarmWorkflow],
         activities=[
             activities.maintain_pool_activity,
             # Autonomous plant-cleanup chain + quests-build + Layer-2 monograph batch.
@@ -102,6 +105,7 @@ async def main():
             identity_activities.identity_resolve_activity,
             identity_activities.identity_amirdovlat_activity,
             book_meta_activities.book_meta_activity,
+            site_warm_activities.site_warm_activity,
         ],
         max_concurrent_activities=4,
     )
