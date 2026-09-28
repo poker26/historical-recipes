@@ -165,7 +165,8 @@ _MODERN_MARKERS = {
 }
 _REPRINT = re.compile(r"репринт|воспроизвед\w*\s+(?:по|с)\s+издани|печата\w*\s+по\s+издани|факсимил", re.I)
 # Строка из рекламы других книг издательства: цена («Ц. 45 к.», «Д. 1 р. 85 к.», «цѣна 30 к.»).
-_AD_LINE = re.compile(r"\b[ЦД]\.\s*\d|ц[ѣе]н[аы]\s*\d|\d\s*(?:к\.|коп\b|р\.|руб)", re.I)
+# «Д. 14» без рубля это номер дома, поэтому после буквы цены нужна денежная единица.
+_AD_LINE = re.compile(r"\b[ЦД]\.\s*\d+\s*(?:р|к)\b|ц[ѣе]н[аы]\s*\d|\d\s*(?:к\.|коп\b|р\.|руб)", re.I)
 _UNKNOWN_AUTHOR = re.compile(r"^(?:автор\s+)?неизвест", re.I)
 
 
@@ -399,6 +400,8 @@ def format_author(a: str) -> str:
     from app.services.normalizer import normalize_orthography
 
     s = normalize_orthography(re.sub(r"\s+", " ", a).strip())
+    # Звания с титула («Д-ръ Вармингъ», «проф. Иванов») к имени не относятся.
+    s = re.sub(r"(?<![А-Яа-яЁё])(?:д-р|доктор|проф|профессор|акад|академик)\b\.?\s*", "", s, flags=re.I).strip(" ,")
     s = re.sub(r"\b([А-ЯЁA-Z])\.\s+(?=[А-ЯЁA-Z]\.)", r"\1.", s)
     s = re.sub(r"\b([А-ЯЁ])([А-ЯЁ]{2,})\b", lambda m: m.group(1) + m.group(2).lower(), s)
     tail = ""
