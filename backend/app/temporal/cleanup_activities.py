@@ -552,12 +552,19 @@ async def genus_assembly_activity() -> dict:
 
 
 # Ядовитость комнатных растений лежит в своей таблице по латыни вида или рода (см.
-# houseplant_cards.py). Предикат для карточки p: совпал вид, совпал род у записи на
-# уровне рода, или карточка сама родовая и запись о любом виде этого рода.
+# houseplant_cards.py). Предикат для карточки p: совпал вид; совпал род у записи на
+# уровне рода; или у карточки латынь только из рода (родовая карточка или «Гиппеаструм»
+# с латынью Hippeastrum), и запись о любом виде этого рода.
 _HOUSEPLANT_TOX = """(
     lower(btrim(h.taxon_latin)) = lower(btrim(split_part(p.name_latin, ' ', 1) || ' ' || split_part(p.name_latin, ' ', 2)))
     OR (position(' ' in btrim(h.taxon_latin)) = 0 AND lower(btrim(h.taxon_latin)) = lower(split_part(p.name_latin, ' ', 1)))
-    OR (p.rank = 'genus' AND lower(split_part(h.taxon_latin, ' ', 1)) = lower(split_part(p.name_latin, ' ', 1))))"""
+    OR ((p.rank = 'genus' OR position(' ' in btrim(coalesce(p.name_latin, ''))) = 0)
+        AND lower(split_part(h.taxon_latin, ' ', 1)) = lower(split_part(p.name_latin, ' ', 1))))"""
+
+# Очерк карточки (plant_reader_monograph) сам предупреждает о ядовитости: такой
+# карточке быстрый уровень «нет сигналов» ставить нельзя, решает модель по тексту.
+_MONO_TOX = """EXISTS (SELECT 1 FROM plant_reader_monograph m
+    WHERE m.plant_id = p.id AND (m.monograph->>'is_toxic') = 'true')"""
 
 
 @activity.defn
@@ -587,7 +594,8 @@ async def edible_safety_activity() -> dict:
                 EXISTS (SELECT 1 FROM plant_toxicities t WHERE t.plant_id = p.id)
                 OR EXISTS (SELECT 1 FROM plant_culinary_uses c WHERE c.plant_id = p.id
                            AND lower(btrim(c.edibility)) IN ('ядовито', 'ядовит'))
-                OR EXISTS (SELECT 1 FROM houseplant_toxicity h WHERE h.latin_verified AND """ + _HOUSEPLANT_TOX + """))"""))).rowcount
+                OR EXISTS (SELECT 1 FROM houseplant_toxicity h WHERE h.latin_verified AND """ + _HOUSEPLANT_TOX + """)
+                OR """ + _MONO_TOX + """)"""))).rowcount
         inedible = (await db.execute(text("""
             UPDATE plants p SET safety_level = NULL
             WHERE p.safety_level = 1 AND p.safety_rationale LIKE '[auto]%'
@@ -609,6 +617,9 @@ async def edible_safety_activity() -> dict:
                 house = (await db.execute(text(
                     "SELECT h.severity, h.parts, h.symptoms, h.quote FROM houseplant_toxicity h, plants p "
                     "WHERE p.id = :p AND h.latin_verified AND " + _HOUSEPLANT_TOX), {"p": pid})).all()
+                mono = (await db.execute(text(
+                    "SELECT m.monograph->'cautions'->>'text' AS t FROM plant_reader_monograph m "
+                    "WHERE m.plant_id = :p AND jsonb_typeof(m.monograph->'cautions') = 'object'"), {"p": pid})).scalar()
                 med = (await db.execute(text(
                     "SELECT count(*) FROM plant_medicinal_uses WHERE plant_id=:p"), {"p": pid})).scalar()
             data = {"name": p.name, "name_latin": p.name_latin, "family": p.family,
@@ -617,7 +628,8 @@ async def edible_safety_activity() -> dict:
                         f"[книга о комнатных растениях] {h.quote or h.symptoms or ''}"
                         + (f" (опасные части: {', '.join(h.parts) if isinstance(h.parts, list) else h.parts})"
                            if h.parts else "")
-                        for h in house if (h.quote or h.symptoms)],
+                        for h in house if (h.quote or h.symptoms)] + (
+                        [f"[предупреждение из очерка карточки] {mono}"] if mono else []),
                     "has_medicinal": bool(med)}
             try:
                 res = await asyncio.wait_for(classify_safety(data), timeout=90)
@@ -635,7 +647,8 @@ async def edible_safety_activity() -> dict:
             rows = (await db.execute(text("""
                 SELECT p.id::text, p.name_latin,
                   (SELECT count(*) FROM plant_toxicities t WHERE t.plant_id=p.id)
-                  + (SELECT count(*) FROM houseplant_toxicity h WHERE h.latin_verified AND """ + _HOUSEPLANT_TOX + """) ntox,
+                  + (SELECT count(*) FROM houseplant_toxicity h WHERE h.latin_verified AND """ + _HOUSEPLANT_TOX + """)
+                  + (CASE WHEN """ + _MONO_TOX + """ THEN 1 ELSE 0 END) ntox,
                   (SELECT string_agg(DISTINCT lower(btrim(c.edibility)), '|')
                    FROM plant_culinary_uses c WHERE c.plant_id=p.id AND c.edibility IS NOT NULL) edi
                 FROM plants p
