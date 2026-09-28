@@ -210,7 +210,7 @@ _TEXT_PROMPT = """Перед тобой распознанный текст пе
 
 Если год распознан с искажением, например «Донецк—1 $66», напиши год, который там напечатан, и поставь ocr_garbled: true.
 
-Автор это тот, кто написал или составил книгу, как указано на титуле. Рецензенты, редакторы серии и переводчики автором не считаются. Если на титуле есть только составитель или ответственный редактор, укажи его и допиши «(сост.)» или «(ред.)». Пиши в виде «Фамилия И.О.». Несколько авторов перечисли через запятую, а если их больше трёх, назови первых трёх и допиши «и др.». Фамилии пиши в современной орфографии: «Фроловъ» становится «Фролов».
+Автор это тот, кто написал или составил книгу, как указано на титуле. Рецензенты, редакторы серии и переводчики автором не считаются. Если на титуле есть только составитель или ответственный редактор, укажи его и допиши «(сост.)» или «(ред.)». Пиши в виде «Фамилия И.О.». Несколько авторов перечисли через запятую, а если их больше трёх, назови первых трёх и допиши «и др.». Фамилии пиши в современной орфографии: «Фроловъ» становится «Фролов». Инициалы пиши только те, что напечатаны: если на титуле полное имя без отчества («Надежда Стогова»), пиши «Стогова Н.», отчество не додумывай. Фамилию переписывай так, как она распознана, не исправляй её по другим местам книги.
 
 Для года и для автора приведи дословный фрагмент распознанного текста, в котором они стоят, и номер страницы. Фрагмент копируй как есть, вместе с ошибками распознавания.
 
@@ -223,7 +223,7 @@ _SCAN_PROMPT = """Это сканы первых страниц книги (ти
 
 Год обычно стоит внизу титула рядом с городом, на обороте титула рядом со знаком © или в выходных данных на последней странице («Подписано в печать», тираж). Годы из рекламы других книг и из основного текста не бери.
 
-Автор это тот, кто написал или составил книгу. Пиши в виде «Фамилия И.О.» в современной орфографии.
+Автор это тот, кто написал или составил книгу. Пиши в виде «Фамилия И.О.» в современной орфографии. Инициалы пиши только те, что напечатаны: если напечатано полное имя без отчества («Надежда Стогова»), пиши «Стогова Н.», отчество не додумывай.
 
 Если года или автора на картинках не видно, верни null.
 
@@ -387,10 +387,35 @@ def surnames(author: str) -> list[str]:
         if not part:
             continue
         # «Губергриц А.Я.» и «А.Я. Губергриц»: фамилия это самое длинное слово без точки.
-        words = [w for w in re.findall(r"[А-Яа-яЁёA-Za-z-]+\.?", part) if not w.endswith(".")]
+        words = [w for w in re.findall(r"[А-Яа-яЁёѢѣІіѲѳѴѵA-Za-z-]+\.?", part) if not w.endswith(".")]
         if words:
             out.append(max(words, key=len))
     return out
+
+
+def format_author(a: str) -> str:
+    """Единый вид имени: современная орфография, инициалы без пробела («П.С.»),
+    фамилия не капсом, не больше трёх авторов, дальше «и др.»."""
+    from app.services.normalizer import normalize_orthography
+
+    s = normalize_orthography(re.sub(r"\s+", " ", a).strip())
+    s = re.sub(r"\b([А-ЯЁA-Z])\.\s+(?=[А-ЯЁA-Z]\.)", r"\1.", s)
+    s = re.sub(r"\b([А-ЯЁ])([А-ЯЁ]{2,})\b", lambda m: m.group(1) + m.group(2).lower(), s)
+    tail = ""
+    if re.search(r"\bи др\.?\s*$", s):
+        s, tail = re.sub(r",?\s*\bи др\.?\s*$", "", s), " и др."
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if len(parts) > 3:
+        parts, tail = parts[:3], " и др."
+    return ", ".join(parts) + tail
+
+
+def _same_surname(a: str, b: str) -> bool:
+    sa, sb = surnames(a), surnames(b)
+    if not sa or not sb:
+        return True
+    x, y = normalize(sa[0]), normalize(sb[0])
+    return fuzz.ratio(x, y) >= 90
 
 
 def author_grounded(author: str, corpus_norm: str) -> bool:
@@ -413,10 +438,24 @@ class Decision:
     reasons: list[str] = field(default_factory=list)
 
 
-def text_year_ok(tres: dict, corpus_norm: str) -> bool:
+def page_text(bp: BookPages | None, n: int | None) -> str | None:
+    if bp is None or n is None:
+        return None
+    return next((t for p, t in bp.head + bp.tail if p == n), None)
+
+
+def text_year_ok(tres: dict, corpus_norm: str, bp: BookPages | None = None) -> bool:
+    """Год из текста доказан: он стоит цифрами в цитате, а цитата есть в тексте. Короткую
+    цитату вроде «1991» можно найти где угодно, поэтому её подтверждает только та
+    страница, которую назвала модель."""
     ty = _int(tres.get("year"))
-    return bool(ty and not tres.get("ocr_garbled") and grounded(tres.get("year_quote"), corpus_norm)
-                and year_in(tres.get("year_quote"), ty))
+    quote = tres.get("year_quote")
+    if not (ty and not tres.get("ocr_garbled") and year_in(quote, ty)):
+        return False
+    if len(normalize(quote or "")) < 12:
+        page = page_text(bp, _int(tres.get("year_page")))
+        return bool(page) and grounded(quote, normalize(page))
+    return grounded(quote, corpus_norm)
 
 
 def decide(bp: BookPages, sig: dict, tres: dict, vres: dict, corpus_norm: str) -> Decision:
@@ -428,8 +467,11 @@ def decide(bp: BookPages, sig: dict, tres: dict, vres: dict, corpus_norm: str) -
         ty, vy = _int(tres.get("year")), _int(vres.get("year"))
         tconf, vconf = _conf(tres.get("confidence")), _conf(vres.get("confidence"))
         conf = 0.0
-        if text_year_ok(tres, corpus_norm):
+        if text_year_ok(tres, corpus_norm, bp):
             d.year, d.year_source, conf = ty, "text", tconf
+            if vy and vy != ty:
+                conf = 0.0
+                d.reasons.append(f"в тексте год {ty}, а на скане читается {vy}")
         elif vy:
             if ty and ty != vy:
                 d.year, d.year_source, conf = vy, "scan", 0.0
@@ -491,6 +533,8 @@ def decide(bp: BookPages, sig: dict, tres: dict, vres: dict, corpus_norm: str) -
     if author_empty(bp.author):
         ta = author_ok(tres.get("author"))
         va = author_ok(vres.get("author"))
+        ta = format_author(ta) if ta else None
+        va = format_author(va) if va else None
         cand: str | None = None
         found, conf = False, 0.0
         if ta:
@@ -499,6 +543,11 @@ def decide(bp: BookPages, sig: dict, tres: dict, vres: dict, corpus_norm: str) -
             cand, d.author_source, conf = ta, "text", _conf(tres.get("confidence"))
             quote = tres.get("author_quote")
             found = grounded(quote, corpus_norm) and author_grounded(ta, normalize(quote or ""))
+            if va and not _same_surname(ta, va):
+                # Распознавание исказило фамилию («Чинов» вместо «Чиков»): предлагаем
+                # прочитанное со скана, решает человек.
+                d.reasons.append(f"в тексте фамилия автора «{surnames(ta)[0]}», на скане «{surnames(va)[0]}»")
+                cand, d.author_source, found = va, "scan", False
         elif va:
             # Автор со скана титула: модель прочитала его с картинки, а в тексте страниц
             # должна найтись хотя бы фамилия.
@@ -595,11 +644,14 @@ def _title(title: str, pending: dict, applied: dict | None, auto_left: bool) -> 
         todo.append(f"год {y}" + (" (откроет книгу целиком)" if y <= OPEN_UNTIL_YEAR else ""))
     if "author" in pending:
         todo.append(f"автор {pending['author']}")
+    def written(items: list[str]) -> str:
+        return ("записаны " if len(items) > 1 else "записан ") + " и ".join(items)
+
     if todo:
-        verb = "предложены" if auto_left else "проверить"
-        return f"{name}: {verb} " + " и ".join(todo) + (f"; записаны {' и '.join(done)}" if done else "")
+        verb = ("предложены" if len(todo) > 1 else "предложен") if auto_left else "проверить"
+        return f"{name}: {verb} " + " и ".join(todo) + (f"; {written(done)}" if done else "")
     if done:
-        return f"{name}: записаны " + " и ".join(done)
+        return f"{name}: {written(done)}"
     return f"{name}: год и автор не найдены на первых и последних страницах"
 
 
@@ -689,11 +741,9 @@ async def process_book(book_id: str, apply: bool) -> dict:
     corpus_norm = normalize(bp.corpus())
     tres = await ask_text(bp)
     vres: dict = {}
-    # Скан читаем, когда год в тексте не найден дословно, и всегда, когда найденный год
-    # откроет книгу целиком: такой год должен подтвердиться титулом.
-    ty = _int(tres.get("year"))
-    if bp.year is None and bp.scan_pages and (
-            not text_year_ok(tres, corpus_norm) or (ty is not None and ty <= OPEN_UNTIL_YEAR)):
+    # Скан титула читаем у каждой книги, где он есть: он подтверждает год (обязательно,
+    # если год откроет книгу целиком) и ловит фамилии, искажённые распознаванием.
+    if bp.scan_pages and (bp.year is None or author_empty(bp.author)):
         vres = await ask_scan(bp)
     dec = decide(bp, sig, tres, vres, corpus_norm)
     applied: dict | None = None
