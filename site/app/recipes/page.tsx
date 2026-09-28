@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Header, Footer } from "../ui";
 import { Empty, Pager } from "../../components/common";
-import { fmtInt, getJson, isUuid, plantHref, pluralRu } from "../../lib/api";
+import { fmtInt, getJson, isUuid, plantHref, pluralRu, titleYear } from "../../lib/api";
 
 type BookName = { title: string; year?: number | null };
 import {
@@ -42,9 +42,9 @@ function parseState(sp: SP): { state: CatalogState; page: number } {
 
 const KIND_H1: Record<string, string> = {
   medicinal: "Лечебные рецепты из книг",
-  food: "Рецепты еды и напитков из книг",
-  cosmetic: "Косметика по рецептам из книг",
-  other: "Прочие домашние рецепты из книг",
+  food: "Кулинарные рецепты из книг",
+  cosmetic: "Косметические рецепты из книг",
+  other: "Другие домашние рецепты из книг",
 };
 const KIND_DESC: Record<string, string> = {
   medicinal: "Настои, отвары, сборы, мази и капли из травников и лечебников с книгой и годом у каждого рецепта. Это история применения, а не медицинский совет.",
@@ -71,20 +71,21 @@ export async function generateMetadata({ searchParams }: { searchParams: SP }): 
     return pageMeta({ title: KIND_H1[state.kind], description: KIND_DESC[state.kind], path: `/recipes?kind=${state.kind}` });
   }
   const plant = state.plant_id ? await getPlantName(state.plant_id) : null;
+  // «Пошаговые лечебные рецепты, вид «настой», по запросу «кашель»»: без двоеточия-склейки.
+  const adj = [state.step ? "пошаговые" : null, state.kind ? KIND_FACET_RU[state.kind].toLowerCase() : null].filter(Boolean).join(" ");
+  const head = adj ? `${adj[0].toUpperCase()}${adj.slice(1)} рецепты` : "Рецепты";
   const parts = [
-    state.kind ? KIND_FACET_RU[state.kind].toLowerCase() : null,
-    state.category,
-    state.domain ? DOMAIN_RU[state.domain].toLowerCase() : null,
-    state.step ? "пошаговые" : null,
+    state.category ? `вид «${state.category}»` : null,
+    state.domain ? `раздел «${DOMAIN_RU[state.domain]}»` : null,
     state.plant_id ? `с растением ${plant?.name ? inSentence(plant.name) : "из атласа"}` : null,
     state.book_id ? "из одной книги" : null,
-    state.q ? `«${state.q}»` : null,
+    state.q ? `по запросу «${state.q}»` : null,
   ].filter(Boolean);
   // qs() собирает адрес через URLSearchParams, кириллица в нём уже закодирована.
   const base = catalogHref(state);
   const self = page > 1 ? `${base}${base.includes("?") ? "&" : "?"}page=${page}` : base;
   return pageMeta({
-    title: `Рецепты${parts.length ? `: ${parts.join(", ")}` : ""}${page > 1 ? `, страница ${page}` : ""}`,
+    title: `${head}${parts.length ? `, ${parts.join(", ")}` : ""}${page > 1 ? `, страница ${page}` : ""}`,
     description: "Домашние рецепты из травников и кулинарных книг с книгой, годом и дословным текстом.",
     path: self,
     index: false,
@@ -157,7 +158,7 @@ export default async function RecipesPage({ searchParams }: { searchParams: SP }
             <div className="card card-soft card-tight rc-banner">
               <span>
                 Рецепты из книги{" "}
-                <b><Link href={`/library/${state.book_id}`}>{book?.title ? `«${book.title}»${book.year ? `, ${book.year}` : ""}` : "из библиотеки"}</Link></b>
+                <b><Link href={`/library/${state.book_id}`}>{book?.title ? titleYear(`«${book.title}»`, book.year) : "в библиотеке"}</Link></b>
               </span>
               <Link href={catalogHref(state, { book_id: undefined })} className="btn btn-ghost btn-sm">Снять фильтр</Link>
             </div>

@@ -3,7 +3,7 @@
 import { Chips, MONTHS_GEN_RU, MONTHS_RU, PhotoCredit } from "../common";
 import { fmtInt, pluralRu } from "../../lib/api";
 import { biotopeLabel } from "../../lib/api-atlas";
-import { OBS_PLACE_RU, mediumPhoto, type FieldView, type Observations, type SpeciesCard } from "../../lib/api-plant";
+import { OBS_PLACE_RU, canonParts, mediumPhoto, type FieldView, type Observations, type SpeciesCard } from "../../lib/api-plant";
 import { Block, FactList } from "./bits";
 
 const MONTHS_PREP = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле", "августе", "сентябре", "октябре", "ноябре", "декабре"];
@@ -18,7 +18,7 @@ function dateRu(iso?: string | null): string | null {
 
 export function HarvestBlock({ card, field }: { card: SpeciesCard; field: FieldView | null }) {
   const h = field?.harvest ?? null;
-  const parts = (h?.parts ?? []).filter(Boolean);
+  const parts = Array.from(new Set((h?.parts ?? []).filter(Boolean).flatMap((p) => canonParts(p))));
   const seasons = (h?.seasons ?? []).filter(Boolean);
   const where = (h?.where ?? []).filter(Boolean);
   const hasSummary = parts.length || seasons.length || where.length;
@@ -81,7 +81,7 @@ function InatPanel({ obs }: { obs: Observations }) {
       {max > 0 ? (
         <div className="pc-season" role="img" aria-label={"Наблюдения по месяцам. " + months.map((n, i) => `${MONTHS_RU[i]} ${n}`).join(", ")}>
           {months.map((n, i) => (
-            <div key={i} className="pc-season-col" title={`${MONTHS_RU[i]}: ${fmtInt(n)}`}>
+            <div key={i} className="pc-season-col" title={`В ${MONTHS_PREP[i]} ${fmtInt(n)} ${pluralRu(n, "наблюдение", "наблюдения", "наблюдений")}`}>
               <div className="pc-season-track">
                 <div className={"pc-season-bar" + (i === peak ? " peak" : "")} style={{ height: `${n ? Math.max(4, Math.round((n / max) * 100)) : 0}%` }} />
               </div>
@@ -107,11 +107,11 @@ function InatPanel({ obs }: { obs: Observations }) {
         </div>
       ) : null}
       <p className="credit">
-        Данные iNaturalist
+        Наблюдения и снимки взяты из iNaturalist.
         {obs.taxon_id ? (
           <>
-            {", "}
-            <a href={`https://www.inaturalist.org/taxa/${obs.taxon_id}`} target="_blank" rel="noopener">страница вида на iNaturalist</a>
+            {" "}
+            <a href={`https://www.inaturalist.org/taxa/${obs.taxon_id}`} target="_blank" rel="noopener">Открыть страницу вида на iNaturalist</a>
           </>
         ) : null}
       </p>

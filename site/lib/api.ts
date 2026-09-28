@@ -80,6 +80,22 @@ export function parsePlantSlug(slug: string): { uuid?: string; tail?: string } {
   return m ? { tail: m[1].toLowerCase() } : {};
 }
 
+/** Назначение рецепта. Чип у одного рецепта согласован со словом «рецепт»: «лечебный».
+ *  У «других» рецептов чипа нет, слово ничего не сообщает. */
+export const RECIPE_KIND_ONE: Record<string, string> = { medicinal: "лечебный", food: "кулинарный", cosmetic: "косметический" };
+/** Назначение в фильтре списка рецептов: «лечебные». */
+export const RECIPE_KIND_MANY: Record<string, string> = { medicinal: "лечебные", food: "кулинарные", cosmetic: "косметические", other: "другие" };
+/** Назначение внутри строки через запятую: «настойка, лечебный рецепт». */
+export const recipeKindPhrase = (k?: string | null): string | null => (k && RECIPE_KIND_ONE[k] ? `${RECIPE_KIND_ONE[k]} рецепт` : null);
+
+/** Автор книги для показа. «Неизвестен» в этом поле значит, что автора нет. */
+export const realAuthor = (a?: string | null): string | null => (a && !/^(автор\s+)?неизвест/i.test(a.trim()) ? a : null);
+
+/** «Название, 1962». Год не повторяем, если он уже стоит в названии: «Атлас… (1962)». */
+export function titleYear(title: string, year?: number | null): string {
+  return year && !title.includes(String(year)) ? `${title}, ${year}` : title;
+}
+
 export function pluralRu(n: number, one: string, few: string, many: string): string {
   const m100 = n % 100, m10 = n % 10;
   if (m100 >= 11 && m100 <= 14) return many;

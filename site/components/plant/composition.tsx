@@ -25,7 +25,7 @@ function GroupCard({ g }: { g: CompoundGroup }) {
                   <span key={j}>
                     {j > 0 ? "; " : null}
                     {s.bookId ? <Link href={`/library/${s.bookId}`}>{s.book}</Link> : s.book}
-                    {s.year ? `, ${s.year}` : ""}
+                    {s.year && !(s.book ?? "").includes(String(s.year)) ? `, ${s.year}` : ""}
                   </span>
                 ))}
                 {it.sourcesTotal > it.sources.length ? ` и ещё ${nBooksGenPlain(it.sourcesTotal - it.sources.length)}` : ""}

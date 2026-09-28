@@ -43,7 +43,7 @@ function MentionRow({ m }: { m: MentionBook }) {
   return (
     <li>
       {m.bookId ? <Link href={`/library/${m.bookId}`}>«{m.book}»</Link> : <span>«{m.book}»</span>}
-      {m.year ? `, ${m.year}` : ""}
+      {m.year && !m.book.includes(String(m.year)) ? `, ${m.year}` : ""}
       {m.names.length ? <span>, в книге названо {m.names.map((n) => `«${n}»`).join(", ")}</span> : null}
       {m.pages.length ? (
         <span className="muted">
@@ -118,7 +118,7 @@ function SourceRow({ s }: { s: SourceBook }) {
   return (
     <li>
       {s.bookId ? <Link href={`/library/${s.bookId}`}>{s.book}</Link> : <span>{s.book}</span>}
-      {s.year ? `, ${s.year}` : ""}
+      {s.year && !s.book.includes(String(s.year)) ? `, ${s.year}` : ""}
       {counts.length ? <span className="muted">, {counts.join(" и ")}</span> : null}
       {s.pages.length ? (
         <div className="small muted">

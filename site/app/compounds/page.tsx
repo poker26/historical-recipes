@@ -57,7 +57,7 @@ function TermList({ items, showClass }: { items: (CompoundLite & { cls?: string 
       {items.map((c, i) => (
         <li key={i}>
           <a href={`/compounds/${c.id}`}>{c.name}</a>
-          {showClass && c.cls ? <span className="muted"> · {c.cls.replace(/_/g, " ")}</span> : null}
+          {showClass && c.cls ? <span className="muted"> ({c.cls.replace(/_/g, " ")})</span> : null}
           <span className="n">{fmtInt(c.linked_facts)}</span>
         </li>
       ))}

@@ -6,7 +6,7 @@ import { Crumbs, Empty, SectionHead, Tile } from "../../../components/common";
 import { BookCover } from "../../../components/library/BookCover";
 import { markQuery } from "../../../components/library/highlight";
 import { HighlightedText } from "../../../components/library/HighlightedText";
-import { SITE_URL, excerpt, fmtInt, isUuid, plantHref, pluralRu } from "../../../lib/api";
+import { SITE_URL, excerpt, fmtInt, isUuid, plantHref, pluralRu, titleYear } from "../../../lib/api";
 import {
   ACCESS_CHIP, accessNote, domainLabel, firstReadablePage, getBook, param, recipeMeta, recipesTotal, searchBook,
   type BookDetail,
@@ -30,7 +30,7 @@ function plantTile(p: BookDetail["top_plants"][number]) {
       meta={[
         `${fmtInt(p.mentions)} ${pluralRu(p.mentions, "упоминание", "упоминания", "упоминаний")}`,
         p.uses ? `${fmtInt(p.uses)} ${pluralRu(p.uses, "применение", "применения", "применений")}` : null,
-      ].filter(Boolean).join(" · ")}
+      ].filter(Boolean).join(", ")}
       tags={p.kingdom === "гриб" ? [{ label: "гриб" }] : undefined}
     />
   );
@@ -61,8 +61,8 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
   if (!r.data) return { title: "Книга", robots: { index: false } };
   const b = r.data;
   const url = `${SITE_URL}/library/${b.id}`;
-  const title = `${b.title}${b.year ? ", " + b.year : ""}`;
-  const who = [b.author, `«${b.title}»`, b.year].filter(Boolean).join(", ");
+  const title = titleYear(b.title, b.year);
+  const who = [b.author, titleYear(`«${b.title}»`, b.year)].filter(Boolean).join(", ");
   const line = extractedLine(b);
   const description =
     `${who}. ` +
@@ -114,11 +114,11 @@ export default async function BookPage({ params, searchParams }: Props) {
   const recipes = recipesTotal(b);
 
   const stats = [
-    { n: b.plants, cap: pluralRu(b.plants, "растение", "растения", "растений") + " в атласе" },
+    { n: b.plants, cap: pluralRu(b.plants, "растение", "растения", "растений") },
     { n: b.uses, cap: pluralRu(b.uses, "цитата", "цитаты", "цитат") + " о применении" },
     { n: recipes, cap: pluralRu(recipes, "рецепт", "рецепта", "рецептов") },
     { n: b.home_recipes, cap: pluralRu(b.home_recipes, "домашний рецепт", "домашних рецепта", "домашних рецептов") },
-    { n: b.anchored_facts, cap: pluralRu(b.anchored_facts, "цитата", "цитаты", "цитат") + " можно открыть на странице книги" },
+    { n: b.anchored_facts, cap: pluralRu(b.anchored_facts, "цитата", "цитаты", "цитат") + " с номером страницы" },
   ].filter((x) => x.n > 0);
 
   const pagesLine = b.pages > 1

@@ -4,6 +4,16 @@ import { Header, Footer } from "../ui";
 import { Crumbs, Empty, Pager } from "../../components/common";
 import { fmtInt, plantHref, pluralRu, qs } from "../../lib/api";
 import { OILS_PAGE, cap, getOils } from "../../lib/api-reference";
+import { canonParts } from "../../lib/api-plant";
+
+/** Часть растения одной формой: «цвет», «цветы» → «цветки». */
+const partLabel = (s?: string | null): string | null => {
+  const parts = Array.from(new Set(canonParts(s)));
+  return parts.length ? parts.join(", ") : s || null;
+};
+/** В базе способ получения обрезан на 60 знаках: обрезанный показываем с многоточием. */
+const cutLabel = (s?: string | null): string | null =>
+  s ? (s.length >= 60 && !/[.)»]$/.test(s) ? `${s.trimEnd()}…` : s) : null;
 import { pageMeta } from "../../components/reference/meta";
 import "../reference/reference.css";
 
@@ -43,7 +53,7 @@ export default async function OilsPage({ searchParams }: { searchParams: SP }) {
 
       <section className="hero-grad rf-hero">
         <span className="chip">Эфирные масла</span>
-        <h1>Эфирные масла</h1>
+        <h1>Эфирные масла и растения, из которых их получают</h1>
         <p className="lead">
           {data && !q ? `В справочнике ${fmtInt(total)} ${pluralRu(total, "масло", "масла", "масел")}. ` : ""}
           Для каждого видно, из какого растения и какой части его получают, каким способом и
@@ -91,8 +101,8 @@ export default async function OilsPage({ searchParams }: { searchParams: SP }) {
                       ? <Link href={plantHref(o.plant_id, o.plant_name_latin)}>{o.plant_name}</Link>
                       : o.plant_name || <span className="muted">—</span>}
                   </td>
-                  <td data-label="Часть">{o.part || <span className="muted">—</span>}</td>
-                  <td data-label="Как получают">{o.extraction || <span className="muted">—</span>}</td>
+                  <td data-label="Часть">{partLabel(o.part) || <span className="muted">—</span>}</td>
+                  <td data-label="Как получают">{cutLabel(o.extraction) || <span className="muted">—</span>}</td>
                   <td data-label="Записей о применении">{fmtInt(o.uses_count || 0)}</td>
                 </tr>
               ))}

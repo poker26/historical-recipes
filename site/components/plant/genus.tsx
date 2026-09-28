@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Tile } from "../common";
 import { fmtInt, plantHref, pluralRu } from "../../lib/api";
-import { capFirst, displayName, photoSourceOf, type GenusCard, type Photo, type PlantSummary } from "../../lib/api-plant";
+import { capFirst, displayName, photoSourceOf, recipeMeta, type GenusCard, type Photo, type PlantSummary } from "../../lib/api-plant";
 import { Block, More } from "./bits";
 import { PlantHead, SafetyPanel, Toc } from "./head";
 import { ActionLink, IndicationsLine } from "./uses";
@@ -145,7 +145,7 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
             {card.recipes.slice(0, 6).map((r) => (
               <Link key={r.id} href={`/recipe/${r.id}`} className="card card-tight pc-recipe">
                 <b>{r.name}</b>
-                <div className="small muted">{[r.category, r.book ? `«${r.book}»` : null, r.year].filter(Boolean).join(", ")}</div>
+                <div className="small muted">{recipeMeta(r)}</div>
               </Link>
             ))}
           </div>
@@ -155,7 +155,7 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
                 {card.recipes.slice(6).map((r) => (
                   <Link key={r.id} href={`/recipe/${r.id}`} className="card card-tight pc-recipe">
                     <b>{r.name}</b>
-                    <div className="small muted">{[r.category, r.book ? `«${r.book}»` : null, r.year].filter(Boolean).join(", ")}</div>
+                    <div className="small muted">{recipeMeta(r)}</div>
                   </Link>
                 ))}
               </div>

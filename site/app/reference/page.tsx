@@ -62,7 +62,7 @@ export default async function ReferencePage() {
 
       <section className="hero-grad rf-hero">
         <span className="chip">Справочники</span>
-        <h1>Справочники</h1>
+        <h1>Действия растений, болезни и вещества</h1>
         <p className="lead">
           В старых книгах болезни называют по-своему, и справочник связывает такие имена с
           современными. Водянка ведёт к отёкам, грудная жаба к стенокардии, поэтому по старому и
@@ -175,7 +175,8 @@ export default async function ReferencePage() {
         <SectionHead title="Где растут" />
         <p className="section-lead">
           Лес, луг, болото и степь это места, где книги и наблюдения находят растения. Число
-          показывает, сколько видов атласа связано с каждым местом.
+          показывает, сколько видов связывают с каждым местом книги и наблюдения, считая виды
+          без фотографии.
         </p>
         {bioGroups.length ? (
           <div className="rf-biotopes">

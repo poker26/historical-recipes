@@ -3,9 +3,8 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { Header, Footer } from "../ui";
 import { Empty, LeafGlyph, SectionHead } from "../../components/common";
-import { SITE_URL, excerpt, fmtInt, plantHref, pluralRu } from "../../lib/api";
+import { SITE_URL, excerpt, fmtInt, plantHref, pluralRu, realAuthor, recipeKindPhrase, titleYear } from "../../lib/api";
 import {
-  RECIPE_KIND_RU,
   cleanFragment,
   conditionPhrase,
   creditShort,
@@ -149,7 +148,7 @@ async function Fragments({ q }: { q: string }) {
       <div className="srch-frags">
         {items.map((h) => {
           const p = h.payload!;
-          const source = [p.author, p.book_title].filter(Boolean).join(". ") + (p.year ? `, ${p.year}` : "");
+          const source = titleYear([realAuthor(p.author), p.book_title].filter(Boolean).join(". "), p.year);
           return (
             <Link key={h.id} href={`/library/${p.book_id}`} className="card card-tight srch-frag">
               {p.title ? <b>{p.title}</b> : null}
@@ -325,12 +324,12 @@ export default async function SearchPage({ searchParams }: Props) {
           <div className="srch-recipes">
             {recipes.items.map((r) => {
               const year = r.book_year ?? r.year;
-              const source = [r.book_author, r.book_title].filter(Boolean).join(". ") + (year ? `, ${year}` : "");
+              const source = titleYear([realAuthor(r.book_author), r.book_title].filter(Boolean).join(". "), year);
               return (
                 <Link key={r.id} href={`/recipe/${r.id}`} className="card card-tight srch-recipe">
                   <b>{r.name || "Рецепт без названия"}</b>
                   <div className="small muted">
-                    {[r.category, r.recipe_kind ? RECIPE_KIND_RU[r.recipe_kind] ?? r.recipe_kind : null].filter(Boolean).join(", ")}
+                    {[r.category, recipeKindPhrase(r.recipe_kind)].filter(Boolean).join(", ")}
                   </div>
                   {r.excerpt ? <p className="small">{excerpt(r.excerpt, 170)}</p> : null}
                   {source ? <div className="small muted">{source}</div> : null}
@@ -356,7 +355,7 @@ export default async function SearchPage({ searchParams }: Props) {
               return (
                 <Link key={b.id} href={`/library/${b.id}`} className="card card-tight srch-book">
                   <b>{b.title}</b>
-                  <div className="small muted">{[b.author, b.year].filter(Boolean).join(", ") || "автор и год пока не указаны"}</div>
+                  <div className="small muted">{[realAuthor(b.author), b.year].filter(Boolean).join(", ") || "автор и год пока не указаны"}</div>
                   {stats ? <div className="small muted">{stats}</div> : null}
                   {b.access === "open" ? <span className="chip chip-leaf">можно читать целиком</span> : null}
                 </Link>

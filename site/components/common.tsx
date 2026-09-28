@@ -4,6 +4,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { creditShort } from "../lib/api-atlas";
+import { realAuthor } from "../lib/api";
 
 /** Лист-заглушка для карточек без фотографии. */
 export function LeafGlyph() {
@@ -94,8 +95,9 @@ export type SourceRefProps = {
 export function SourceRef({ book, bookId, year, author, page, hl }: SourceRefProps) {
   if (!book && !bookId) return null;
   // «Соловьёв П.В.» + «. » давало двойную точку: хвостовую точку автора снимаем.
-  const who = author ? author.replace(/[.\s]+$/, "") : null;
-  const label = [who, book].filter(Boolean).join(". ") + (year ? `, ${year}` : "");
+  const who = realAuthor(author) ? author!.replace(/[.\s]+$/, "") : null;
+  // Год бывает уже в названии: «Атлас лекарственных растений СССР (1962)».
+  const label = [who, book].filter(Boolean).join(". ") + (year && !(book ?? "").includes(String(year)) ? `, ${year}` : "");
   const bookHref = bookId ? `/library/${bookId}` : null;
   const pageHref = bookId && page ? `/library/${bookId}/p/${page}${hl ? `?hl=${encodeURIComponent(hl)}#hl` : ""}` : null;
   return (

@@ -5,14 +5,18 @@ import Link from "next/link";
 import { Empty, LeafGlyph, Quote } from "../common";
 import { excerpt, fmtInt, plantHref, pluralRu } from "../../lib/api";
 import { FACT_KIND_RU, recipeMeta, type BookPage, type FactKind, type PageFact } from "../../lib/api-library";
+import { canonParts } from "../../lib/api-plant";
 
 const KIND_ORDER: FactKind[] = ["use", "culinary", "harvest", "habitat", "toxicity", "mention"];
 const KIND_CHIP: Partial<Record<FactKind, string>> = { toxicity: "chip-danger", mention: "chip-mist" };
 
+/** «ранозаживляющее (кора)»: в подписи бывают свои запятые, поэтому часть растения в скобках. */
 function factDetail(f: PageFact): string {
-  const part = Array.isArray(f.part) ? f.part.filter(Boolean).join(", ") : f.part;
+  const raw = Array.isArray(f.part) ? f.part.filter(Boolean).join(", ") : f.part;
+  const part = Array.from(new Set(canonParts(raw))).join(", ") || raw || "";
   if (f.kind === "mention") return f.label ? `в книге названо «${f.label}»` : "";
-  return [f.label, part].filter(Boolean).join(" · ");
+  if (f.label && part) return `${f.label} (${part})`;
+  return f.label || part;
 }
 
 export function PageFacts({ data, hl, found, hlInText }: { data: BookPage; hl?: string; found: Set<string>; hlInText: boolean }) {

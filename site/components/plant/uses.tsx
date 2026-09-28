@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Fragment } from "react";
 import { Quote, SourceRef } from "../common";
 import { fmtInt, pluralRu } from "../../lib/api";
-import { bookIdFor, capFirst, quoteOf, type FieldView, type SpeciesCard, type UseGroup } from "../../lib/api-plant";
+import { bookIdFor, capFirst, quoteOf, ruQuotes, type FieldView, type SpeciesCard, type UseGroup } from "../../lib/api-plant";
 import { Block, CiteView, FactList, IndicationLink, More, moreQuotesLabel, nBooksDat, nBooksGen, nQuotes } from "./bits";
 
 function paragraphs(s: string): string[] {
@@ -86,7 +86,7 @@ export function IndicationsLine({ items, links = 5 }: { items: string[]; links?:
           <IndicationLink name={name} />
         </span>
       ))}
-      {plain.length ? `${linked.length ? ", " : ""}${plain.join(", ")}` : null}
+      {plain.length ? `${linked.length ? ", " : ""}${plain.map(ruQuotes).join(", ")}` : null}
       </span>
     </p>
   );
@@ -138,7 +138,7 @@ function GroupFull({ g }: { g: UseGroup }) {
       ) : null}
       {g.preparations.length ? (
         <p className="pc-line">
-          <span className="pc-label">Как готовили</span><span>{g.preparations.join("; ")}</span>
+          <span className="pc-label">Как готовили</span><span>{g.preparations.join(", ")}</span>
         </p>
       ) : null}
       {open.map((c, i) => (

@@ -2,7 +2,7 @@
 // Классы доступа (RFC §8.1): open — книга свободна, страницы листаются целиком;
 // cited — год неизвестен или книга охраняется: только номер страницы, ссылка и
 // фрагменты, уже разобранные в атлас; closed — только карточка книги.
-import { ApiError, getJson, getJsonStrict, getRaw, qs } from "./api";
+import { ApiError, getJson, getJsonStrict, getRaw, qs, realAuthor } from "./api";
 
 export type Access = "open" | "cited" | "closed";
 
@@ -102,14 +102,14 @@ export const FACT_KIND_RU: Record<FactKind, string> = {
 };
 
 export const RECIPE_KIND_RU: Record<string, string> = {
-  medicinal: "лечебное",
-  food: "еда",
-  cosmetic: "косметика",
+  medicinal: "лечебный рецепт",
+  food: "кулинарный рецепт",
+  cosmetic: "косметический рецепт",
   fragment: "фрагмент",
   monograph: "статья о растении",
 };
 
-/** Форма и назначение рецепта одной строкой: «отвар, лечебное». Назначение «прочее» ничего не
+/** Форма и назначение рецепта одной строкой: «отвар, лечебный рецепт». Назначение «другое» ничего не
  *  добавляет к форме, его не пишем. */
 export function recipeMeta(category: string | null, kind: string | null): string {
   const k = kind && kind !== "other" ? RECIPE_KIND_RU[kind] ?? kind : null;
@@ -158,12 +158,21 @@ export type ShelfQuery = { q?: string; domain?: string; era?: string; access?: s
 
 export const SHELF_LIMIT = 60;
 
-export const getBooks = (f: ShelfQuery, offset = 0, limit = SHELF_LIMIT) =>
-  getJson<{ total: number; items: BookItem[] }>(
+function withAuthor<T extends { author: string | null }>(b: T): T {
+  return { ...b, author: realAuthor(b.author) };
+}
+
+/** «Неизвестен. Полный целебный травник, 1871.» → «Полный целебный травник, 1871.» */
+const cleanCitation = (c: string | null | undefined): string => (c ?? "").replace(/^(автор\s+)?неизвест[а-яё]*\.\s*/i, "");
+
+export async function getBooks(f: ShelfQuery, offset = 0, limit = SHELF_LIMIT) {
+  const r = await getJson<{ total: number; items: BookItem[] }>(
     `/library/books${qs({ q: f.q, domain: f.domain, era: f.era, access: f.access, scans: f.scans ? "true" : undefined, sort: f.sort, limit, offset })}`,
     1800,
     15000,
   );
+  return r ? { ...r, items: (r.items ?? []).map(withAuthor) } : r;
+}
 
 /** Сколько книг под одним фильтром (для счётчиков в фасетах): total при limit=1. */
 export async function countBooks(f: ShelfQuery): Promise<number | null> {
@@ -174,10 +183,17 @@ export async function countBooks(f: ShelfQuery): Promise<number | null> {
   return r ? r.total : null;
 }
 
-export const getBook = (id: string) => fetchWithStatus<BookDetail>(`/library/books/${id}`, 3600, 20000);
+export async function getBook(id: string): Promise<Fetched<BookDetail>> {
+  const r = await fetchWithStatus<BookDetail>(`/library/books/${id}`, 3600, 20000);
+  if (r.data === null) return r;
+  return { data: { ...withAuthor(r.data), citation: cleanCitation(r.data.citation) }, status: 200 };
+}
 
-export const getBookPage = (id: string, n: number) =>
-  fetchWithStatus<BookPage>(`/library/books/${id}/pages/${n}`, 3600, 20000);
+export async function getBookPage(id: string, n: number): Promise<Fetched<BookPage>> {
+  const r = await fetchWithStatus<BookPage>(`/library/books/${id}/pages/${n}`, 3600, 20000);
+  if (r.data === null) return r;
+  return { data: { ...r.data, book: withAuthor(r.data.book), citation: cleanCitation(r.data.citation) }, status: 200 };
+}
 
 export const searchBook = (id: string, q: string, limit = 20) =>
   getJson<BookSearch>(`/library/books/${id}/search${qs({ q, limit })}`, 600, 15000);

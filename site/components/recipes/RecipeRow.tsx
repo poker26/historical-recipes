@@ -2,11 +2,11 @@
 // Карточка не одна ссылка: внутри ссылки на рецепт, на форму и на книгу.
 import Link from "next/link";
 import { SourceRef } from "../common";
-import { excerpt } from "../../lib/api";
+import { excerpt, titleYear } from "../../lib/api";
 import { KIND_CHIP_RU, recipeTitle, recipeYear, refAuthor, type RecipeBrief } from "../../lib/api-recipes";
 
 export function RecipeRow({ r }: { r: RecipeBrief }) {
-  const kind = r.recipe_kind ? KIND_CHIP_RU[r.recipe_kind] ?? r.recipe_kind : null;
+  const kind = r.recipe_kind ? KIND_CHIP_RU[r.recipe_kind] ?? null : null;
   return (
     <article className="card card-tight rc-row">
       <h3 className="rc-row-title">
@@ -30,7 +30,7 @@ export function RecipeMini({ r }: { r: RecipeBrief }) {
     <Link href={`/recipe/${r.id}`} className="card card-tight rc-mini">
       <b>{recipeTitle(r.name)}</b>
       <span className="small muted">
-        {[r.category, r.book_title ? `«${r.book_title}»${year ? `, ${year}` : ""}` : null].filter(Boolean).join(", ")}
+        {[r.category, r.book_title ? titleYear(`«${r.book_title}»`, year) : null].filter(Boolean).join(", ")}
       </span>
     </Link>
   );

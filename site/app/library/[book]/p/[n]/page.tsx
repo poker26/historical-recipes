@@ -91,7 +91,7 @@ export default async function SourcePage({ params, searchParams }: Props) {
   }
   const hlInText = !!hl && found.has(hl);
   const titles = new Map<string, string>([
-    ...d.facts.map((f): [string, string] => [f.id, `${f.plant_name}: ${FACT_KIND_RU[f.kind] ?? f.kind}`]),
+    ...d.facts.map((f): [string, string] => [f.id, `«${f.plant_name}», ${FACT_KIND_RU[f.kind] ?? f.kind}`]),
     ...d.recipes.map((rc): [string, string] => [rc.id, `рецепт «${rc.name ?? "без названия"}»`]),
   ]);
   const imgBase = `/library/${bookId}/p/${n}/image.jpg`;
@@ -131,7 +131,7 @@ export default async function SourcePage({ params, searchParams }: Props) {
                   <figure className="scan-img lib-scan-fig">
                     <a href={`${imgBase}?size=full`} title="Открыть скан крупно">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={`${imgBase}?size=medium`} alt={`Скан страницы ${n}: ${book.title}`} decoding="async" />
+                      <img src={`${imgBase}?size=medium`} alt={`Скан страницы ${n} книги «${book.title}»`} decoding="async" />
                     </a>
                     <figcaption className="small">
                       <span>Скан страницы {n}</span>

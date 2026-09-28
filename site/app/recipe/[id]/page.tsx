@@ -92,7 +92,7 @@ export default async function RecipePage({ params }: Params) {
   const original = (r.original_text || "").trim();
   const modern = (r.normalized_text || "").trim();
   const showModern = !!modern && modern !== original;
-  const kind = r.recipe_kind ? KIND_CHIP_RU[r.recipe_kind] ?? r.recipe_kind : null;
+  const kind = r.recipe_kind ? KIND_CHIP_RU[r.recipe_kind] ?? null : null;
   const source = { book: r.book_title, author: refAuthor(r.book_author), year, bookId: r.book_id, page: r.source_page };
   const mainName = main ? inSentence(main.plant_name || main.name || "") : "";
 

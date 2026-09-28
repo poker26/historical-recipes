@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Quote, SourceRef, type SafetyLevel } from "../common";
 import { fmtInt, pluralRu } from "../../lib/api";
-import type { Cite, Fact, FactSet, SafetyInfo } from "../../lib/api-plant";
+import { ruQuotes, type Cite, type Fact, type FactSet, type SafetyInfo } from "../../lib/api-plant";
 
 export function Block({ id, title, lead, children }: { id: string; title: string; lead?: ReactNode; children: ReactNode }) {
   return (
@@ -109,7 +109,7 @@ export function safetyText(s: SafetyInfo | null | undefined): string | null {
 export function IndicationLink({ name }: { name: string }) {
   return (
     <Link href={`/atlas/for/${encodeURIComponent(name.toLowerCase())}`} className="pc-ind">
-      {name}
+      {ruQuotes(name)}
     </Link>
   );
 }

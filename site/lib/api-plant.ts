@@ -311,16 +311,17 @@ export function splitList(s: string | null | undefined): string[] {
 // Части растения в записях книг пишутся по-разному: «лист», «листья», «листьев».
 // Для показа сводим их к одной форме, иначе строка «Части растения» состоит из повторов.
 const PART_CANON: [RegExp, string][] = [
-  [/^листь?[яеввы]*$|^листочк|^листок$|^лист$/, "листья"],
+  [/^лист/, "листья"],
   [/^соцвети/, "соцветия"],
-  [/^цвет(ы|ки|ков|ок|)$|^цветк/, "цветки"],
-  [/^сем(я|ена|ян)$/, "семена"],
-  [/^корн(и|ей)$|^корень$/, "корни"],
+  [/^цвет(ы|ки|ков|ок|ах|ами|)$|^цветк/, "цветки"],
+  [/^сем(я|ен|ян)/, "семена"],
+  [/^корн(и|ей|ях|ями|ям)$|^корень$|^корешк/, "корни"],
   [/^корневищ/, "корневища"],
-  [/^трав(а|у|ы)$/, "трава"],
-  [/^плод(ы|ов|)$/, "плоды"],
-  [/^кор(а|у|ы)$/, "кора"],
+  [/^трав(а|у|ы|е)$/, "трава"],
+  [/^плод(ы|ов|ах|)$/, "плоды"],
+  [/^кор(а|у|ы|е)$/, "кора"],
   [/^стебл|^стебел/, "стебли"],
+  [/^надземн/, "надземная часть"],
   [/^почк/, "почки"],
   [/^ягод/, "ягоды"],
   [/^побег/, "побеги"],
@@ -329,14 +330,17 @@ const PART_CANON: [RegExp, string][] = [
   [/^сок$/, "сок"],
   [/^вс[её] растение$/, "всё растение"],
 ];
-const PART_DROP = /^(сырь[её]|сырьё растения|растение)$/;
+// Способ приготовления или вещество в поле «часть» оказываются по ошибке распознавания.
+const PART_DROP = /^(сырь[её]|сырь[её] растения|растение|экстракт|порошок|настой|настойка|отвар|препараты|хлорофилл|масло)$/;
+// «свежие листья», «в семенах»: состояние сырья и предлог к части растения не относятся.
+const PART_PREFIX = /^(в\s+)?((свеж|молод|сух|высушенн|сушен|зел[её]н|измельченн)\S*\s+)?/;
 
 /** Части из поля записи: «корневища и корни, листьев» → ["корневища", "корни", "листья"]. */
 export function canonParts(s: string | null | undefined): string[] {
   const out: string[] = [];
   for (const raw of splitList(s)) {
     for (const piece of raw.split(/\s+и\s+/)) {
-      const p = piece.trim().toLowerCase().replace(/ё/g, "е");
+      const p = piece.trim().toLowerCase().replace(/ё/g, "е").replace(PART_PREFIX, "");
       if (!p || PART_DROP.test(p)) continue;
       const hit = PART_CANON.find(([rx]) => rx.test(p));
       out.push(hit ? hit[1] : piece.trim());
@@ -358,6 +362,7 @@ const PREP_CANON: [RegExp, string][] = [
   [/^ванны$/, "ванна"],
   [/^мази$/, "мазь"],
   [/^порошки$/, "порошок"],
+  [/^(свеж(ая|ий|ие|ее|ем виде)|в свежем виде)$/, "в свежем виде"],
 ];
 const PREP_DROP = /^(внутрь|наружно|препараты|сырь[её])$/;
 
@@ -371,6 +376,20 @@ export function canonPreps(s: string | null | undefined): string[] {
     out.push(hit ? hit[1] : p);
   }
   return out;
+}
+
+/** Прямые кавычки из распознанного текста показываем ёлочками: «стоячее дыхание». */
+export function ruQuotes(s: string): string {
+  return s.replace(/"([^"]+)"/g, "«$1»");
+}
+
+/** Подпись рецепта под названием: вид, книга, год. Категория «другое» ничего не сообщает,
+ *  год не повторяем, если он уже стоит в названии книги. */
+export function recipeMeta(r: { category?: string | null; book?: string | null; year?: number | null }): string {
+  const cat = r.category && !/^(другое|прочее)$/i.test(r.category.trim()) ? r.category : null;
+  const book = r.book ? `«${r.book}»` : null;
+  const year = r.year && !(r.book ?? "").includes(String(r.year)) ? r.year : null;
+  return [cat, book, year].filter(Boolean).join(", ");
 }
 
 class Uniq {
@@ -672,7 +691,7 @@ function buildSpecies(raw: RawPlant): SpeciesCard {
     compoundGroupsTotal: cg.total,
     compoundsTotal: cg.items,
     harvests: buildFacts(harvests, (h) => [
-      { label: "Часть", value: clean(h.part) },
+      { label: "Часть", value: canonParts(h.part).join(", ") || clean(h.part) },
       { label: "Когда", value: clean(h.season) },
       { label: "Как", value: clean(h.method) },
     ]),
@@ -683,7 +702,7 @@ function buildSpecies(raw: RawPlant): SpeciesCard {
     ]),
     culinary: buildFacts(culinary, (c) => [
       { label: "Съедобность", value: clean(c.edibility) },
-      { label: "Часть", value: clean(c.part) },
+      { label: "Часть", value: canonParts(c.part).join(", ") || clean(c.part) },
       { label: "Как едят", value: clean(c.use) },
       { label: "Как готовят", value: clean(c.preparation) },
       { label: "Когда", value: clean(c.season) },
@@ -805,7 +824,6 @@ export const getFieldViewStrict = cache(async (id: string): Promise<{ state: "ok
 
 export const RECIPE_KINDS = ["medicinal", "food", "cosmetic", "other"] as const;
 export type RecipeKind = (typeof RECIPE_KINDS)[number];
-export const KIND_RU: Record<string, string> = { medicinal: "лечебное", food: "еда", cosmetic: "косметика", other: "прочее" };
 export const normKind = (k?: string | string[] | null): RecipeKind | null => {
   const v = Array.isArray(k) ? k[0] : k;
   return v && (RECIPE_KINDS as readonly string[]).includes(v) ? (v as RecipeKind) : null;

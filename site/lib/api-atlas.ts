@@ -438,7 +438,6 @@ export const EDIBILITY_OPTIONS: { value: string; label: string; param: "edible" 
   { value: "ядовито", label: "ядовито", param: "edibility", paramValue: "ядовито" },
 ];
 
-export const RECIPE_KIND_RU: Record<string, string> = { medicinal: "лечебное", food: "еда", cosmetic: "косметика", other: "прочее" };
 
 /** Частые запросы «растения при…», те же, что на главной. */
 export const POPULAR_CONDITIONS = ["кашель", "отёки", "бессонница", "раны", "желудок", "простуда", "ревматизм", "головная боль"];

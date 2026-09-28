@@ -39,7 +39,7 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   return pageMeta({
     title: `Что растёт ${biotopeWhere(b.key)}`,
     description:
-      `${fmtInt(b.count)} ${pluralRu(b.count, "вид", "вида", "видов")} атласа, которые книги и наблюдения находят ${biotopeWhere(b.key)}. ` +
+      `Виды атласа, которые книги и наблюдения находят ${biotopeWhere(b.key)}. ` +
       (BIOTOPE_GROUP_TEXT[b.group] ?? ""),
     path: biotopeHref(b.key),
   });
@@ -92,7 +92,7 @@ export default async function BiotopePage({ params }: Params) {
       {siblings.length ? (
         <section className="section">
           <SectionHead title="Похожие места" href="/reference#biotopes" more="все биотопы" />
-          <p className="section-lead">Число рядом с местом показывает, сколько видов атласа с ним связано.</p>
+          <p className="section-lead">Число рядом с местом показывает, сколько видов связывают с ним книги и наблюдения, считая виды без фотографии.</p>
           <div className="chips rf-chips">
             {siblings.map((s) => (
               <Link key={s.key} href={biotopeHref(s.key)} className="chip chip-leaf">

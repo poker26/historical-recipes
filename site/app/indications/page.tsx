@@ -54,7 +54,7 @@ function IndicationList({ items }: { items: IndicationTerm[] }) {
       {items.map((i, n) => (
         <li key={n}>
           <a href={`/indications/${i.id}`}>{i.name}</a>
-          {i.name_modern && !sameTerm(i.name_modern, i.name) ? <span className="muted"> · {i.name_modern}</span> : null}
+          {i.name_modern && !sameTerm(i.name_modern, i.name) ? <span className="muted">, по-современному {i.name_modern}</span> : null}
           <span className="n">{fmtInt(i.linked_facts)}</span>
         </li>
       ))}

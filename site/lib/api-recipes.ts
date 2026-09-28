@@ -2,7 +2,7 @@
 // Список отдаёт общее число совпадений в заголовке X-Total-Count, поэтому здесь свой
 // fetch поверх базового API, а не getJson: пейджеру нужно знать, сколько всего страниц.
 import { cache } from "react";
-import { API, ApiError, getJson, getJsonStrict, qs } from "./api";
+import { API, ApiError, RECIPE_KIND_ONE, getJson, getJsonStrict, qs, realAuthor } from "./api";
 
 /** GET → { data, total } или null при ошибке. total берётся из X-Total-Count. */
 export async function getJsonTotal<T>(path: string, revalidate = 600, timeoutMs = 15000): Promise<{ data: T; total: number | null } | null> {
@@ -31,9 +31,9 @@ export const KINDS = ["medicinal", "food", "cosmetic", "other"] as const;
 export type RecipeKind = (typeof KINDS)[number];
 export const DOMAINS = ["recipes", "herbalism", "fungi"] as const;
 
-/** Подписи фасетов (множественное число) и чипов строки (как на главной). */
-export const KIND_FACET_RU: Record<string, string> = { medicinal: "Лечебные", food: "Еда", cosmetic: "Косметика", other: "Прочее" };
-export const KIND_CHIP_RU: Record<string, string> = { medicinal: "лечебное", food: "еда", cosmetic: "косметика", other: "прочее" };
+/** Подписи фасетов (множественное число, «рецепты») и чипов строки («рецепт»). */
+export const KIND_FACET_RU: Record<string, string> = { medicinal: "Лечебные", food: "Кулинарные", cosmetic: "Косметические", other: "Другие" };
+export const KIND_CHIP_RU: Record<string, string> = RECIPE_KIND_ONE;
 export const DOMAIN_RU: Record<string, string> = { recipes: "Кулинарные книги", herbalism: "Травники", fungi: "Книги о грибах" };
 export const ERA_RU: Record<string, string> = { pre1917: "до 1917 года", soviet: "в советских книгах", modern: "в современных", unknown: "без года издания" };
 
@@ -151,7 +151,7 @@ export function recipeTitle(name?: string | null): string {
 
 /** SourceRef склеивает автора и книгу через «. », поэтому точку в конце автора
  *  («Соловьёв П.В.») убираем, иначе получится «П.В.. Домашний лечебник». */
-export const refAuthor = (a?: string | null) => (a ? a.replace(/[.\s]+$/, "") || null : null);
+export const refAuthor = (a?: string | null) => (realAuthor(a) ? a!.replace(/[.\s]+$/, "") || null : null);
 
 /** Имя карточки внутри фразы: «Аконит» → «аконит»; латинские имена не трогаем. */
 export const inSentence = (n: string) => (/^[А-ЯЁ][а-яё]/.test(n) ? n.charAt(0).toLowerCase() + n.slice(1) : n);

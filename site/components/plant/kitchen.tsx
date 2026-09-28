@@ -1,14 +1,14 @@
 // Кулинария и что приготовить, затем «с чем сочетают» по совместным рецептам.
 import Link from "next/link";
 import { Tile } from "../common";
-import { excerpt, fmtInt, plantHref, pluralRu } from "../../lib/api";
-import { KIND_RU, displayName, type FieldView, type Pairings, type PlantRecipes, type RecipeKind, type SpeciesCard } from "../../lib/api-plant";
+import { RECIPE_KIND_MANY, RECIPE_KIND_ONE, excerpt, fmtInt, plantHref, pluralRu } from "../../lib/api";
+import { displayName, recipeMeta, type FieldView, type Pairings, type PlantRecipes, type RecipeKind, type SpeciesCard } from "../../lib/api-plant";
 
 const KIND_NONE: Record<string, string> = {
   medicinal: "Лечебных рецептов",
-  food: "Рецептов еды и напитков",
+  food: "Кулинарных рецептов",
   cosmetic: "Косметических рецептов",
-  other: "Прочих рецептов",
+  other: "Других рецептов",
 };
 import { Block, FactList } from "./bits";
 
@@ -22,7 +22,7 @@ export function KitchenBlock({
   base: string;
 }) {
   const items = recipes?.items ?? [];
-  const kinds = (recipes?.kinds ?? []).filter((k) => KIND_RU[k]);
+  const kinds = (recipes?.kinds ?? []).filter((k) => RECIPE_KIND_MANY[k]);
   const total = Math.max(field?.recipes_total ?? 0, card.recipesRawTotal);
   const hasCulinary = card.culinary.total > 0;
   const hasRecipes = items.length > 0 || total > 0 || !!kind;
@@ -44,7 +44,7 @@ export function KitchenBlock({
               <Link href={`${base}#kitchen`} className={"chip " + (kind ? "chip-leaf" : "chip-lime")}>все</Link>
               {kinds.map((k) => (
                 <Link key={k} href={`${base}?kind=${k}#kitchen`} className={"chip " + (kind === k ? "chip-lime" : "chip-leaf")}>
-                  {KIND_RU[k]}
+                  {RECIPE_KIND_MANY[k]}
                 </Link>
               ))}
             </nav>
@@ -55,9 +55,9 @@ export function KitchenBlock({
                 <Link key={r.id} href={`/recipe/${r.id}`} className="card card-tight pc-recipe">
                   <div className="pc-recipe-head">
                     <b>{r.name}</b>
-                    {r.kind && KIND_RU[r.kind] ? <span className="chip chip-leaf">{KIND_RU[r.kind]}</span> : null}
+                    {r.kind && RECIPE_KIND_ONE[r.kind] ? <span className="chip chip-leaf">{RECIPE_KIND_ONE[r.kind]}</span> : null}
                   </div>
-                  <div className="small muted">{[r.category, r.book ? `«${r.book}»` : null, r.year].filter(Boolean).join(", ")}</div>
+                  <div className="small muted">{recipeMeta(r)}</div>
                   {r.text ? <p className="small pc-recipe-text">{excerpt(r.text, 240)}</p> : null}
                 </Link>
               ))}

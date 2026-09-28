@@ -3,6 +3,8 @@ import Link from "next/link";
 import { Tile } from "../common";
 import { fmtInt, plantHref, pluralRu } from "../../lib/api";
 import { cap, type PlantSummary } from "../../lib/api-reference";
+import { displayName } from "../../lib/api-atlas";
+import { canonParts } from "../../lib/api-plant";
 
 /** Метки безопасности на плитке: те же слова, что на главной. Молчание источников не метим. */
 export function plantTags(p: PlantSummary): { label: string; warn?: boolean }[] {
@@ -27,7 +29,8 @@ export function PlantGrid({ plants }: { plants: PlantSummary[] }) {
         <Tile
           key={p.id}
           href={plantHref(p.id, p.name_latin)}
-          name={p.name}
+          name={displayName(p.name)}
+          title={p.name !== displayName(p.name) ? p.name : null}
           latin={p.name_latin}
           photo={p.photo_url}
           meta={metaFor(p)}
@@ -42,6 +45,9 @@ type NamedPlant = { id: string; name: string; name_latin?: string | null; parts?
 
 const CYR = /^[А-ЯЁа-яё]/;
 
+/** Части растения одной формой: «лист», «листья» и «листьев» дают одно «листья». */
+const partsOf = (p: NamedPlant): string[] => Array.from(new Set((p.parts ?? []).flatMap((x) => canonParts(x))));
+
 /** Хвост списка: растения, которых нет среди плиток. Сначала русские имена, потом латинские. */
 export function PlantNameList({ items, max = 150 }: { items: NamedPlant[]; max?: number }) {
   const sorted = [...items]
@@ -54,8 +60,8 @@ export function PlantNameList({ items, max = 150 }: { items: NamedPlant[]; max?:
       <ul className="rf-names">
         {shown.map((p) => (
           <li key={p.id}>
-            <Link href={plantHref(p.id, p.name_latin)}>{p.name}</Link>
-            {p.parts?.length ? <span className="muted small"> · {p.parts.slice(0, 3).join(", ")}</span> : null}
+            <Link href={plantHref(p.id, p.name_latin)}>{displayName(p.name)}</Link>
+            {partsOf(p).length ? <span className="muted small"> ({partsOf(p).slice(0, 3).join(", ")})</span> : null}
           </li>
         ))}
       </ul>

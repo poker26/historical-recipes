@@ -40,7 +40,7 @@ function headline(name: string): { h1: string; title: string } {
   const p = pluralAdj(name);
   return p
     ? { h1: `${cap(p)} растения`, title: `${cap(p)} растения по книгам` }
-    : { h1: `Действие «${name}»`, title: `Действие «${name}»: растения по книгам` };
+    : { h1: `Действие «${name}»`, title: `Растения с действием «${name}» по книгам` };
 }
 
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
@@ -53,8 +53,7 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   return pageMeta({
     title: headline(name).title,
     description:
-      `Растения, которым книги приписывают действие «${name}»${modern ? ` (по-современному ${modern})` : ""}` +
-      `${canon ? `, всего ${fmtInt(canon.count)} ${pluralRu(canon.count, "вид", "вида", "видов")}` : ""}. ` +
+      `Растения, которым книги приписывают действие «${name}»${modern ? ` (по-современному ${modern})` : ""}. ` +
       "У каждого вида есть цитаты из книг с годом и страницей.",
     path: `/actions/${encodeURIComponent(name)}`,
     // В индекс идут 60 канонических действий; остальные термины словаря открываются по ссылке.
@@ -102,9 +101,9 @@ export default async function ActionPage({ params }: Params) {
         <span className="chip">Действие растений</span>
         <h1>{h1}</h1>
         <p className="lead">
-          {canon
-            ? `Книги называют действие «${name}» у ${fmtInt(canon.count)} ${pluralRu(canon.count, "растения", "растений", "растений")}. Первыми идут виды атласа, о применении которых записей больше всего.`
-            : `Растения, которым книги приписывают действие «${name}». Первыми идут виды атласа, о применении которых записей больше всего.`}
+          {/* Число видов стоит в заголовке списка ниже. Счётчик словаря сюда не берём: он считает
+              только это написание, а список включает и старые названия, и числа расходились. */}
+          {`Растения, которым книги приписывают действие «${name}». Сюда входят и записи со старыми названиями этого действия. Первыми идут виды атласа, о применении которых записей больше всего.`}
         </p>
         {modern || sys || parent ? (
           <dl className="kv rf-facts">

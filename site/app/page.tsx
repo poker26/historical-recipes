@@ -3,7 +3,7 @@ import Link from "next/link";
 import { getEther, getLeaderboard } from "./lib";
 import { Header, Footer, DownloadButtons, LeaderTable, EtherRow } from "./ui";
 import { Tile, SectionHead, LeafGlyph, MONTHS_PREP_RU } from "../components/common";
-import { fmtInt, plantHref, pluralRu, excerpt } from "../lib/api";
+import { RECIPE_KIND_ONE, fmtInt, plantHref, pluralRu, excerpt, realAuthor, titleYear } from "../lib/api";
 import { REGIONS, regionBySlug } from "../lib/regions";
 import { getSeasonal, getKitchen, getLibraryStats, getOpenBooks, getCorpusCounts, creditLine } from "../lib/api-home";
 import "./home.css";
@@ -33,7 +33,7 @@ const POPULAR: [string, string][] = [
   ["ревматизм", "при ревматизме"],
   ["головная боль", "при головной боли"],
 ];
-const KIND_RU: Record<string, string> = { medicinal: "лечебное", food: "еда", cosmetic: "косметика", other: "прочее" };
+const KIND_RU: Record<string, string> = RECIPE_KIND_ONE;
 
 function weekOfYear(d = new Date()): number {
   const start = new Date(d.getFullYear(), 0, 1);
@@ -183,7 +183,7 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
                   </div>
                 </div>
                 {r.text ? <p className="small" style={{ margin: "8px 0 0", color: "#3f4a43" }}>{excerpt(r.text, 150)}</p> : null}
-                <div className="small muted" style={{ marginTop: 6 }}>{[r.book, r.year].filter(Boolean).join(", ")}</div>
+                <div className="small muted" style={{ marginTop: 6 }}>{r.book ? titleYear(r.book, r.year) : r.year}</div>
               </Link>
             ))}
           </div>
@@ -209,7 +209,7 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
             <div>
               <div className="chip chip-leaf">можно читать целиком</div>
               <h3 style={{ fontSize: 24, margin: "10px 0 4px" }}>{bookOfWeek.title}</h3>
-              <div className="muted">{[bookOfWeek.author, bookOfWeek.year].filter(Boolean).join(", ")}</div>
+              <div className="muted">{[realAuthor(bookOfWeek.author), bookOfWeek.year].filter(Boolean).join(", ")}</div>
               <p style={{ margin: "12px 0 0", color: "#3f4a43" }}>
                 В книге {fmtInt(bookOfWeek.pages)} {pluralRu(bookOfWeek.pages, "страница", "страницы", "страниц")}.
                 {" "}Из неё в атлас вошли {fmtInt(bookOfWeek.plants)} {pluralRu(bookOfWeek.plants, "растение", "растения", "растений")}
