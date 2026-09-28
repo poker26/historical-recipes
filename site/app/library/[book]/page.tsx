@@ -58,16 +58,16 @@ function tocTitles(b: BookDetail): string[] {
 export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
   if (!isUuid(params.book)) return { title: "Книга не найдена", robots: { index: false } };
   const r = await getBook(params.book);
-  if (!r.data) return { title: "Книга · Библиотека", robots: { index: false } };
+  if (!r.data) return { title: "Книга", robots: { index: false } };
   const b = r.data;
   const url = `${SITE_URL}/library/${b.id}`;
-  const title = `${b.title}${b.year ? ", " + b.year : ""} · Библиотека`;
+  const title = `${b.title}${b.year ? ", " + b.year : ""}`;
   const who = [b.author, `«${b.title}»`, b.year].filter(Boolean).join(", ");
   const line = extractedLine(b);
   const description =
     `${who}. ` +
-    (line ? `Из книги в атлас попали ${line}. ` : "") +
-    (b.access === "open" ? "Страницы книги можно листать целиком." : "Показываем номера страниц и фрагменты, разобранные в атлас.");
+    (line ? `Из книги в атлас вошли ${line}. ` : "") +
+    (b.access === "open" ? "Страницы книги можно листать целиком." : "Открыты номера страниц и цитаты, которые вошли в атлас.");
   return {
     title,
     description,
@@ -94,7 +94,7 @@ export default async function BookPage({ params, searchParams }: Props) {
         <Header active="/library" />
         <Crumbs items={[{ href: "/library", label: "Библиотека" }, { label: "Книга" }]} />
         <Empty>
-          Книга сейчас не загрузилась: библиотека не отвечает. Обнови страницу через минуту или вернись
+          Книга сейчас не загрузилась, библиотека не отвечает. Обнови страницу через минуту или вернись
           на <Link href="/library">полку</Link>.
         </Empty>
         <Footer />
@@ -118,7 +118,7 @@ export default async function BookPage({ params, searchParams }: Props) {
     { n: b.uses, cap: pluralRu(b.uses, "цитата", "цитаты", "цитат") + " о применении" },
     { n: recipes, cap: pluralRu(recipes, "рецепт", "рецепта", "рецептов") },
     { n: b.home_recipes, cap: pluralRu(b.home_recipes, "домашний рецепт", "домашних рецепта", "домашних рецептов") },
-    { n: b.anchored_facts, cap: pluralRu(b.anchored_facts, "факт", "факта", "фактов") + " с найденной страницей" },
+    { n: b.anchored_facts, cap: pluralRu(b.anchored_facts, "цитата", "цитаты", "цитат") + " можно открыть на странице книги" },
   ].filter((x) => x.n > 0);
 
   const pagesLine = b.pages > 1
@@ -172,7 +172,7 @@ export default async function BookPage({ params, searchParams }: Props) {
                 <Link href={`/library/${b.id}/p/${first}`} className="btn btn-primary">Читать с первой страницы</Link>
                 {b.busiest_pages[0] && b.busiest_pages[0].page !== first ? (
                   <Link href={`/library/${b.id}/p/${b.busiest_pages[0].page}`} className="btn btn-ghost">
-                    Самая насыщенная страница, {b.busiest_pages[0].page}
+                    Открыть страницу, где больше всего цитат
                   </Link>
                 ) : null}
               </div>
@@ -187,29 +187,29 @@ export default async function BookPage({ params, searchParams }: Props) {
 
             <blockquote className="quote lib-citation">
               <div className="quote-text">{b.citation}</div>
-              <span className="source">так ссылаться на книгу</span>
+              <span className="source">Так можно сослаться на эту книгу.</span>
             </blockquote>
           </div>
         </section>
 
         {q && !closed ? (
           <section className="block" id="search">
-            <h2>Поиск по книге: «{q}»</h2>
+            <h2>Поиск по книге, запрос «{q}»</h2>
             {q.length < 3 ? (
               <p className="muted">Напиши хотя бы три буквы, чтобы искать по страницам.</p>
             ) : !search ? (
               <Empty>Поиск сейчас не отвечает. Попробуй ещё раз через минуту.</Empty>
             ) : !search.hits.length ? (
               <Empty>
-                На страницах этой книги «{q}» не нашлось. Поиск идёт по распознанному тексту, поэтому старое
-                написание может мешать: попробуй начало слова, например «ромашк» вместо «ромашка».
+                На страницах этой книги «{q}» не нашлось. Поиск идёт по распознанному тексту, и старое
+                написание может мешать. Попробуй начало слова, например «ромашк» вместо «ромашка».
               </Empty>
             ) : (
               <>
                 <p className="section-lead">
                   {open
                     ? `Нашлось на ${fmtInt(search.hits.length)} ${pluralRu(search.hits.length, "странице", "страницах", "страницах")}${search.hits.length >= 20 ? ", показаны первые 20" : ""}.`
-                    : `Текст страниц этой книги мы не показываем, поэтому здесь только номера страниц, где встречается «${q}»${search.hits.length >= 20 ? ", первые 20" : ""}.`}
+                    : `Текст страниц этой книги закрыт, поэтому видны только номера страниц, где встречается «${q}»${search.hits.length >= 20 ? ", первые 20" : ""}.`}
                 </p>
                 <ul className="lib-hits">
                   {search.hits.map((h) => (
@@ -227,7 +227,7 @@ export default async function BookPage({ params, searchParams }: Props) {
         ) : null}
 
         <section className="block">
-          <h2>Что извлечено из книги</h2>
+          <h2>Что из книги вошло в атлас</h2>
           {stats.length ? (
             <div className="lib-stats">
               {stats.map((s) => (
@@ -238,7 +238,7 @@ export default async function BookPage({ params, searchParams }: Props) {
               ))}
             </div>
           ) : (
-            <Empty>Из этой книги в атлас пока ничего не разобрано.</Empty>
+            <Empty>Из этой книги в атлас пока ничего не вошло.</Empty>
           )}
         </section>
 
@@ -266,8 +266,8 @@ export default async function BookPage({ params, searchParams }: Props) {
             <SectionHead title="Рецепты из книги" href={`/recipes?book_id=${b.id}`} more="все домашние рецепты книги" />
             <p className="section-lead">
               {b.recipes.length < recipes
-                ? `В книге ${fmtInt(recipes)} ${pluralRu(recipes, "рецепт", "рецепта", "рецептов")}, здесь ${fmtInt(b.recipes.length)}: сначала те, что можно повторить дома.`
-                : "Рецепты этой книги: сначала те, что можно повторить дома."}
+                ? `В книге ${fmtInt(recipes)} ${pluralRu(recipes, "рецепт", "рецепта", "рецептов")}. Здесь показаны ${fmtInt(b.recipes.length)}, первыми идут те, что можно повторить дома.`
+                : "Первыми идут рецепты, которые можно повторить дома."}
             </p>
             <ul className="lib-list">
               {b.recipes.map((rc) => (
@@ -304,16 +304,16 @@ export default async function BookPage({ params, searchParams }: Props) {
 
         {b.busiest_pages.length && !closed ? (
           <section className="block">
-            <h2>Самые насыщенные страницы</h2>
+            <h2>Страницы, где больше всего цитат</h2>
             <p className="section-lead">
               {open
-                ? "Страницы, с которых в атлас попало больше всего фактов. С них удобно начать чтение."
-                : "Страницы, с которых в атлас попало больше всего фактов. На каждой собраны фрагменты, уже разобранные в атлас."}
+                ? "С этих страниц в атлас вошло больше всего цитат. С них удобно начать чтение."
+                : "С этих страниц в атлас вошло больше всего цитат. У каждой открыты цитаты, которые есть в карточках растений."}
             </p>
             <div className="lib-pages">
               {b.busiest_pages.map((p) => (
                 <Link key={p.page} href={`/library/${b.id}/p/${p.page}`} className="chip chip-leaf">
-                  стр. {p.page} · {fmtInt(p.facts)} {pluralRu(p.facts, "факт", "факта", "фактов")}
+                  стр. {p.page}, {fmtInt(p.facts)} {pluralRu(p.facts, "цитата", "цитаты", "цитат")}
                 </Link>
               ))}
             </div>

@@ -119,8 +119,8 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
   const title = `Растения ${d.phrase}`;
   const description = d.total
     ? d.isAction
-      ? `${fmtInt(d.total)} ${speciesWord(d.total)} с фотографиями, у которых травники и справочники отмечают ${x.toLowerCase()} действие: цитаты из книг, безопасность и рецепты. Это история применения, а не медицинский совет.`
-      : `Какие растения применяли ${d.phrase} по травникам и справочникам с 1790 года: ${fmtInt(d.total)} ${speciesWord(d.total)} с фотографиями, цитатами из книг и отметками о безопасности. Это история применения, а не медицинский совет.`
+      ? `${fmtInt(d.total)} ${speciesWord(d.total)} с фотографиями, у которых травники и справочники отмечают ${x.toLowerCase()} действие. Для каждого собраны цитаты из книг, сведения о безопасности и рецепты. Это история применения, а не медицинский совет.`
+      : `Какие растения применяли ${d.phrase} по травникам и справочникам с 1790 года. В атласе ${fmtInt(d.total)} ${speciesWord(d.total)} с фотографиями, цитатами из книг и сведениями о безопасности. Это история применения, а не медицинский совет.`
     : `В атласе пока нет видов, которые книги связывают с «${x}». Попробуй старое, современное или латинское название.`;
   const canonical = `${SITE_URL}/atlas/for/${encodeURIComponent(x.toLowerCase())}`;
   const indexable = d.total > 0 && !firstParam(searchParams.view);
@@ -200,7 +200,9 @@ export default async function AtlasForPage({ params, searchParams }: Props) {
                 {d.phrase}.
               </>
             )}{" "}
-            Сверху виды, о которых в книгах больше всего записей.
+            {d.isAction
+              ? "Первыми идут виды, у которых книги чаще всего называют это действие."
+              : "Первыми идут виды, которые книги чаще всего советуют именно при этом."}
           </p>
         ) : null}
 
@@ -208,12 +210,12 @@ export default async function AtlasForPage({ params, searchParams }: Props) {
           <div className="card card-tight card-soft atlas-ind">
             {indName !== nx ? (
               <p>
-                В справочнике атласа это показание «{d.ind.name}».
+                В справочнике это показание называется «{d.ind.name}».
               </p>
             ) : null}
             {modern ? (
               <p>
-                Современное название: <b>{modern}</b>.
+                По-современному это <b>{modern}</b>.
               </p>
             ) : null}
             {definition ? (
@@ -224,10 +226,10 @@ export default async function AtlasForPage({ params, searchParams }: Props) {
             ) : null}
             {archaic.length ? (
               <p>
-                В старых книгах это называли так:{" "}
+                В старых книгах это называли{" "}
                 {archaic.map((a, i) => (
                   <span key={a}>
-                    {i ? ", " : ""}
+                    {i ? (i === archaic.length - 1 ? " или " : ", ") : ""}
                     <Link href={`/atlas/for/${encodeURIComponent(a)}`}>{a}</Link>
                   </span>
                 ))}
@@ -269,7 +271,7 @@ export default async function AtlasForPage({ params, searchParams }: Props) {
       {d.total > d.items.length && !d.merged ? (
         <p className="atlas-more">
           <Link href={allHref}>
-            Все {fmtInt(d.total)} {speciesWord(d.total)} в атласе, с фильтрами и по страницам →
+            Все {fmtInt(d.total)} {speciesWord(d.total)} в атласе с фильтрами →
           </Link>
         </p>
       ) : null}

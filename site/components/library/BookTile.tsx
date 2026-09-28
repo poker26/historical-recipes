@@ -1,6 +1,6 @@
 // Плитка книги на полке библиотеки: обложка, автор, название, год, чипы и цифры.
 import Link from "next/link";
-import { fmtInt } from "../../lib/api";
+import { fmtInt, pluralRu } from "../../lib/api";
 import { ACCESS_CHIP, domainLabel, type BookItem } from "../../lib/api-library";
 import { BookCover } from "./BookCover";
 
@@ -10,10 +10,10 @@ export function BookTile({ b }: { b: BookItem }) {
   // Нули не пишем: «рецептов 0» читается как ошибка. Одна «страница» у книг из
   // текстового файла означает весь текст целиком, это тоже не число страниц.
   const meta = [
-    b.pages > 1 ? `страниц ${fmtInt(b.pages)}` : null,
-    b.plants ? `растений ${fmtInt(b.plants)}` : null,
-    b.recipes ? `рецептов ${fmtInt(b.recipes)}` : null,
-  ].filter(Boolean).join(" · ");
+    b.pages > 1 ? `${fmtInt(b.pages)} ${pluralRu(b.pages, "страница", "страницы", "страниц")}` : null,
+    b.plants ? `${fmtInt(b.plants)} ${pluralRu(b.plants, "растение", "растения", "растений")}` : null,
+    b.recipes ? `${fmtInt(b.recipes)} ${pluralRu(b.recipes, "рецепт", "рецепта", "рецептов")}` : null,
+  ].filter(Boolean).join(", ");
   return (
     <Link href={`/library/${b.id}`} className="lib-book">
       <BookCover id={b.id} title={b.title} author={b.author} year={b.year} hasCover={b.has_cover} />

@@ -53,7 +53,7 @@ export default async function PlacesPage({ searchParams }: { searchParams: { reg
         </p>
         <div className="chips" style={{ marginTop: 16 }}>
           {REGIONS.map((r) => (
-            <Link key={r.slug} href={r.slug === REGIONS[0].slug ? "/places" : `/places?region=${r.slug}`}
+            <Link key={r.slug} href={r.slug === REGIONS[0].slug ? "/places" : `/places?region=${r.slug}`} scroll={false}
               className={"chip" + (r.slug === region.slug ? " chip-leaf" : "")}>{r.name}</Link>
           ))}
         </div>

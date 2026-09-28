@@ -1,15 +1,15 @@
 import Link from "next/link";
-import { getPlaceSet, getLeaderboard, windowLabelRu, seasonEmoji, seasonAdj } from "../../../lib";
+import { getPlaceSet, getLeaderboard, windowLabelRu, seasonEmoji, seasonAdj, pluralRu } from "../../../lib";
 import { Header, Footer, DownloadButtons, LeaderTable, Medallion } from "../../../ui";
 
 type Params = { params: { place: string; window: string } };
 
 export async function generateMetadata({ params }: Params) {
   const set = await getPlaceSet(params.place, params.window);
-  const name = set?.place.name || "Квест места";
+  const name = set?.place.name || "место";
   return {
-    title: `${name} — квест`,
-    description: `${seasonAdj(params.window)} квест в «${name}»: найди виды сезона и получи значок. Пошли вместе! 🌿`,
+    title: `Квест в месте «${name}»`,
+    description: `${seasonAdj(params.window)} квест в месте «${name}». Найди виды этого сезона и получи значок, можно вдвоём с другом.`,
   };
 }
 
@@ -26,7 +26,7 @@ export default async function QuestPage({ params }: Params) {
       {!set ? (
         <section className="card" style={{ marginTop: 24, textAlign: "center" }}>
           <h1>Квест не найден</h1>
-          <p style={{ color: "#6b7280" }}>Возможно, набор для этого места и сезона ещё не готов.</p>
+          <p style={{ color: "#6b7280" }}>Набор для этого места и сезона ещё не собран или ссылка устарела.</p>
         </section>
       ) : (
         <>
@@ -39,7 +39,7 @@ export default async function QuestPage({ params }: Params) {
               <Medallion tier={2} size={56} />
               <Medallion tier={3} size={48} />
               <span style={{ fontSize: 14, color: "#3f4a43" }}>
-                {set.items.length} видов · значок от 3 находок
+                В наборе {set.items.length} {pluralRu(set.items.length, "вид", "вида", "видов")}, значок дают за 3 находки.
               </span>
             </div>
           </section>
@@ -64,15 +64,15 @@ export default async function QuestPage({ params }: Params) {
 
           {board?.top?.length ? (
             <section style={{ marginTop: 32 }}>
-              <h2 className="section-title">🏆 Лучшие в этом месте</h2>
+              <h2 className="section-title">Лучшие в этом месте</h2>
               <div className="card"><LeaderTable rows={board.top} /></div>
             </section>
           ) : null}
 
           <section className="card" style={{ marginTop: 32, textAlign: "center", background: "#eaf3de", border: "none" }}>
-            <h2 style={{ margin: "4px 0 8px" }}>Пройди этот квест 🌿</h2>
+            <h2 style={{ margin: "4px 0 8px" }}>Пройди этот квест</h2>
             <p style={{ color: "#3f4a43", margin: "0 auto 18px", maxWidth: 440 }}>
-              Установи «Что растёт», приходи сюда и отмечай находки камерой. Позови друга — вперёд наперегонки!
+              Установи «Что растёт», приходи сюда и фотографируй находки. Друга можно позвать с собой, чтобы искать вместе.
             </p>
             <div style={{ display: "flex", justifyContent: "center" }}>
               <DownloadButtons />

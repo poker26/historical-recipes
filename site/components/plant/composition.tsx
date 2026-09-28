@@ -18,7 +18,7 @@ function GroupCard({ g }: { g: CompoundGroup }) {
         {g.items.map((it, i) => (
           <li key={i}>
             {it.compoundId ? <Link href={`/compounds/${it.compoundId}`} className="pc-cmp-name">{it.name}</Link> : <span className="pc-cmp-name">{it.name}</span>}
-            {it.parts.length ? <span className="muted"> · {it.parts.join(", ")}</span> : null}
+            {it.parts.length ? <span className="muted"> ({it.parts.join(", ")})</span> : null}
             {it.sources.length ? (
               <span className="pc-cmp-src">
                 {it.sources.map((s, j) => (
@@ -54,7 +54,7 @@ export function CompoundsBlock({ card, insights }: { card: SpeciesCard; insights
       title="Состав"
       lead={
         groups.length
-          ? `Что находили в ${card.kingdom === "гриб" ? "грибе" : "растении"} химики и фармакогносты: ${nSubstances(card.compoundsTotal)} по группам, у каждого часть и книга.`
+          ? `Химики и фармакогносты нашли в этом ${card.kingdom === "гриб" ? "грибе" : "растении"} ${nSubstances(card.compoundsTotal)}. Они разбиты по группам, у каждого вещества указаны часть и книга.`
           : undefined
       }
     >
@@ -74,7 +74,7 @@ export function CompoundsBlock({ card, insights }: { card: SpeciesCard; insights
           </div>
           {hidden > 0 ? (
             <p className="muted small">
-              И ещё {fmtInt(hidden)} {pluralRu(hidden, "небольшая группа", "небольшие группы", "небольших групп")}: их вещества найдёшь в книгах из{" "}
+              И ещё {fmtInt(hidden)} {pluralRu(hidden, "небольшая группа", "небольшие группы", "небольших групп")}. Их вещества найдёшь в книгах из{" "}
               <a href="#sources">списка источников</a>.
             </p>
           ) : null}
@@ -82,10 +82,10 @@ export function CompoundsBlock({ card, insights }: { card: SpeciesCard; insights
       ) : null}
       {rows.length ? (
         <div className="pc-insights">
-          <h3>Состав → действие</h3>
+          <h3>Какие действия совпадают с составом</h3>
           <p className="muted small">
-            Растения, в которых есть это вещество, в книгах корпуса часто применяют с таким действием. Это совпадение по
-            книгам, а не доказанный механизм.
+            Растения, в которых есть это вещество, книги часто применяют с таким действием. Это совпадение по книгам,
+            а не доказанный механизм. Связь тем сильнее, чем меньше шанс, что совпадение случайное.
           </p>
           <div className="pc-table-wrap">
             <table className="table">
@@ -94,7 +94,7 @@ export function CompoundsBlock({ card, insights }: { card: SpeciesCard; insights
                   <th>Вещество</th>
                   <th>Действие</th>
                   <th>Растений</th>
-                  <th>Сила</th>
+                  <th>Связь</th>
                 </tr>
               </thead>
               <tbody>
@@ -114,7 +114,7 @@ export function CompoundsBlock({ card, insights }: { card: SpeciesCard; insights
               </tbody>
             </table>
           </div>
-          {insights?.disclaimer ? <p className="footnote pc-note">{insights.disclaimer}</p> : null}
+          <p className="footnote pc-note">Это не медицинская рекомендация.</p>
         </div>
       ) : null}
     </Block>

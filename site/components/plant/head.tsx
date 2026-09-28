@@ -50,7 +50,7 @@ export function SafetyPanel({ safety, isToxic, extra }: { safety: SafetyInfo | n
       <Safety level={v.level} title={v.title} text={safetyText(safety)} />
       {edible.length ? (
         <div className="pc-parts">
-          <span className="muted">Можно есть:</span>
+          <span className="pc-label">Можно есть</span>
           {edible.map((p, i) => (
             <span key={i} className="chip chip-leaf">{p}</span>
           ))}
@@ -58,13 +58,13 @@ export function SafetyPanel({ safety, isToxic, extra }: { safety: SafetyInfo | n
       ) : null}
       {dangerous.length ? (
         <div className="pc-parts">
-          <span className="muted">Опасны:</span>
+          <span className="pc-label">Опасные части</span>
           {dangerous.map((p, i) => (
             <span key={i} className="chip chip-danger">{p}</span>
           ))}
         </div>
       ) : null}
-      {safety?.deadly_twin ? <p className="pc-twin">Опасный двойник: {safety.deadly_twin}</p> : null}
+      {safety?.deadly_twin ? <p className="pc-twin">Этот вид легко спутать с опасным двойником, это {safety.deadly_twin}.</p> : null}
       {extra}
     </div>
   );
@@ -99,13 +99,13 @@ export function PlantHead(p: PlantHeadProps) {
         <div className="pc-head-text">
           {p.badge ? <span className="chip chip-mist">{p.badge}</span> : null}
           <h1>{p.name}</h1>
-          {p.nameModern ? <p className="pc-modern">Современное название: {p.nameModern}</p> : null}
+          {p.nameModern ? <p className="pc-modern">По-современному {p.nameModern}</p> : null}
           {p.latin ? <div className="latin pc-latin">{p.latin}</div> : null}
           {p.family ? (
             <div className="pc-family">
               Семейство{" "}
               {famParam ? <Link href={`/atlas?family=${encodeURIComponent(famParam)}`}>{p.family}</Link> : p.family}
-              {p.familyLatin ? <span className="latin"> · {p.familyLatin}</span> : null}
+              {p.familyLatin ? <>, <span className="latin">{p.familyLatin}</span></> : null}
             </div>
           ) : null}
           {p.lines}
@@ -113,7 +113,7 @@ export function PlantHead(p: PlantHeadProps) {
           {p.stats ? <p className="pc-stats">{p.stats}</p> : null}
           <div className="pc-actions">
             <a href={RUSTORE_URL} target="_blank" rel="noopener" className="btn btn-primary btn-sm">Определить в приложении</a>
-            {p.showSources !== false ? <a href="#sources" className="btn btn-ghost btn-sm">Источники</a> : null}
+            {p.showSources !== false ? <a href="#sources" className="btn btn-ghost btn-sm">К источникам</a> : null}
           </div>
         </div>
       </section>

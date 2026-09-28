@@ -24,7 +24,7 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   if (!r) return { title: "Рецепт", robots: { index: false } };
   const year = recipeYear(r);
   return pageMeta({
-    title: `${recipeTitle(r.name)} · рецепт из «${r.book_title || "книги"}»${year ? `, ${year}` : ""}`,
+    title: `${recipeTitle(r.name)}, рецепт из книги «${r.book_title || "без названия"}»${year ? ` ${year} года` : ""}`,
     description: excerpt(r.normalized_text || r.original_text, 160) || `Рецепт из книги «${r.book_title || "без названия"}» с дословным текстом и ингредиентами.`,
     path: `/recipe/${r.id}`,
     // В индекс идут только пошаговые домашние рецепты; заметки о дозах открываются по ссылке.
@@ -130,13 +130,14 @@ export default async function RecipePage({ params }: Params) {
           {worst.level === 4 ? (
             <Safety
               level="danger"
-              title={`${worst.names.length > 1 ? "В рецепте смертельно ядовитые ингредиенты" : "В рецепте смертельно ядовитый ингредиент"}: ${worst.names.join(", ")}`}
-              text="Такие рецепты остались в книгах как история, повторять их дома опасно для жизни."
+              title={worst.names.length > 1 ? "В рецепте смертельно ядовитые ингредиенты" : "В рецепте смертельно ядовитый ингредиент"}
+              text={`Это ${worst.names.join(", ")}. Такие рецепты остались в книгах как история, повторять их дома опасно для жизни.`}
             />
           ) : (
             <Safety
               level="warn"
-              title={`${worst.names.length > 1 ? "В рецепте есть ядовитые растения" : "В рецепте есть ядовитое растение"}: ${worst.names.join(", ")}, дозы старых книг проверяй`}
+              title={worst.names.length > 1 ? "В рецепте есть ядовитые растения" : "В рецепте есть ядовитое растение"}
+              text={`Это ${worst.names.join(", ")}. Дозы в старых книгах бывают опасными, сверяй их с современными справочниками.`}
             />
           )}
         </div>
@@ -149,12 +150,12 @@ export default async function RecipePage({ params }: Params) {
             <IngredientsTable items={r.ingredients} />
             {!linked.length ? (
               <p className="small muted rc-note">
-                Растения этого рецепта ещё не сверены с атласом, поэтому ссылок на карточки пока нет.
+                Растения этого рецепта ещё не связаны с карточками атласа, поэтому ссылок на них пока нет.
               </p>
             ) : null}
           </>
         ) : (
-          <p className="muted">Ингредиенты этого рецепта ещё не разобраны по строкам, их видно в тексте ниже.</p>
+          <p className="muted">Ингредиенты этого рецепта отдельно пока не выписаны, их можно прочитать в тексте рецепта.</p>
         )}
       </section>
 
@@ -177,7 +178,7 @@ export default async function RecipePage({ params }: Params) {
 
       {plantSimilar.length && main?.plant_id ? (
         <section className="section">
-          <SectionHead title={`Ещё рецепты с растением ${mainName}`} href={`/recipes?plant_id=${main.plant_id}`} more="все" />
+          <SectionHead title={`Ещё рецепты с растением «${mainName}»`} href={`/recipes?plant_id=${main.plant_id}`} more="все" />
           <div className="rc-similar">
             {plantSimilar.map((x) => <RecipeMini key={x.id} r={x} />)}
           </div>
@@ -194,7 +195,7 @@ export default async function RecipePage({ params }: Params) {
       ) : null}
 
       <p className="footnote rc-foot">
-        Это рецепт из книги, а не медицинский совет: дозы и безопасность проверяй по современным источникам.
+        Это рецепт из книги, а не медицинский совет. Дозы и безопасность проверяй по современным справочникам.
       </p>
 
       <Footer />

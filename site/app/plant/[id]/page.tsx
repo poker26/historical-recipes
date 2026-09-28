@@ -23,7 +23,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const name = displayName(rawName);
   const title = latin ? `${name} (${latin})` : name;
   const lead = field?.verdict?.trim() || quoteOf(field?.lead_fact)?.text || (card?.kind === "species" ? card.firstQuote : null);
-  const description = excerpt(lead || `${name}: применение, состав, сбор и рецепты по книгам в атласе «Что растёт».`, 160);
+  const description = excerpt(lead || `${name}. Как это растение применяли, что в нём находили и что из него готовили, по книгам в атласе «Что растёт».`, 160);
   const photoUrl = (card?.kind === "species" ? card.photo?.url : null) || field?.photo_url || null;
   const image = photoUrl ? largePhoto(photoUrl) : `${SITE_URL}/plant/${r.id}/card.png`;
   const canonical = SITE_URL + plantHref(r.id, latin);

@@ -17,7 +17,7 @@ import {
 
 export function usesLabel(n?: number | null): string | null {
   if (!n) return null;
-  return `${fmtInt(n)} ${pluralRu(n, "применение", "применения", "применений")}`;
+  return `${fmtInt(n)} ${pluralRu(n, "запись", "записи", "записей")} о применении`;
 }
 
 export function TagList({ tags }: { tags: TileTag[] }) {
@@ -39,7 +39,8 @@ export function PlantTile({ p, noPhotoTag, note }: { p: PlantSummary; noPhotoTag
   const credit = p.photo_url ? creditShort(p.photo_attribution) : null;
   // Фото без подписи автора не показываем: вместо него лист-заглушка.
   const photo = p.photo_url && credit ? p.photo_url : null;
-  const meta = [usesLabel(p.uses_count), familyShort(p)].filter(Boolean).join(" · ");
+  const fam = familyShort(p);
+  const meta = [usesLabel(p.uses_count), fam ? `семейство ${fam}` : null].filter(Boolean).join(", ");
   return (
     <Link href={plantHref(p.id, p.name_latin)} className="tile" title={p.name !== name ? p.name : undefined}>
       <div className="tile-photo">
@@ -53,7 +54,7 @@ export function PlantTile({ p, noPhotoTag, note }: { p: PlantSummary; noPhotoTag
       ) : null}
       <div className="tile-name">{name}</div>
       {p.name_latin ? <div className="tile-latin">{p.name_latin}</div> : null}
-      {modern ? <div className="tile-meta">совр.: {modern}</div> : null}
+      {modern ? <div className="tile-meta">по-современному {modern}</div> : null}
       {note ? <div className="tile-meta tile-note">{note}</div> : null}
       {meta ? <div className="tile-meta">{meta}</div> : null}
       <TagList tags={plantTags(p, { noPhoto: noPhotoTag })} />
@@ -144,8 +145,8 @@ export function Seg({ items, label }: { items: { href: string; label: string; on
 export function PhotoSourcesNote() {
   return (
     <p className="footnote atlas-photonote">
-      Фотографии взяты из iNaturalist и Викимедиа. Автор и лицензия подписаны под каждым снимком, полную строку
-      прав видно при наведении.
+      Фотографии взяты из iNaturalist и Викимедиа. Автор и лицензия подписаны под каждым снимком, а полную строку
+      прав видно, если навести на подпись.
     </p>
   );
 }

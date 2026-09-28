@@ -9,6 +9,7 @@ import {
   type Biotope,
 } from "../../../lib/api-reference";
 import { PlantGrid } from "../../../components/reference/PlantGrid";
+import { biotopeWhere } from "../../../lib/api-atlas";
 import { decodeParam, pageMeta } from "../../../components/reference/meta";
 import "../../reference/reference.css";
 
@@ -36,9 +37,9 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   if (!b) return { title: "Биотоп", robots: { index: false } };
   const label = biotopeLabel(b.key);
   return pageMeta({
-    title: `Что растёт: ${label}`,
+    title: `Что растёт ${biotopeWhere(b.key)}`,
     description:
-      `${fmtInt(b.count)} ${pluralRu(b.count, "вид", "вида", "видов")} атласа, которые книги и наблюдения связывают с местом «${label}». ` +
+      `${fmtInt(b.count)} ${pluralRu(b.count, "вид", "вида", "видов")} атласа, которые книги и наблюдения находят ${biotopeWhere(b.key)}. ` +
       (BIOTOPE_GROUP_TEXT[b.group] ?? ""),
     path: biotopeHref(b.key),
   });
@@ -64,18 +65,18 @@ export default async function BiotopePage({ params }: Params) {
 
       <section className="hero-grad rf-hero">
         <span className="chip">{b ? BIOTOPE_GROUP_RU[b.group] ?? cap(b.group) : "Биотоп"}</span>
-        <h1>Что растёт: {label}</h1>
+        <h1>{b ? `Что растёт ${biotopeWhere(b.key)}` : label}</h1>
         <p className="lead">
           {b && BIOTOPE_GROUP_TEXT[b.group] ? `${BIOTOPE_GROUP_TEXT[b.group]} ` : ""}
-          Ниже виды атласа, которые книги и наблюдения связывают с этим местом.
+          Это виды атласа, которые книги и наблюдения находят в таких местах.
         </p>
       </section>
 
       <section className="section">
         <SectionHead title={plants ? `${fmtInt(total)} ${pluralRu(total, "вид", "вида", "видов")} в атласе` : "Виды в атласе"} />
         <p className="section-lead">
-          Сначала виды с фотографией и самыми подробными карточками. Метки на плитках предупреждают
-          о ядовитых видах: прежде чем что-то собирать, открой карточку.
+          Первыми идут виды с фотографией и самыми подробными карточками. Метки на плитках
+          предупреждают о ядовитых видах, поэтому прежде чем что-то собирать, открой карточку.
         </p>
         {!plants ? (
           <Empty>Список растений сейчас не загрузился. Обнови страницу через минуту.</Empty>

@@ -51,16 +51,16 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
         photo={photo}
         plate={plate}
         showSources={false}
-        stats={`В корпусе ${nSpeciesGen(card.memberCount)} этого рода${card.recipesTotal ? ` и ${fmtInt(card.recipesTotal)} ${pluralRu(card.recipesTotal, "рецепт", "рецепта", "рецептов")}, где род назван без уточнения вида` : ""}.`}
+        stats={`В атласе ${nSpeciesGen(card.memberCount)} этого рода.${card.recipesTotal ? ` Ещё ${fmtInt(card.recipesTotal)} ${pluralRu(card.recipesTotal, "рецепт называет", "рецепта называют", "рецептов называют")} род, не уточняя вид.` : ""}`}
         safety={
           card.safety ? (
             <SafetyPanel
-              safety={{ ...card.safety, rationale: "У видов рода опасность разная: уровень здесь по самому опасному виду, а точный ответ в карточке конкретного вида." }}
+              safety={{ ...card.safety, rationale: "Виды рода опасны по-разному. Здесь указан уровень самого опасного из них, а точный ответ есть в карточке каждого вида." }}
               isToxic={false}
               extra={
                 dangerous.length ? (
                   <div className="pc-parts">
-                    <span className="muted">Опасные виды:</span>
+                    <span className="pc-label">Опасные виды</span>
                     {dangerous.map((d) => {
                       const m = card.members.find((x) => x.id === d.id);
                       return (
@@ -77,8 +77,8 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
         }
         lines={
           <p className="pc-note muted small">
-            Род собирает записи о своих видах: каждое применение и вещество подписано видом, у которого его нашли. Сюда же
-            привязаны рецепты, где книга называет только род.
+            В карточке рода собраны записи о всех его видах. У каждого применения и вещества подписан вид, у которого его
+            нашли. Здесь же рецепты, где книга называет только род.
           </p>
         }
       />
@@ -94,8 +94,8 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
                 name={displayName(m.name)}
                 latin={m.latin}
                 photo={s?.photo_url ?? null}
-                meta={s?.uses_count ? `${fmtInt(s.uses_count)} ${pluralRu(s.uses_count, "цитата", "цитаты", "цитат")} о применении` : null}
-                tags={s?.safety_level === 4 ? [{ label: "смертельно ядовито", warn: true }] : s?.safety_level === 3 ? [{ label: "осторожно", warn: true }] : undefined}
+                meta={s?.uses_count ? `${fmtInt(s.uses_count)} ${pluralRu(s.uses_count, "запись", "записи", "записей")} о применении` : null}
+                tags={s?.safety_level === 4 ? [{ label: "смертельно ядовито", warn: true }] : s?.safety_level === 3 ? [{ label: "ядовито в больших дозах", warn: true }] : undefined}
               />
             ))}
           </div>
@@ -114,11 +114,11 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
                 </div>
                 {u.species.length ? (
                   <p className="pc-line">
-                    <span className="pc-label">Виды:</span> {speciesLinks(u.species)}
+                    <span className="pc-label">Виды</span><span>{speciesLinks(u.species)}</span>
                   </p>
                 ) : null}
                 <IndicationsLine items={u.indications} />
-                {u.sources.length ? <p className="pc-line small muted">По книгам: {u.sources.join("; ")}</p> : null}
+                {u.sources.length ? <p className="pc-line small"><span className="pc-label">Книги</span><span className="muted">{u.sources.join("; ")}</span></p> : null}
               </div>
             ))}
           </div>
@@ -131,7 +131,7 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
             {card.compounds.map((c, i) => (
               <li key={i}>
                 <span className="pc-cmp-name">{c.compound}</span>
-                <span className="muted"> · у {nSpeciesGen(c.nSpecies)}</span>
+                <span className="muted">, у {nSpeciesGen(c.nSpecies)}</span>
                 {c.species.length ? <span className="pc-cmp-src">{speciesLinks(c.species)}</span> : null}
               </li>
             ))}
@@ -145,7 +145,7 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
             {card.recipes.slice(0, 6).map((r) => (
               <Link key={r.id} href={`/recipe/${r.id}`} className="card card-tight pc-recipe">
                 <b>{r.name}</b>
-                <div className="small muted">{[r.category, r.book ? `«${r.book}»` : null, r.year].filter(Boolean).join(" · ")}</div>
+                <div className="small muted">{[r.category, r.book ? `«${r.book}»` : null, r.year].filter(Boolean).join(", ")}</div>
               </Link>
             ))}
           </div>
@@ -155,7 +155,7 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
                 {card.recipes.slice(6).map((r) => (
                   <Link key={r.id} href={`/recipe/${r.id}`} className="card card-tight pc-recipe">
                     <b>{r.name}</b>
-                    <div className="small muted">{[r.category, r.book ? `«${r.book}»` : null, r.year].filter(Boolean).join(" · ")}</div>
+                    <div className="small muted">{[r.category, r.book ? `«${r.book}»` : null, r.year].filter(Boolean).join(", ")}</div>
                   </Link>
                 ))}
               </div>
@@ -164,7 +164,7 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
           {card.recipesTotal > card.recipes.length ? (
             <p className="pc-all">
               <Link href={`/recipes?plant_id=${card.id}`} className="more">
-                Все рецепты рода: {fmtInt(card.recipesTotal)} →
+                Все рецепты рода, их {fmtInt(card.recipesTotal)} →
               </Link>
             </p>
           ) : null}

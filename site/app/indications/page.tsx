@@ -34,14 +34,14 @@ export async function generateMetadata({ searchParams }: { searchParams: SP }): 
     return pageMeta({
       title: "Показания по системам организма",
       description:
-        "От чего применяли растения по книгам: показания по системам организма со старыми и современными названиями болезней. Каждое показание ведёт к растениям атласа.",
+        "От чего применяли растения по книгам. Показания разбиты по системам организма, у болезней указаны старые и современные названия, и каждое показание ведёт к растениям атласа.",
       path: "/indications",
     });
   }
   const label = systemLabel(system);
   return pageMeta({
     title: `${label}: показания по книгам${page > 1 ? `, страница ${page}` : ""}`,
-    description: `Все показания раздела «${label}», от которых книги применяли растения, со старыми и современными названиями. Каждое показание ведёт к растениям атласа.`,
+    description: `Все показания раздела «${label}», при которых книги применяли растения. У каждого указаны старые и современные названия, и каждое ведёт к растениям атласа.`,
     path: systemHref(system) + (page > 1 ? `&page=${page}` : ""),
     index: page === 1,
   });
@@ -89,12 +89,12 @@ export default async function IndicationsPage({ searchParams }: { searchParams: 
         <section className="section">
           {!vocab ? (
             <Empty>
-              Словарь показаний сейчас не загрузился: он большой и собирается дольше остальных. Обнови страницу через минуту.
+              Словарь показаний сейчас не загрузился. Обнови страницу через минуту.
             </Empty>
           ) : (
             <>
               {pages > 1 ? <div className="toolbar"><span>Страница {fmtInt(page)} из {fmtInt(pages)}</span></div> : null}
-              {items.length ? <IndicationList items={items} /> : <Empty>На этой странице показаний нет. Вернись к <Link href={systemHref(system)}>началу списка</Link>.</Empty>}
+              {items.length ? <IndicationList items={items} /> : <Empty>Страницы с таким номером в списке нет. Вернись к <Link href={systemHref(system)}>началу списка</Link>.</Empty>}
               <Pager page={page} pages={pages} base="/indications" params={{ system }} />
             </>
           )}
@@ -140,7 +140,7 @@ export default async function IndicationsPage({ searchParams }: { searchParams: 
           </div>
         ) : (
           <Empty>
-            Словарь показаний сейчас не загрузился: он большой и собирается дольше остальных.
+            Словарь показаний сейчас не загрузился.
             Обнови страницу через минуту или открой <Link href="/atlas">атлас</Link>.
           </Empty>
         )}

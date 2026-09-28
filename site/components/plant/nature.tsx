@@ -2,6 +2,7 @@
 // iNaturalist с сезонностью и подписями авторов снимков.
 import { Chips, MONTHS_GEN_RU, MONTHS_RU, PhotoCredit } from "../common";
 import { fmtInt, pluralRu } from "../../lib/api";
+import { biotopeLabel } from "../../lib/api-atlas";
 import { OBS_PLACE_RU, mediumPhoto, type FieldView, type Observations, type SpeciesCard } from "../../lib/api-plant";
 import { Block, FactList } from "./bits";
 
@@ -78,7 +79,7 @@ function InatPanel({ obs }: { obs: Observations }) {
         {peak >= 0 ? ` Чаще всего его замечают в ${MONTHS_PREP[peak]}.` : ""}
       </p>
       {max > 0 ? (
-        <div className="pc-season" role="img" aria-label={"Наблюдения по месяцам: " + months.map((n, i) => `${MONTHS_RU[i]} ${n}`).join(", ")}>
+        <div className="pc-season" role="img" aria-label={"Наблюдения по месяцам. " + months.map((n, i) => `${MONTHS_RU[i]} ${n}`).join(", ")}>
           {months.map((n, i) => (
             <div key={i} className="pc-season-col" title={`${MONTHS_RU[i]}: ${fmtInt(n)}`}>
               <div className="pc-season-track">
@@ -109,8 +110,8 @@ function InatPanel({ obs }: { obs: Observations }) {
         Данные iNaturalist
         {obs.taxon_id ? (
           <>
-            {" · "}
-            <a href={`https://www.inaturalist.org/taxa/${obs.taxon_id}`} target="_blank" rel="noopener">вид на iNaturalist</a>
+            {", "}
+            <a href={`https://www.inaturalist.org/taxa/${obs.taxon_id}`} target="_blank" rel="noopener">страница вида на iNaturalist</a>
           </>
         ) : null}
       </p>
@@ -129,8 +130,8 @@ export function HabitatBlock({ card, field, obs }: { card: SpeciesCard; field: F
       {summary ? <p className="pc-text">{summary}</p> : null}
       {biotopes.length ? (
         <div className="pc-biotopes">
-          <span className="muted small">Места обитания:</span>
-          <Chips items={biotopes.map((b) => ({ href: `/biotopes/${encodeURIComponent(b.key)}`, label: b.key, kind: "leaf" as const }))} />
+          <span className="pc-label">Где встречается</span>
+          <Chips items={biotopes.map((b) => ({ href: `/biotopes/${b.key}`, label: biotopeLabel(b.key), kind: "leaf" as const }))} />
         </div>
       ) : null}
       {card.habitats.total ? <FactList set={card.habitats} /> : null}

@@ -103,8 +103,8 @@ export default async function ActionPage({ params }: Params) {
         <h1>{h1}</h1>
         <p className="lead">
           {canon
-            ? `Книги называют действие «${name}» у ${fmtInt(canon.count)} ${pluralRu(canon.count, "растения", "растений", "растений")}. Ниже виды из атласа, о применении которых записей больше всего.`
-            : `Растения, которым книги приписывают действие «${name}». Ниже виды из атласа, о применении которых записей больше всего.`}
+            ? `Книги называют действие «${name}» у ${fmtInt(canon.count)} ${pluralRu(canon.count, "растения", "растений", "растений")}. Первыми идут виды атласа, о применении которых записей больше всего.`
+            : `Растения, которым книги приписывают действие «${name}». Первыми идут виды атласа, о применении которых записей больше всего.`}
         </p>
         {modern || sys || parent ? (
           <dl className="kv rf-facts">
@@ -143,7 +143,7 @@ export default async function ActionPage({ params }: Params) {
 
       {related.length ? (
         <section className="section">
-          <SectionHead title="Другие действия на ту же систему" />
+          <SectionHead title="Другие действия на ту же систему организма" />
           <p className="section-lead">Число рядом с действием показывает, у скольких растений атласа оно упомянуто.</p>
           <div className="chips rf-chips">
             {related.map((a) => (

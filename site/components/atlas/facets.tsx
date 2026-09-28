@@ -10,6 +10,7 @@ import {
   EDIBILITY_OPTIONS,
   KINGDOM_LABEL,
   biotopeLabel,
+  biotopeWhere,
   conditionPhrase,
   familyFacets,
   familyKey,
@@ -157,10 +158,10 @@ export function AtlasFacets({
     <aside className="aside atlas-aside" aria-label="Фильтры атласа">
       <input type="checkbox" id="atlas-ft" className="atlas-ft-input" />
       <label htmlFor="atlas-ft" className="atlas-ft-label btn btn-ghost btn-sm">
-        Фильтры{activeCount ? ` · выбрано ${activeCount}` : ""}
+        Фильтры{activeCount ? `, выбрано ${activeCount}` : ""}
       </label>
       <div className="atlas-facets">
-        <Facet title="Царство">
+        <Facet title="Растения или грибы">
           {kingdoms.map((it) => (
             <FacetLink key={it.key} it={it} />
           ))}
@@ -215,17 +216,17 @@ function filterLabel(k: FilterKey, v: string): string {
     case "kingdom":
       return KINGDOM_LABEL[v] ?? v;
     case "family":
-      return `семейство: ${familyLabel(v)}`;
+      return `семейство ${familyLabel(v)}`;
     case "action":
-      return `действие: ${v}`;
+      return `действие «${v}»`;
     case "indication":
       return conditionPhrase(v, false);
     case "biotope":
-      return `где растёт: ${biotopeLabel(v)}`;
+      return `растёт ${biotopeWhere(v)}`;
     case "edible":
-      return "съедобно или условно";
+      return "съедобно или условно съедобно";
     case "edibility":
-      return EDIBILITY_OPTIONS.find((o) => o.paramValue === v)?.label ?? `съедобность: ${v}`;
+      return EDIBILITY_OPTIONS.find((o) => o.paramValue === v)?.label ?? `съедобность «${v}»`;
     case "is_toxic":
       return "только ядовитые";
   }

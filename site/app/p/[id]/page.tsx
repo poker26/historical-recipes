@@ -10,9 +10,9 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const badges = p.badges.length;
   const title = `${p.nick} — ${cap(p.level.title)}`;
   const desc =
-    `Уровень ${p.level.n} · ${p.level.species} ${pluralRu(p.level.species, "вид", "вида", "видов")}` +
-    `${badges ? ` · ${badges} ${pluralRu(badges, "значок", "значка", "значков")}` : ""}` +
-    `${p.rank ? ` · #${p.rank} в рейтинге` : ""}. Вот какой я ботаник 🌿`;
+    `Уровень ${p.level.n}, ${p.level.species} ${pluralRu(p.level.species, "вид", "вида", "видов")}` +
+    `${badges ? `, ${badges} ${pluralRu(badges, "значок", "значка", "значков")}` : ""}` +
+    `${p.rank ? `, ${p.rank}-е место в рейтинге` : ""}. Вот какой я ботаник.`;
   return {
     title,
     description: desc,
@@ -39,13 +39,13 @@ export default async function ProfilePage({ params }: Params) {
           <section className="hero-grad" style={{ padding: "28px 28px", marginTop: 12, display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap" }}>
             <ProfileCrest avatar={p.avatar} level={p.level.n} />
             <div style={{ flex: 1, minWidth: 240 }}>
-              <div style={{ fontSize: 13, color: "#5a6b5f", fontWeight: 600 }}>ПАСПОРТ НАТУРАЛИСТА</div>
+              <div style={{ fontSize: 13, color: "#5a6b5f", fontWeight: 600 }}>Паспорт натуралиста</div>
               <h1 style={{ fontSize: 32, margin: "6px 0 10px" }}>{p.nick}</h1>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <span className="chip">🌿 {cap(p.level.title)} · уровень {p.level.n}</span>
+                <span className="chip">{cap(p.level.title)}, уровень {p.level.n}</span>
                 <span className="chip">{p.level.species} {pluralRu(p.level.species, "вид", "вида", "видов")}</span>
-                {p.rank ? <span className="chip">#{p.rank} в рейтинге</span> : null}
-                <span className="chip">{p.score} очков</span>
+                {p.rank ? <span className="chip">{p.rank}-е место в рейтинге</span> : null}
+                <span className="chip">{p.score} {pluralRu(p.score, "очко", "очка", "очков")}</span>
               </div>
             </div>
           </section>
@@ -60,7 +60,7 @@ export default async function ProfilePage({ params }: Params) {
                 {p.badges.map((b, i) => <BadgeTile b={b} key={i} />)}
               </div>
             ) : (
-              <p style={{ color: "#6b7280" }}>Пока без значков — но всё впереди!</p>
+              <p style={{ color: "#6b7280" }}>Значков пока нет. Их выдают за найденные наборы видов в парках и лесах.</p>
             )}
           </section>
 
@@ -72,14 +72,14 @@ export default async function ProfilePage({ params }: Params) {
           <section className="card" style={{ marginTop: 32, textAlign: "center" }}>
             <h2 style={{ margin: "4px 0 8px", fontSize: 22 }}>Подписаться на {p.nick}</h2>
             <p style={{ color: "#3f4a43", margin: "0 auto 16px", maxWidth: 460 }}>
-              Подписка живёт в приложении: там видно находки тех, на кого подписан.
+              Подписки работают в приложении. Там видны находки всех, на кого ты подписан.
             </p>
             <a href={`chtorastet://p/${params.id}`} className="btn btn-primary">
               Открыть в приложении
             </a>
             <p className="footnote" style={{ marginTop: 12 }}>
-              Если ничего не открылось — приложение либо не установлено, либо старее
-              версии 2.0.4. Тогда поставьте его ниже и откройте эту ссылку ещё раз.
+              Если ничего не открылось, приложение не установлено или его версия старше 2.0.4.
+              Поставь его по кнопке ниже и открой эту ссылку ещё раз.
             </p>
           </section>
 

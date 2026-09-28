@@ -46,12 +46,14 @@ export function SafetyBlock({ card, field }: { card: SpeciesCard; field: FieldVi
         <div className="card card-tight pc-caution">
           <b>Осторожно</b>
           {text ? <p>{text}</p> : null}
-          {contra.length ? <p>Противопоказания, которые называют книги: {contra.join("; ")}.</p> : null}
-          {c?.symptoms ? <p>Признаки отравления: {c.symptoms}</p> : null}
-          {c?.antidote ? <p>Что советовали книги: {c.antidote}</p> : null}
+          {contra.length ? (
+            <p className="pc-line"><span className="pc-label">Противопоказания</span><span>{contra.join("; ")}</span></p>
+          ) : null}
+          {c?.symptoms ? <p className="pc-line"><span className="pc-label">Признаки отравления</span><span>{c.symptoms}</span></p> : null}
+          {c?.antidote ? <p className="pc-line"><span className="pc-label">Что советовали книги</span><span>{c.antidote}</span></p> : null}
           {parts.length ? (
             <div className="pc-parts">
-              <span className="muted">Ядовитые части:</span>
+              <span className="pc-label">Ядовитые части</span>
               {parts.map((p, i) => (
                 <span key={i} className="chip chip-danger">{p}</span>
               ))}
@@ -76,7 +78,8 @@ export function IndicationsLine({ items, links = 5 }: { items: string[]; links?:
   const plain = items.slice(links);
   return (
     <p className="pc-line">
-      <span className="pc-label">Применяли при:</span>{" "}
+      <span className="pc-label">Применяли при</span>
+      <span>
       {linked.map((name, i) => (
         <span key={i}>
           {i > 0 ? ", " : null}
@@ -84,6 +87,7 @@ export function IndicationsLine({ items, links = 5 }: { items: string[]; links?:
         </span>
       ))}
       {plain.length ? `${linked.length ? ", " : ""}${plain.join(", ")}` : null}
+      </span>
     </p>
   );
 }
@@ -129,12 +133,12 @@ function GroupFull({ g }: { g: UseGroup }) {
       <IndicationsLine items={g.indications} />
       {g.parts.length ? (
         <p className="pc-line">
-          <span className="pc-label">Части:</span> {g.parts.join(", ")}
+          <span className="pc-label">Части растения</span><span>{g.parts.join(", ")}</span>
         </p>
       ) : null}
       {g.preparations.length ? (
         <p className="pc-line">
-          <span className="pc-label">Как готовили:</span> {g.preparations.join("; ")}
+          <span className="pc-label">Как готовили</span><span>{g.preparations.join("; ")}</span>
         </p>
       ) : null}
       {open.map((c, i) => (

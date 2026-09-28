@@ -9,7 +9,7 @@ export default function NotFound() {
         <h1 style={{ fontSize: 30 }}>Такой страницы нет</h1>
         <p className="muted" style={{ maxWidth: 480, margin: "8px auto 20px" }}>
           Ссылка могла устареть, а карточка могла переехать после сверки названий.
-          Попробуйте найти растение через поиск или откройте атлас.
+          Попробуй найти растение через поиск или открой атлас.
         </p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
           <Link href="/atlas" className="btn btn-primary">Открыть атлас</Link>

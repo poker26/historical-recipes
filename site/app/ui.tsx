@@ -2,7 +2,7 @@
 import Link from "next/link";
 import {
   Badge, EtherEvent, LeaderRow, tierColors, cap, seasonEmoji, seasonAdj, badgeLabel,
-  windowLabelRu, agoRu, RUSTORE_URL, APPSTORE_URL,
+  windowLabelRu, agoRu, pluralRu, RUSTORE_URL, APPSTORE_URL,
 } from "./lib";
 
 /** A collectible medallion — metal ring by tier + leaf + tier stars. Mirrors the
@@ -68,11 +68,11 @@ export function EtherRow({ e }: { e: EtherEvent }) {
         <div style={{ fontSize: 14, lineHeight: 1.35 }}>
           <b>{nick}</b>{" "}
           {e.type === "id" ? (
-            <>нашёл{e.plant ? <> <span style={{ fontStyle: "italic" }}>{e.plant.name.toLowerCase()}</span></> : " растение"}</>
+            <>нашёл {e.plant ? <>вид «{e.plant.name}»</> : "растение"}</>
           ) : (
             <>получил значок «{e.place || "место"}»</>
           )}
-          {e.place && e.type === "id" ? <span style={{ color: "#6b7368" }}> · {e.place}</span> : null}
+          {e.place && e.type === "id" ? <> в месте «{e.place}»</> : null}
         </div>
         <div style={{ fontSize: 12, color: "#6b7368" }}>{agoRu(e.at)}</div>
       </div>
@@ -82,7 +82,7 @@ export function EtherRow({ e }: { e: EtherEvent }) {
 
 /** Compact leaderboard table. */
 export function LeaderTable({ rows, highlight }: { rows: LeaderRow[]; highlight?: string }) {
-  if (!rows.length) return <p style={{ color: "#6b7280" }}>Пока никого — будь первым!</p>;
+  if (!rows.length) return <p style={{ color: "#6b7280" }}>В рейтинге пока никого нет. Первый значок места поставит тебя на первую строчку.</p>;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
       {rows.map((r, i) => (
@@ -98,8 +98,8 @@ export function LeaderTable({ rows, highlight }: { rows: LeaderRow[]; highlight?
           </span>
           <span style={{ flex: 1 }}>{r.nick}</span>
           <span style={{ fontWeight: 700 }}>{r.score}</span>
-          <span style={{ fontSize: 12, color: "#9ca3af", width: 64, textAlign: "right" }}>
-            {r.badges} знач.
+          <span style={{ fontSize: 12, color: "#9ca3af", width: 76, textAlign: "right" }}>
+            {r.badges} {pluralRu(r.badges, "значок", "значка", "значков")}
           </span>
         </div>
       ))}
@@ -112,12 +112,12 @@ export function DownloadButtons() {
   return (
     <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
       <a href={RUSTORE_URL} target="_blank" rel="noopener" className="btn btn-primary">
-        📲 Скачать в RuStore
+        Скачать в RuStore
       </a>
       {APPSTORE_URL ? (
-        <a href={APPSTORE_URL} target="_blank" rel="noopener" className="btn btn-ghost"> Скачать в App Store</a>
+        <a href={APPSTORE_URL} target="_blank" rel="noopener" className="btn btn-ghost">Скачать в App Store</a>
       ) : (
-        <span className="btn btn-disabled"> App Store — скоро</span>
+        <span className="btn btn-disabled">Скоро в App Store</span>
       )}
     </div>
   );
@@ -188,7 +188,7 @@ export function Footer() {
           <h4>Что растёт</h4>
           <p style={{ margin: "0 0 10px", maxWidth: 420 }}>
             Атлас растений и грибов, домашние рецепты и библиотека травников с 1790 года.
-            Каждый факт на сайте стоит на книге, годе и странице, а не на догадке модели.
+            У каждого факта указаны книга, год и страница, откуда он взят.
           </p>
           <p className="fine" style={{ margin: 0 }}>
             Это справочник по истории применения растений, а не медицинский совет.
@@ -212,7 +212,7 @@ export function Footer() {
           <h4>Приложение</h4>
           <a href={RUSTORE_URL} target="_blank" rel="noopener">RuStore</a>
           {APPSTORE_URL ? <a href={APPSTORE_URL} target="_blank" rel="noopener">App Store</a> : null}
-          <p className="fine" style={{ margin: "10px 0 0" }}>Фотографии видов: iNaturalist и Викимедиа, авторы и лицензии указаны у каждого снимка.</p>
+          <p className="fine" style={{ margin: "10px 0 0" }}>Фотографии видов взяты из iNaturalist и Викимедиа, автор и лицензия указаны у каждого снимка.</p>
         </div>
       </div>
     </footer>

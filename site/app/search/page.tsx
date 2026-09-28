@@ -54,9 +54,9 @@ const SYSTEM_RU: Record<string, string> = {
 
 export async function generateMetadata({ searchParams }: Props): Promise<Metadata> {
   const q = readQ(searchParams);
-  const title = q ? `Поиск: ${q}` : "Поиск";
+  const title = q ? `Поиск по запросу «${q}»` : "Поиск";
   const description =
-    "Поиск по атласу растений и грибов, домашним рецептам и библиотеке травников: русское и латинское имя, старое название, симптом или книга.";
+    "Поиск по атласу растений и грибов, домашним рецептам и библиотеке травников. Искать можно по русскому и латинскому имени, старому названию, симптому или книге.";
   const canonical = `${SITE_URL}/search`;
   return {
     title,
@@ -98,7 +98,8 @@ function AnswerCard({ p }: { p: PlantSummary }) {
   const src = creditSource(p.photo_attribution);
   const photo = p.photo_url && credit ? p.photo_url : null;
   const modern = modernName(p);
-  const meta = [usesLabel(p.uses_count), familyShort(p)].filter(Boolean).join(" · ");
+  const fam = familyShort(p);
+  const meta = [usesLabel(p.uses_count), fam ? `семейство ${fam}` : null].filter(Boolean).join(", ");
   return (
     <Link href={plantHref(p.id, p.name_latin)} className="card srch-answer">
       <div>
@@ -108,8 +109,8 @@ function AnswerCard({ p }: { p: PlantSummary }) {
         </div>
         {photo ? (
           <div className="credit" title={p.photo_attribution ?? undefined}>
-            Фото: {credit}
-            {src ? ` · ${src}` : ""}
+            {credit}
+            {src ? `, ${src}` : ""}
           </div>
         ) : null}
       </div>
@@ -117,7 +118,7 @@ function AnswerCard({ p }: { p: PlantSummary }) {
         <span className="chip chip-leaf">Лучшее совпадение</span>
         <h2>{name}</h2>
         {p.name_latin ? <div className="latin">{p.name_latin}</div> : null}
-        {modern ? <div className="muted small">совр.: {modern}</div> : null}
+        {modern ? <div className="muted small">по-современному {modern}</div> : null}
         {meta ? <p className="muted srch-answer-meta">{meta}</p> : null}
         <TagList tags={plantTags(p)} />
         <div>
@@ -178,7 +179,7 @@ function SearchHint({ q }: { q: string }) {
             type="search"
             name="q"
             defaultValue={q}
-            placeholder="Крапива, Urtica dioica, водянка или травник"
+            placeholder="Крапива, Urtica dioica, водянка или Смельской"
             aria-label="Поиск по атласу, рецептам и книгам"
           />
           <button type="submit" className="btn btn-primary">
@@ -186,7 +187,7 @@ function SearchHint({ q }: { q: string }) {
           </button>
         </form>
         <div className="atlas-entries">
-          <span className="atlas-entries-lbl">Например:</span>
+          <span className="atlas-entries-lbl">Попробуй найти</span>
           {EXAMPLES.map((e) => (
             <Link key={e} href={`/search?q=${encodeURIComponent(e)}`} className="chip chip-leaf">
               {e}
@@ -217,7 +218,7 @@ export default async function SearchPage({ searchParams }: Props) {
   const ranked = rankForQuery(pool.filter((p) => p.id !== answer?.id), q);
   const species = ranked.map((r) => r.p);
   const notes: Record<string, string> = {};
-  for (const r of ranked) if (r.oldName) notes[r.p.id] = `в книгах: «${r.oldName}»`;
+  for (const r of ranked) if (r.oldName) notes[r.p.id] = `в книгах назван «${r.oldName}»`;
 
   const inds = (sug?.indications ?? []).filter((i) => (i.facts ?? 0) > 0);
   const acts = sug?.actions ?? [];
@@ -240,8 +241,8 @@ export default async function SearchPage({ searchParams }: Props) {
         {plants.total > pool.length
           ? `Первые ${fmtInt(pool.length)} из ${fmtInt(plants.total)} ${pluralRu(plants.total, "карточки", "карточек", "карточек")}, сначала с фотографией и самые полные. `
           : ""}
-        Здесь все карточки корпуса, в том числе ещё без фотографии; в атлас попадают только виды с фото и сверенным
-        именем.
+        Поиск идёт по всем карточкам, в том числе по тем, у которых ещё нет фотографии. В атлас попадают только виды
+        с фотографией и проверенным именем.
       </p>
       <PlantGrid items={species} noPhotoTag notes={notes} />
     </section>
@@ -252,15 +253,15 @@ export default async function SearchPage({ searchParams }: Props) {
       <section className="srch-block" key="conditions">
         <SectionHead title="Показания и действия" />
         <p className="section-lead">
-          Состояния и действия из справочника атласа, где встречается «{q}». Старые названия болезней в нём сведены к
-          современным.
+          Состояния и действия из справочника, в названии которых встречается «{q}». Старые названия болезней в нём
+          связаны с современными.
         </p>
         <div className="srch-conds">
           {inds.map((i) => (
             <div key={i.id} className="card card-tight srch-cond">
               <b>{i.name}</b>
               {i.name_modern && norm(i.name_modern) !== norm(i.name) ? (
-                <span className="small">современное название: {i.name_modern}</span>
+                <span className="small">по-современному {i.name_modern}</span>
               ) : null}
               <span className="small muted">
                 {[
@@ -268,11 +269,11 @@ export default async function SearchPage({ searchParams }: Props) {
                   i.facts ? `${fmtInt(i.facts)} ${pluralRu(i.facts, "запись", "записи", "записей")} в книгах` : null,
                 ]
                   .filter(Boolean)
-                  .join(" · ")}
+                  .join(", ")}
               </span>
               <div className="srch-cond-links">
                 <Link href={`/atlas/for/${encodeURIComponent(i.name)}`}>Растения {conditionPhrase(i.name, false)} →</Link>
-                <Link href={`/indications/${i.id}`}>о показании</Link>
+                <Link href={`/indications/${i.id}`}>подробнее о показании</Link>
               </div>
             </div>
           ))}
@@ -280,11 +281,11 @@ export default async function SearchPage({ searchParams }: Props) {
             <div key={a.name} className="card card-tight srch-cond">
               <b>{a.name}</b>
               <span className="small muted">
-                действие · {fmtInt(a.plants)} {pluralRu(a.plants, "растение", "растения", "растений")} в корпусе
+                Действие растений, книги называют его у {fmtInt(a.plants)} {pluralRu(a.plants, "растения", "растений", "растений")}
               </span>
               <div className="srch-cond-links">
                 <Link href={`/atlas/for/${encodeURIComponent(a.name)}`}>Растения {conditionPhrase(a.name, true)} →</Link>
-                <Link href={`/actions/${encodeURIComponent(a.name)}`}>о действии</Link>
+                <Link href={`/actions/${encodeURIComponent(a.name)}`}>подробнее о действии</Link>
               </div>
             </div>
           ))}
@@ -297,8 +298,8 @@ export default async function SearchPage({ searchParams }: Props) {
       <Header active="/atlas" q={q} />
 
       <section className="srch-head">
-        <h1>Поиск: «{q}»</h1>
-        {summary.length ? <p className="srch-sum">В корпусе нашлось {joinRu(summary)}.</p> : null}
+        <h1>Поиск по запросу «{q}»</h1>
+        {summary.length ? <p className="srch-sum">Нашлось {joinRu(summary)}.</p> : null}
       </section>
 
       {down ? (
@@ -329,7 +330,7 @@ export default async function SearchPage({ searchParams }: Props) {
                 <Link key={r.id} href={`/recipe/${r.id}`} className="card card-tight srch-recipe">
                   <b>{r.name || "Рецепт без названия"}</b>
                   <div className="small muted">
-                    {[r.category, r.recipe_kind ? RECIPE_KIND_RU[r.recipe_kind] ?? r.recipe_kind : null].filter(Boolean).join(" · ")}
+                    {[r.category, r.recipe_kind ? RECIPE_KIND_RU[r.recipe_kind] ?? r.recipe_kind : null].filter(Boolean).join(", ")}
                   </div>
                   {r.excerpt ? <p className="small">{excerpt(r.excerpt, 170)}</p> : null}
                   {source ? <div className="small muted">{source}</div> : null}
@@ -351,7 +352,7 @@ export default async function SearchPage({ searchParams }: Props) {
                 b.pages ? `${fmtInt(b.pages)} ${pluralRu(b.pages, "страница", "страницы", "страниц")}` : null,
               ]
                 .filter(Boolean)
-                .join(" · ");
+                .join(", ");
               return (
                 <Link key={b.id} href={`/library/${b.id}`} className="card card-tight srch-book">
                   <b>{b.title}</b>
@@ -371,7 +372,7 @@ export default async function SearchPage({ searchParams }: Props) {
 
       {inds.length || acts.length || recipes.items.length ? (
         <p className="footnote atlas-disclaimer">
-          Показания и рецепты взяты из книг 1790–2020 годов: это история применения, а не медицинский совет.
+          Показания и рецепты взяты из книг 1790–2020 годов. Это история применения, а не медицинский совет.
         </p>
       ) : null}
 

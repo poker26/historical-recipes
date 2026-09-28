@@ -24,10 +24,10 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { data: c } = await getCompound(id);
   if (!c) return { title: "Вещество", robots: { index: false } };
   return pageMeta({
-    title: `${cap(c.name)}: в каких растениях встречается`,
+    title: `В каких растениях встречается вещество «${c.name}»`,
     description:
       `${c.definition ? excerpt(c.definition, 110) + " " : ""}` +
-      `Растения атласа, в составе которых книги находят «${c.name}», и действия, с которыми это вещество совпадает по корпусу.`,
+      `Растения атласа, в составе которых книги находят «${c.name}», и действия, с которыми это вещество совпадает по книгам.`,
     path: `/compounds/${c.id}`,
     index: c.plants.length > 0,
   });
@@ -82,7 +82,7 @@ export default async function CompoundPage({ params }: Params) {
         <dl className="kv rf-facts">
           {c.compound_class && !sameTerm(c.compound_class, c.name) && !sameTerm(c.compound_class, c.parent?.name) ? (<><dt>Класс</dt><dd>{c.compound_class.replace(/_/g, " ")}</dd></>) : null}
           {c.parent ? (<><dt>Входит в</dt><dd><Link href={`/compounds/${c.parent.id}`}>{c.parent.name}</Link></dd></>) : null}
-          {c.plants.length ? (<><dt>Растений в словаре</dt><dd>{fmtInt(c.plants.length)}</dd></>) : null}
+          {c.plants.length ? (<><dt>Растений с этим веществом</dt><dd>{fmtInt(c.plants.length)}</dd></>) : null}
         </dl>
         {synonyms.length ? (
           <>
@@ -142,8 +142,8 @@ export default async function CompoundPage({ params }: Params) {
         <section className="section">
           <SectionHead title="Ещё растения с этим веществом" />
           <p className="section-lead">
-            Эти растения тоже связаны с веществом в словаре, но в плитки выше не попали: у одних нет
-            фотографии, другие ниже в списке. Рядом с именем указана часть растения.
+            В этих растениях вещество тоже записано, но у них пока нет фотографии или записей о них
+            меньше. Рядом с именем указано, в какой части растения его нашли.
           </p>
           <PlantNameList items={tail} max={150} />
         </section>
@@ -152,9 +152,9 @@ export default async function CompoundPage({ params }: Params) {
       <section className="section">
         <SectionHead title="С какими действиями совпадает" />
         <p className="rf-caption">
-          Это совпадение по корпусу, а не механизм действия. Растения, в составе которых есть это
+          Это совпадение по книгам, а не механизм действия. Растения, в составе которых есть это
           вещество, книги чаще других называют так, как указано в таблице. В каждом растении десятки
-          веществ, поэтому строка остаётся гипотезой: она подсказывает, что проверить, а не
+          веществ, поэтому строка остаётся гипотезой. Она подсказывает, что стоит проверить, но не
           доказывает, что вещество действует само.
         </p>
         {!assoc ? (

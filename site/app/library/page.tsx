@@ -62,10 +62,10 @@ function statsLine(stats: LibraryStats | null, openCount: number | null): string
 export async function generateMetadata({ searchParams }: { searchParams: SP }): Promise<Metadata> {
   const s = parseShelf(searchParams);
   const stats = await getLibraryStats();
-  const title = "Библиотека: травники, лечебники и поваренные книги";
+  const title = "Библиотека травников, лечебников и поваренных книг";
   const description = stats
-    ? `${statsLine(stats, null)} Страницы старых книг можно листать целиком, у каждого факта атласа есть книга, год и страница.`
-    : "Травники, лечебники и поваренные книги, из которых собран атлас: страницы старых книг можно листать целиком.";
+    ? `${statsLine(stats, null)} Страницы старых книг можно листать целиком, а у каждого факта атласа указаны книга, год и страница.`
+    : "Травники, лечебники и поваренные книги, из которых собран атлас. Страницы старых книг можно листать целиком.";
   const url = `${SITE_URL}/library`;
   return {
     title,
@@ -149,10 +149,10 @@ export default async function LibraryShelf({ searchParams }: { searchParams: SP 
           <h1>Книги, из которых собран атлас</h1>
           <p className="lead">{statsLine(stats, open)}</p>
           <p className="lib-hero-note">
-            Книги, изданные до 1917 года, свободны от авторских прав: их страницы можно листать целиком,
-            скан и распознанный текст рядом. Если год издания неизвестен или книга ещё охраняется, мы
-            показываем номер страницы, библиографическую ссылку и только те фрагменты, что уже разобраны в
-            атлас. От закрытых книг на сайте остаётся одна карточка.
+            Срок авторских прав на книги, изданные до 1917 года, истёк. Их можно листать целиком, и
+            рядом со сканом страницы стоит распознанный текст. Если год издания неизвестен или книга ещё
+            охраняется, открыты только номера страниц, библиографическая ссылка и цитаты, которые вошли в
+            атлас. У закрытых книг доступно только описание.
           </p>
           <form className="lib-search" action="/library" method="get" role="search">
             {Object.entries(shelfParams(s)).map(([k, v]) => (k !== "q" && v ? <input key={k} type="hidden" name={k} value={v} /> : null))}
@@ -186,7 +186,7 @@ export default async function LibraryShelf({ searchParams }: { searchParams: SP 
 
             {!list ? (
               <Empty>
-                Полка сейчас не загрузилась: библиотека не отвечает. Обнови страницу через минуту, а пока
+                Полка сейчас не загрузилась, библиотека не отвечает. Обнови страницу через минуту, а пока
                 загляни в <Link href="/atlas">атлас</Link>.
               </Empty>
             ) : list.items.length ? (

@@ -39,17 +39,17 @@ export default async function LeaderboardPage({ searchParams }: Search) {
     <>
       <Header />
       <section style={{ marginTop: 16 }}>
-        <h1 className="section-title" style={{ fontSize: 26 }}>🏆 Рейтинг натуралистов</h1>
+        <h1 className="section-title" style={{ fontSize: 26 }}>Рейтинг натуралистов</h1>
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-          {tab("global", "Все время", "/leaderboard")}
-          {tab("season", `Сезон: ${windowLabelRu(window, year)}`, `/leaderboard?scope=season&window=${window}&year=${year}`)}
-          {placeId ? tab("place", "По месту", `/leaderboard?scope=place&place_id=${placeId}`) : null}
+          {tab("global", "За всё время", "/leaderboard")}
+          {tab("season", `За ${windowLabelRu(window, year).replace(/^первая половина/, "первую половину").replace(/^вторая половина/, "вторую половину")}`, `/leaderboard?scope=season&window=${window}&year=${year}`)}
+          {placeId ? tab("place", "В этом месте", `/leaderboard?scope=place&place_id=${placeId}`) : null}
         </div>
         <div className="card">
           <LeaderTable rows={board?.top ?? []} />
         </div>
         <p style={{ color: "#9ca3af", fontSize: 13, marginTop: 12 }}>
-          Очки = сумма лучших ступеней значков по местам и сезонам. Считает сервер.
+          Очки складываются из лучших значков по каждому месту и сезону. Бронзовый значок даёт 5 очков, серебряный 15, золотой 30.
         </p>
       </section>
       <Footer />

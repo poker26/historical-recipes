@@ -36,8 +36,8 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
   const indexable = onlyFungi(s) || isClean(s);
   const title = fungi ? "Атлас грибов" : "Атлас растений и грибов";
   const description = fungi
-    ? "Грибы с фотографиями: съедобность и безопасность, применение по старым книгам и справочникам, семейства и места, где их находят."
-    : "Растения и грибы с фотографиями: применение по травникам и справочникам с 1790 года, состав, безопасность и рецепты. Фильтры по семейству, действию, биотопу и съедобности.";
+    ? "Грибы с фотографиями. Для каждого собрано, съедобен ли он и чем опасен, как его применяли по старым книгам и где его находят."
+    : "Растения и грибы с фотографиями. Для каждого вида собрано, как его применяли по травникам и справочникам с 1790 года, что в нём содержится, чем он опасен и что из него готовили.";
   const canonical = fungi ? `${SITE_URL}${atlasHref({}, { kingdom: "гриб" })}` : `${SITE_URL}/atlas`;
   return {
     title,
@@ -116,7 +116,7 @@ export default async function AtlasPage({ searchParams }: Props) {
         <Link href={atlasHref({ sort: s.sort, view: s.view })}>Сбрось фильтры</Link>
         {s.q ? (
           <>
-            {" "}или поищи <Link href={searchHref}>по всему корпусу</Link>: там есть и карточки без фото.
+            {" "}или <Link href={searchHref}>поищи среди всех карточек</Link>, в том числе без фотографии.
           </>
         ) : null}
       </Empty>
@@ -140,8 +140,8 @@ export default async function AtlasPage({ searchParams }: Props) {
         <h1>{fungiOnly ? "Атлас грибов" : "Атлас растений и грибов"}</h1>
         {landing && atlasTotal ? (
           <p className="lead">
-            В атласе {fmtInt(atlasTotal)} {pluralRu(atlasTotal, "вид", "вида", "видов")} с фотографией, и у каждого
-            собрано, что о нём писали травники и справочники с 1790 года, с книгой и годом у каждого факта.
+            В атласе {fmtInt(atlasTotal)} {pluralRu(atlasTotal, "вид", "вида", "видов")} с фотографией. У каждого
+            собрано, что о нём писали травники и справочники с 1790 года, и у каждого факта указаны книга и год.
           </p>
         ) : null}
         <form className="atlas-search" action="/atlas" method="get" role="search">
@@ -161,14 +161,14 @@ export default async function AtlasPage({ searchParams }: Props) {
         </form>
         {landing ? (
           <div className="atlas-entries">
-            <span className="atlas-entries-lbl">Растения</span>
+            <span className="atlas-entries-lbl">Растения, которые применяли</span>
             {POPULAR_CONDITIONS.map((c) => (
               <Link key={c} href={`/atlas/for/${encodeURIComponent(c)}`} className="chip">
                 {conditionPhrase(c, false)}
               </Link>
             ))}
             <Link href="/places" className="chip chip-lime">
-              Что растёт сейчас →
+              Что растёт рядом сейчас
             </Link>
           </div>
         ) : null}
@@ -194,7 +194,7 @@ export default async function AtlasPage({ searchParams }: Props) {
                 label="Сортировка"
                 items={[
                   {
-                    label: "по охвату",
+                    label: "по числу записей",
                     title: "Сначала виды, о которых в книгах больше всего записей",
                     href: atlasHref(s, { sort: undefined, page: undefined }),
                     on: s.sort !== "name",
@@ -222,17 +222,17 @@ export default async function AtlasPage({ searchParams }: Props) {
             <p className="atlas-note">
               {filtered ? (
                 <>
-                  По этим фильтрам в атласе {fmtInt(total)} {pluralRu(total, "карточка", "карточки", "карточек")}, а во всём
-                  корпусе {fmtInt(corpus.total)}.{" "}
+                  По этим фильтрам в атлас вошли {fmtInt(total)} {pluralRu(total, "карточка", "карточки", "карточек")}, а всего
+                  таких карточек {fmtInt(corpus.total)}.{" "}
                 </>
               ) : (
                 <>
-                  Здесь {fmtInt(atlasTotal)} {pluralRu(atlasTotal, "карточка", "карточки", "карточек")} из{" "}
-                  {fmtInt(corpusTotal)}, которые собраны в корпусе.{" "}
+                  В атлас вошли {fmtInt(atlasTotal)} {pluralRu(atlasTotal, "карточка", "карточки", "карточек")} из{" "}
+                  {fmtInt(corpusTotal)}, собранных по книгам.{" "}
                 </>
               )}
-              В атлас попадают виды с фотографией и сверенными русским и латинским именем. Остальные карточки пока без
-              фото или с именем, которое ещё сверяется, и открываются через <Link href={searchHref}>поиск</Link>.
+              В атлас попадают виды с фотографией, у которых проверены русское и латинское имя. Остальные карточки
+              открываются через <Link href={searchHref}>поиск</Link>.
             </p>
           ) : null}
           {s.view !== "table" && list.items.length ? <PhotoSourcesNote /> : null}

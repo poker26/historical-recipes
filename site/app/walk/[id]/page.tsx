@@ -17,7 +17,7 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const w = isUuid(params.id) ? await getWalk(params.id) : null;
   const host = w?.participants?.find((p) => p.role === "host" || p.role === "owner") ?? w?.participants?.[0];
   return {
-    title: w?.place?.name ? `Прогулка: ${w.place.name}` : "Приглашение на прогулку",
+    title: w?.place?.name ? `Прогулка в месте «${w.place.name}»` : "Приглашение на прогулку",
     description: host?.nick ? `${host.nick} зовёт тебя на прогулку в «${w?.place?.name ?? "место"}». Открой в приложении «Что растёт» и присоединяйся.` : "Тебя зовут на прогулку в приложении «Что растёт».",
     robots: { index: false },
   };
@@ -57,15 +57,15 @@ export default async function WalkPage({ params }: Params) {
         <h1 style={{ margin: "12px 0 6px" }}>{host?.nick ? `${host.nick} зовёт тебя` : "Тебя зовут"} {w.place?.name ? <>в «{w.place.name}»</> : "на прогулку"}</h1>
         <p className="lead" style={{ maxWidth: 620 }}>
           {when ? `Встреча ${when}. ` : ""}
-          Вместе искать растения и грибы по набору места, зачитывать находки камерой и делить значок на всех.
-          {n ? ` Уже ${n} ${pluralRu(n, "участник", "участника", "участников")}.` : ""}
+          На прогулке вы вместе ищете растения и грибы из набора этого места и фотографируете находки в приложении.
+          {n ? ` В прогулке уже ${n} ${pluralRu(n, "участник", "участника", "участников")}.` : ""}
         </p>
         {w.participants.length ? (
           <div className="people" style={{ marginTop: 14 }}>
             {w.participants.map((p, i) => (
               <Link key={i} href={p.handle ? `/p/${p.handle}` : "#"} className="person" style={{ textDecoration: "none", color: "var(--ink)" }}>
                 {p.avatar ? <img src={`/avatars/${p.avatar}.png`} alt="" loading="lazy" /> : <span className="person-dot" />}
-                <span>{p.nick}{p.role === "host" || p.role === "owner" ? " · ведёт" : ""}</span>
+                <span>{p.nick}{p.role === "host" || p.role === "owner" ? ", ведёт прогулку" : ""}</span>
               </Link>
             ))}
           </div>
@@ -76,7 +76,7 @@ export default async function WalkPage({ params }: Params) {
       <section className="section card" style={{ textAlign: "center" }}>
         <h2 style={{ margin: "4px 0 8px", fontSize: 22 }}>Присоединиться</h2>
         <p style={{ color: "#3f4a43", margin: "0 auto 16px", maxWidth: 480 }}>
-          Прогулка живёт в приложении: там видно, кто что нашёл, и туда зачитываются находки.
+          Прогулка идёт в приложении. Там видно, кто что нашёл, и туда засчитываются находки.
           {w.place?.id ? " Открой место в приложении, чтобы увидеть набор видов, который вы будете искать вместе." : ""}
         </p>
         {/* Приложение разбирает chtorastet://quest/{место}/{окно}, а ссылки на прогулку пока нет. */}

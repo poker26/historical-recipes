@@ -35,7 +35,7 @@ export function PageFacts({ data, hl, found, hlInText }: { data: BookPage; hl?: 
   if (!data.facts.length && !data.recipes.length) {
     return (
       <Empty>
-        К этой странице пока не привязано ни одного факта. <Link href={`/library/${bookId}`}>Вернуться к книге</Link> или
+        С этой страницы в атлас пока не вошло ни одной цитаты. <Link href={`/library/${bookId}`}>Вернись к книге</Link> или
         открой соседнюю страницу.
       </Empty>
     );
@@ -43,14 +43,14 @@ export function PageFacts({ data, hl, found, hlInText }: { data: BookPage; hl?: 
 
   const summary = [
     data.plants.length ? `${fmtInt(data.plants.length)} ${pluralRu(data.plants.length, "растение", "растения", "растений")}` : null,
-    data.facts.length ? `${fmtInt(data.facts.length)} ${pluralRu(data.facts.length, "факт", "факта", "фактов")}` : null,
+    data.facts.length ? `${fmtInt(data.facts.length)} ${pluralRu(data.facts.length, "цитата", "цитаты", "цитат")}` : null,
     data.recipes.length ? `${fmtInt(data.recipes.length)} ${pluralRu(data.recipes.length, "рецепт", "рецепта", "рецептов")}` : null,
   ].filter(Boolean);
 
   return (
     <div className="lib-onpage">
       <p className="section-lead">
-        С этой страницы в атлас попали {summary.length > 1 ? summary.slice(0, -1).join(", ") + " и " + summary[summary.length - 1] : summary[0]}.
+        С этой страницы в атлас вошли {summary.length > 1 ? summary.slice(0, -1).join(", ") + " и " + summary[summary.length - 1] : summary[0]}.
         {open ? " Нажми «показать на странице», чтобы увидеть фрагмент в тексте." : ""}
       </p>
 
@@ -65,7 +65,7 @@ export function PageFacts({ data, hl, found, hlInText }: { data: BookPage; hl?: 
               <b>{p.name}</b>
               {p.name_latin ? <span className="latin small">{p.name_latin}</span> : null}
             </span>
-            <span className="lib-plant-n">{fmtInt(p.facts)} {pluralRu(p.facts, "факт", "факта", "фактов")}</span>
+            <span className="lib-plant-n">{fmtInt(p.facts)} {pluralRu(p.facts, "цитата", "цитаты", "цитат")}</span>
           </Link>
           <ul className="lib-facts">
             {(byPlant.get(p.id) ?? []).map((f) => {

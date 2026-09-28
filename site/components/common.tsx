@@ -3,6 +3,7 @@
 // чтобы плитка вида, строка источника и плашка безопасности выглядели одинаково везде.
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { creditShort } from "../lib/api-atlas";
 
 /** Лист-заглушка для карточек без фотографии. */
 export function LeafGlyph() {
@@ -181,11 +182,14 @@ export function PhotoCredit({ attribution, license, source }: { attribution?: st
   if (!attribution && !license) return null;
   // У iNaturalist лицензия уже стоит в строке автора: «(c) Имя, some rights reserved (CC BY-NC)».
   const licInAuthor = !!attribution && /\(\s*CC[^)]*\)|\bCC0\b|public domain/i.test(attribution);
-  const lic = license && !licInAuthor ? license.toUpperCase().replace(/-/g, " ") : null;
+  const lic = license && !licInAuthor ? license.toUpperCase().replace(/^CC-/, "CC ") : null;
   const src = source?.startsWith("inaturalist") ? "iNaturalist" : source?.startsWith("wikimedia") ? "Викимедиа" : null;
+  // Сырые строки прав бывают английскими («(c) Имя, some rights reserved (CC BY)»):
+  // показываем короткую форму, полную оставляем во всплывающей подсказке.
+  const who = creditShort(attribution) ?? "автор не указан";
   return (
-    <div className="credit">
-      Фото: {attribution || "автор не указан"}{lic ? `, ${lic}` : ""}{src ? ` · ${src}` : ""}
+    <div className="credit" title={attribution ?? undefined}>
+      Фото {who}{lic ? `, ${lic}` : ""}{src && !who.includes(src) ? `, ${src}` : ""}.
     </div>
   );
 }

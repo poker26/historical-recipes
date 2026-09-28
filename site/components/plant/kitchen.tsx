@@ -3,6 +3,13 @@ import Link from "next/link";
 import { Tile } from "../common";
 import { excerpt, fmtInt, plantHref, pluralRu } from "../../lib/api";
 import { KIND_RU, displayName, type FieldView, type Pairings, type PlantRecipes, type RecipeKind, type SpeciesCard } from "../../lib/api-plant";
+
+const KIND_NONE: Record<string, string> = {
+  medicinal: "Лечебных рецептов",
+  food: "Рецептов еды и напитков",
+  cosmetic: "Косметических рецептов",
+  other: "Прочих рецептов",
+};
 import { Block, FactList } from "./bits";
 
 export function KitchenBlock({
@@ -33,7 +40,7 @@ export function KitchenBlock({
         <div className="pc-recipes-wrap">
           <h3>Что приготовить</h3>
           {kinds.length > 1 || kind ? (
-            <nav className="chips pc-kinds" aria-label="Вид рецепта">
+            <nav className="chips pc-kinds" aria-label="Назначение рецепта">
               <Link href={`${base}#kitchen`} className={"chip " + (kind ? "chip-leaf" : "chip-lime")}>все</Link>
               {kinds.map((k) => (
                 <Link key={k} href={`${base}?kind=${k}#kitchen`} className={"chip " + (kind === k ? "chip-lime" : "chip-leaf")}>
@@ -50,7 +57,7 @@ export function KitchenBlock({
                     <b>{r.name}</b>
                     {r.kind && KIND_RU[r.kind] ? <span className="chip chip-leaf">{KIND_RU[r.kind]}</span> : null}
                   </div>
-                  <div className="small muted">{[r.category, r.book ? `«${r.book}»` : null, r.year].filter(Boolean).join(" · ")}</div>
+                  <div className="small muted">{[r.category, r.book ? `«${r.book}»` : null, r.year].filter(Boolean).join(", ")}</div>
                   {r.text ? <p className="small pc-recipe-text">{excerpt(r.text, 240)}</p> : null}
                 </Link>
               ))}
@@ -58,14 +65,14 @@ export function KitchenBlock({
           ) : (
             <p className="muted">
               {kind
-                ? `Рецептов вида «${KIND_RU[kind]}» ${withIt} в корпусе пока нет.`
-                : `Домашних пошаговых рецептов ${withIt} в корпусе пока нет. Все рецепты из книг, где его упоминают, собраны по ссылке ниже.`}
+                ? `${KIND_NONE[kind] ?? "Таких рецептов"} ${withIt} в книгах пока не нашлось.`
+                : `Домашних пошаговых рецептов ${withIt} в книгах пока не нашлось. Все рецепты, где его упоминают, открываются в каталоге.`}
             </p>
           )}
           {total > items.length ? (
             <p className="pc-all">
               <Link href={`/recipes?plant_id=${card.id}`} className="more">
-                Все рецепты {withIt}: {fmtInt(total)} →
+                Все рецепты {withIt}, их {fmtInt(total)} →
               </Link>
             </p>
           ) : null}
@@ -88,7 +95,7 @@ export function PairingsBlock({ pairings }: { pairings: Pairings | null }) {
         {items.map((p) => {
           const tags: { label: string; warn?: boolean }[] = [];
           if (p.plant.safety_level === 4) tags.push({ label: "смертельно ядовито", warn: true });
-          else if (p.plant.safety_level === 3) tags.push({ label: "осторожно", warn: true });
+          else if (p.plant.safety_level === 3) tags.push({ label: "ядовито в больших дозах", warn: true });
           if (p.specific) tags.push({ label: "характерная пара" });
           const proofs = (p.recipes ?? []).slice(0, 2);
           return (

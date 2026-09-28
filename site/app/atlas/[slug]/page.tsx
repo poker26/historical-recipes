@@ -69,13 +69,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     const photo = await genusPhoto(card);
     image = photo ? largePhoto(photo.url) : null;
     photoOk = !!photo;
-    description = `Род ${name}${card.latin ? ` (${card.latin})` : ""} в атласе «Что растёт»: виды рода, чем их применяли по книгам, вещества и рецепты.`;
+    description = `Род ${name}${card.latin ? ` (${card.latin})` : ""} в атласе «Что растёт». Какие виды в него входят, как их применяли по книгам, какие вещества в них находили и что из них готовили.`;
   } else {
     const field = await getFieldView(card.id);
     const lead = quoteOf(field?.lead_fact);
     description =
       field?.verdict?.trim() || lead?.text || card.firstQuote || card.description ||
-      `${name}: применение, состав, сбор и рецепты по книгам с годом и страницей.`;
+      `${name}. Как это растение применяли, что в нём находили, когда его собирать и что из него готовили, по книгам с годом и страницей.`;
     const photo = creditedPhoto(card.photo);
     photoOk = !!photo;
     if (photo) image = largePhoto(photo.url);
@@ -100,7 +100,7 @@ function Unavailable() {
       <Header active="/atlas" />
       <div className="section">
         <Empty>
-          Карточку сейчас не удалось загрузить: справочник не ответил. Обнови страницу через минуту или открой{" "}
+          Карточку сейчас не удалось загрузить. Обнови страницу через минуту или открой{" "}
           <Link href="/atlas">атлас</Link>.
         </Empty>
       </div>
@@ -167,7 +167,7 @@ async function renderSpecies(card: SpeciesCard, href: string, searchParams: Sear
   const houseplant = field?.origin === "houseplant";
   const badge = card.kingdom === "гриб" ? "гриб" : houseplant ? "комнатное растение" : null;
   const stats = card.bookCount
-    ? `В атласе по ${nBooksDat(card.bookCount)}${card.usesTotal ? `, ${nQuotes(card.usesTotal)} о применении` : ""}.`
+    ? `Карточка собрана по ${nBooksDat(card.bookCount)}.${card.usesTotal ? ` В ней ${nQuotes(card.usesTotal)} о применении.` : ""}`
     : null;
 
   // Блоки собираем заранее: пустой блок возвращает null и не попадает в оглавление.
@@ -226,8 +226,8 @@ async function renderSpecies(card: SpeciesCard, href: string, searchParams: Sear
         {!blocks.length ? (
           <div className="section">
             <Empty>
-              В корпусе пока нет записей об этом виде, кроме имени. Загляни в <Link href="/atlas">атлас</Link>: там собраны виды с цитатами и
-              рецептами.
+              В книгах пока не нашлось записей об этом виде, кроме имени. Загляни в <Link href="/atlas">атлас</Link>, там собраны виды с
+              цитатами и рецептами.
             </Empty>
           </div>
         ) : null}

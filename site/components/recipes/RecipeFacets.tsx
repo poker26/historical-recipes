@@ -1,13 +1,20 @@
 // Фасеты каталога рецептов: вид, что готовим, только пошаговые, книги, справка по эпохам.
 // Счётчики из словаря считаются по всем домашним рецептам, а не по текущей выборке.
 import Link from "next/link";
-import { fmtInt } from "../../lib/api";
+import { fmtInt, pluralRu } from "../../lib/api";
 import {
   DOMAIN_RU, DOMAINS, ERA_RU, KIND_FACET_RU, KINDS, catalogHref,
   type CatalogState, type RecipeVocab,
 } from "../../lib/api-recipes";
 
 const ERA_ORDER = ["pre1917", "soviet", "modern", "unknown"];
+// Справка по эпохам читается одной фразой: «12 000 рецептов из книг, изданных до 1917 года, …».
+const ERA_FROM: Record<string, string> = {
+  pre1917: "из книг, изданных до 1917 года",
+  soviet: "из советских книг",
+  modern: "из современных книг",
+  unknown: "из книг без года издания",
+};
 
 function FacetLink({ href, active, label, n }: { href: string; active: boolean; label: string; n?: number | null }) {
   return (
@@ -30,7 +37,7 @@ export function RecipeFacets({ vocab, state }: { vocab: RecipeVocab | null; stat
   return (
     <>
       <div className="facet">
-        <h4>Вид</h4>
+        <h4>Назначение</h4>
         <FacetLink href={catalogHref(state, { kind: undefined })} active={!state.kind} label="Все" n={vocab?.total ?? null} />
         {KINDS.map((k) => (
           <FacetLink key={k} href={catalogHref(state, { kind: state.kind === k ? undefined : k })} active={state.kind === k} label={KIND_FACET_RU[k]} n={kindN(k)} />
@@ -67,7 +74,7 @@ export function RecipeFacets({ vocab, state }: { vocab: RecipeVocab | null; stat
       ) : null}
 
       <div className="facet">
-        <h4>Книги</h4>
+        <h4>Из каких книг</h4>
         <FacetLink href={catalogHref(state, { domain: undefined })} active={!state.domain} label="Все книги" />
         {DOMAINS.map((d) => (
           <FacetLink key={d} href={catalogHref(state, { domain: state.domain === d ? undefined : d })} active={state.domain === d} label={DOMAIN_RU[d]} n={domainN(d)} />
@@ -76,9 +83,13 @@ export function RecipeFacets({ vocab, state }: { vocab: RecipeVocab | null; stat
 
       {eras.length ? (
         <p className="small muted rc-eras">
-          Рецепты по времени издания книг: {eras.map((x, i) => (
-            <span key={x.e}>{i ? ", " : ""}{ERA_RU[x.e]} {fmtInt(x.n)}</span>
-          ))}.
+          {eras.map((x, i) => (
+            <span key={x.e}>
+              {i === 0 ? "" : i === eras.length - 1 ? " и " : ", "}
+              {fmtInt(x.n)} {pluralRu(x.n, "рецепт", "рецепта", "рецептов")} {ERA_FROM[x.e] ?? ERA_RU[x.e]}
+            </span>
+          ))}
+          .
         </p>
       ) : null}
     </>

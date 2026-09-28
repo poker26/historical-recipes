@@ -42,8 +42,8 @@ export async function generateMetadata({ searchParams }: { searchParams: SP }): 
   const label = compoundClassLabel(cls);
   const path = classHref(cls) + (page > 1 ? `&page=${page}` : "");
   return pageMeta({
-    title: `${label}: вещества из состава растений${page > 1 ? `, страница ${page}` : ""}`,
-    description: `Вещества класса «${label.toLowerCase()}» из словаря: у каждого число записей о составе растений и ссылка на растения атласа.`,
+    title: `${label} в составе растений${page > 1 ? `, страница ${page}` : ""}`,
+    description: `Вещества класса «${label.toLowerCase()}». У каждого указано, сколько записей о составе растений к нему относится, и есть ссылка на растения атласа.`,
     path,
     index: page === 1,
   });
@@ -81,14 +81,14 @@ function ClassPage({ c, page }: { c: CompoundClass; page: number }) {
         <p className="lead">
           {termsWord(c.list.length)} и {factsWord(c.sum)} в словаре.
           {c.key === COMPOUND_OTHER
-            ? " Здесь собраны классы меньше трёх веществ и вещества, у которых класс не указан; класс написан рядом с названием."
+            ? " В этот список сведены небольшие классы, где меньше трёх веществ, и вещества без класса. Класс написан рядом с названием."
             : ""}{" "}
           Число рядом с веществом показывает, сколько записей о составе растений к нему привязано.
         </p>
       </section>
       <section className="section">
         {pages > 1 ? <div className="toolbar"><span>Страница {fmtInt(page)} из {fmtInt(pages)}</span></div> : null}
-        {items.length ? <TermList items={items} showClass={c.key === COMPOUND_OTHER} /> : <Empty>На этой странице веществ нет. Вернись к <Link href={classHref(c.key)}>началу списка</Link>.</Empty>}
+        {items.length ? <TermList items={items} showClass={c.key === COMPOUND_OTHER} /> : <Empty>Страницы с таким номером в списке нет. Вернись к <Link href={classHref(c.key)}>началу списка</Link>.</Empty>}
         <Pager page={page} pages={pages} base="/compounds" params={{ class: c.key }} />
         <p className="small muted"><Link href="/compounds">← все классы веществ</Link></p>
       </section>
@@ -132,7 +132,7 @@ export default async function CompoundsPage({ searchParams }: { searchParams: SP
         <span className="chip">Вещества</span>
         <h1>Словарь веществ</h1>
         <p className="lead">
-          {terms ? `${termsWord(terms)} из состава растений, по классам. ` : "Вещества из состава растений, по классам. "}
+          {terms ? `${termsWord(terms)} из состава растений, разбитые по классам. ` : "Вещества из состава растений, разбитые по классам. "}
           Число рядом с названием показывает, сколько записей о составе растений к нему привязано.
           Словарь собран в основном из книг по фитохимии, поэтому в нём много научных названий.
         </p>

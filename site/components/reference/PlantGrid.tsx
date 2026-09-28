@@ -61,7 +61,7 @@ export function PlantNameList({ items, max = 150 }: { items: NamedPlant[]; max?:
       </ul>
       {rest > 0 ? (
         <p className="small muted">
-          И ещё {fmtInt(rest)} {pluralRu(rest, "растение", "растения", "растений")} в корпусе.
+          И ещё {fmtInt(rest)} {pluralRu(rest, "растение", "растения", "растений")} в книгах.
         </p>
       ) : null}
     </>

@@ -127,7 +127,7 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
             <summary className="chip">{region.name} ▾</summary>
             <div className="region-list">
               {REGIONS.map((r) => (
-                <Link key={r.slug} href={r.slug === REGIONS[0].slug ? "/" : `/?region=${r.slug}`} className={r.slug === region.slug ? "active" : undefined}>{r.name}</Link>
+                <Link key={r.slug} href={r.slug === REGIONS[0].slug ? "/" : `/?region=${r.slug}`} scroll={false} className={r.slug === region.slug ? "active" : undefined}>{r.name}</Link>
               ))}
             </div>
           </details>

@@ -46,13 +46,14 @@ function FactRow({ f }: { f: Fact }) {
   return (
     <div className="pc-fact">
       {f.meta.length ? (
-        <div className="pc-fact-meta">
+        <dl className="pc-fact-meta">
           {f.meta.map((m, i) => (
-            <span key={i}>
-              <b>{m.label}:</b> {m.value}
-            </span>
+            <div key={i}>
+              <dt>{m.label}</dt>
+              <dd>{m.value}</dd>
+            </div>
           ))}
-        </div>
+        </dl>
       ) : null}
       <CiteView c={f.cite} />
     </div>
@@ -89,11 +90,11 @@ export function FactList({ set, open = 3 }: { set: FactSet; open?: number }) {
 export function safetyView(s: SafetyInfo | null | undefined, isToxic: boolean): { level: SafetyLevel; title: string } {
   const lvl = s?.level;
   if (lvl === 4) return { level: "danger", title: "Смертельно ядовито" };
-  if (lvl === 3) return { level: "warn", title: "Опасно: лекарственное, доза решает" };
+  if (lvl === 3) return { level: "warn", title: "Лекарственное и ядовитое, опасно в больших дозах" };
   if (lvl === 2) return { level: "warn", title: "Условно съедобно" };
   if (lvl === 1) return { level: "ok", title: "Съедобно" };
   if ((lvl === null || lvl === undefined) && isToxic) return { level: "danger", title: "Ядовитое растение" };
-  return { level: "unknown", title: "О съедобности источники молчат" };
+  return { level: "unknown", title: "О съедобности книги ничего не говорят" };
 }
 
 /** Обоснование уровня. Служебная пометка «[auto] …» — это не слова книг, её не показываем. */

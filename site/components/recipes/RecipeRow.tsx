@@ -30,7 +30,7 @@ export function RecipeMini({ r }: { r: RecipeBrief }) {
     <Link href={`/recipe/${r.id}`} className="card card-tight rc-mini">
       <b>{recipeTitle(r.name)}</b>
       <span className="small muted">
-        {[r.category, r.book_title ? `«${r.book_title}»${year ? `, ${year}` : ""}` : null].filter(Boolean).join(" · ")}
+        {[r.category, r.book_title ? `«${r.book_title}»${year ? `, ${year}` : ""}` : null].filter(Boolean).join(", ")}
       </span>
     </Link>
   );

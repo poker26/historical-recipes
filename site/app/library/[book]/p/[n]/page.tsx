@@ -21,7 +21,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const n = pageNumber(params.n);
   if (!isUuid(params.book) || !n) return { title: "Страница не найдена", robots: { index: false } };
   const r = await getBookPage(params.book, n);
-  if (!r.data) return { title: "Страница книги · Библиотека", robots: { index: false } };
+  if (!r.data) return { title: "Страница книги", robots: { index: false } };
   const d = r.data;
   const url = `${SITE_URL}/library/${params.book}/p/${n}`;
   const title = `${d.book.title}, стр. ${n}`;
@@ -66,7 +66,7 @@ export default async function SourcePage({ params, searchParams }: Props) {
         <Header active="/library" />
         <Crumbs items={[{ href: "/library", label: "Библиотека" }, { href: `/library/${bookId}`, label: "Книга" }, { label: `стр. ${n}` }]} />
         <Empty>
-          Страница сейчас не загрузилась: библиотека не отвечает. Обнови её через минуту или вернись
+          Страница сейчас не загрузилась, библиотека не отвечает. Обнови её через минуту или вернись
           к <Link href={`/library/${bookId}`}>книге</Link>.
         </Empty>
         <Footer />
@@ -142,7 +142,7 @@ export default async function SourcePage({ params, searchParams }: Props) {
                 <div className="lib-textcol">
                   <p className="lib-textcap small muted">
                     Текст распознан машиной и может ошибаться в буквах{page.has_image ? ", сверяйся со сканом" : ""}.
-                    {found.size ? " Подсвечены фрагменты, из которых взяты факты атласа, наведи на подсветку, чтобы увидеть какие." : ""}
+                    {found.size ? " Подсвечены места, откуда взяты цитаты для атласа. Наведи на подсветку, чтобы увидеть, к какому растению относится цитата." : ""}
                   </p>
                   {segments.length ? (
                     <div className="scan-text">
@@ -159,13 +159,13 @@ export default async function SourcePage({ params, searchParams }: Props) {
                 <p>{accessNote(book.access, book.year)}</p>
                 <blockquote className="quote">
                   <div className="quote-text">{d.citation}</div>
-                  <span className="source">так ссылаться на эту страницу</span>
+                  <span className="source">Так можно сослаться на эту страницу.</span>
                 </blockquote>
               </div>
             )}
 
             <section className="block">
-              <h2>{open ? "На этой странице" : "Фрагменты этой страницы, разобранные в атлас"}</h2>
+              <h2>{open ? `Что со страницы ${n} вошло в атлас` : "Цитаты с этой страницы, которые вошли в атлас"}</h2>
               <PageFacts data={d} hl={hl} found={found} hlInText={hlInText} />
             </section>
 

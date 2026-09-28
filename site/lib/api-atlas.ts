@@ -403,10 +403,36 @@ export const BIOTOPE_GROUPS: { group: string; label: string }[] = [
 
 export const KINGDOM_LABEL: Record<string, string> = { "растение": "растения", "гриб": "грибы" };
 
+/** Где растёт, с предлогом и в нужном падеже: «на лугах», «в хвойном лесу». */
+const BIOTOPE_WHERE: Record<string, string> = {
+  "лес": "в лесу",
+  "лес лиственный": "в лиственном лесу",
+  "лес хвойный": "в хвойном лесу",
+  "лес смешанный": "в смешанном лесу",
+  "опушки/поляны/вырубки/редколесье": "на опушках, полянах и вырубках",
+  "луг": "на лугах",
+  "степь": "в степи",
+  "поле/сорное": "на полях и сорных местах",
+  "болото/сырое": "на болотах и в сырых местах",
+  "берега водоёмов": "на берегах водоёмов",
+  "водное/прибрежное": "в воде и у воды",
+  "каменистые/скалистые склоны": "на каменистых склонах и скалах",
+  "пески/дюны/обнажения": "на песках и дюнах",
+  "пустыня/полупустыня": "в пустынях и полупустынях",
+  "солончаки/засоленное": "на солончаках",
+  "горы/предгорья": "в горах и предгорьях",
+  "сады/парки": "в садах и парках",
+  "кустарники/заросли": "в кустарниках и зарослях",
+};
+
+export function biotopeWhere(key: string): string {
+  return BIOTOPE_WHERE[key] ?? `в месте «${key}»`;
+}
+
 /** Съедобность. «съедобно» бэкенд ищет подстрокой и зацепил бы «несъедобно»,
  *  поэтому этот пункт идёт через флаг edible=true (съедобно или условно съедобно). */
 export const EDIBILITY_OPTIONS: { value: string; label: string; param: "edible" | "edibility"; paramValue: string }[] = [
-  { value: "съедобно", label: "съедобно или условно", param: "edible", paramValue: "true" },
+  { value: "съедобно", label: "съедобно или условно съедобно", param: "edible", paramValue: "true" },
   { value: "условно-съедобно", label: "условно съедобно", param: "edibility", paramValue: "условно-съедобно" },
   { value: "несъедобно", label: "несъедобно", param: "edibility", paramValue: "несъедобно" },
   { value: "ядовито", label: "ядовито", param: "edibility", paramValue: "ядовито" },
@@ -426,11 +452,11 @@ export type SafetyKind = "danger" | "warn" | "ok" | "unknown";
 export function safetyInfo(p: { safety_level?: number | null; is_toxic?: boolean | null }): { kind: SafetyKind; label: string } {
   const l = p.safety_level;
   if (l === 4) return { kind: "danger", label: "смертельно ядовито" };
-  if (l === 3) return { kind: "warn", label: "опасно, доза решает" };
+  if (l === 3) return { kind: "warn", label: "ядовито в больших дозах" };
   if (p.is_toxic && (l == null || l === 0)) return { kind: "danger", label: "ядовито" };
   if (l === 2) return { kind: "warn", label: "условно съедобно" };
   if (l === 1) return { kind: "ok", label: "съедобно" };
-  return { kind: "unknown", label: "источники молчат" };
+  return { kind: "unknown", label: "о съедобности данных нет" };
 }
 
 export type TileTag = { label: string; tone?: "warn" | "mist" };
@@ -442,21 +468,21 @@ export function plantTags(p: PlantSummary, opts: { noPhoto?: boolean } = {}): Ti
   if (p.rank === "genus") t.push({ label: "род" });
   if (p.safety_level === 4) t.push({ label: "смертельно ядовито", tone: "warn" });
   else if (p.is_toxic) t.push({ label: "ядовито", tone: "warn" });
-  else if (p.safety_level === 3) t.push({ label: "осторожно", tone: "warn" });
+  else if (p.safety_level === 3) t.push({ label: "ядовито в больших дозах", tone: "warn" });
   if (opts.noPhoto && !p.photo_url) t.push({ label: "без фото", tone: "mist" });
   return t;
 }
 
-/** Короткая подпись фото для плитки: «© автор · CC BY-NC». Полная строка уходит в title.
+/** Короткая подпись фото для плитки: «© автор, CC BY-NC». Полная строка уходит в title.
  *  Форматы корпуса: iNaturalist «(c) Имя, some rights reserved (CC BY)», «no rights reserved,
  *  uploaded by …» и Викимедиа «Автор, лицензия, Викимедиа». */
 export function creditShort(attribution?: string | null): string | null {
   const a = (attribution ?? "").replace(/\s+/g, " ").trim();
   if (!a) return null;
   let m = a.match(/^\(c\)\s*(.+?),\s*(?:some|all) rights reserved(?:\s*\(([^)]+)\))?/i);
-  if (m) return `© ${m[1].trim()}${m[2] ? ` · ${m[2].trim()}` : ""}`;
+  if (m) return `© ${m[1].trim()}${m[2] ? `, ${m[2].trim()}` : ""}`;
   m = a.match(/^no rights reserved(?:,\s*uploaded by (.+))?$/i);
-  if (m) return m[1] ? `${m[1].trim()} · CC0` : "CC0, без ограничений";
+  if (m) return m[1] ? `${m[1].trim()}, CC0` : "CC0, без ограничений";
   if (/,\s*Викимедиа$/.test(a)) return a.replace(/,\s*Викимедиа$/, "");
   return a.length > 70 ? a.slice(0, 67) + "…" : a;
 }

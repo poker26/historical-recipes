@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
 
 export async function generateMetadata(): Promise<Metadata> {
   return pageMeta({
-    title: "Справочники: действия, показания, вещества и масла",
+    title: "Справочники по действиям растений, болезням, веществам и маслам",
     description:
       "Действия растений, показания по системам организма со старыми и современными названиями болезней, вещества из состава растений, эфирные масла и биотопы. Каждое понятие ведёт к растениям атласа и книгам.",
     path: "/reference",
@@ -29,7 +29,7 @@ const TOP_PER_SYSTEM = 12;
 // и не запускать предзагрузку каждой ссылки.
 function IndicationChip({ i }: { i: IndicationTerm }) {
   return (
-    <a href={`/indications/${i.id}`} className="chip chip-leaf" title={i.name_modern && i.name_modern !== i.name ? `по-современному: ${i.name_modern}` : undefined}>
+    <a href={`/indications/${i.id}`} className="chip chip-leaf" title={i.name_modern && i.name_modern !== i.name ? `по-современному ${i.name_modern}` : undefined}>
       {i.name}<span className="n">{fmtInt(i.linked_facts)}</span>
     </a>
   );
@@ -81,8 +81,8 @@ export default async function ReferencePage() {
       <section className="section" id="actions">
         <SectionHead title="Действия растений" />
         <p className="section-lead">
-          Как книги описывают действие растения: мочегонное, успокаивающее, вяжущее. Число рядом
-          с действием показывает, у скольких растений атласа оно упомянуто.
+          Так книги описывают, как действует растение, например мочегонное, успокаивающее или
+          вяжущее. Число рядом с действием показывает, у скольких растений атласа оно упомянуто.
         </p>
         {actions.length ? (
           <div className="chips rf-chips">
@@ -101,8 +101,8 @@ export default async function ReferencePage() {
         <SectionHead title="Показания по системам организма" href="/indications" more="все системы" />
         <p className="section-lead">
           От чего применяли растения, по системам организма. Число рядом с названием показывает,
-          сколько записей о применении к нему привязано; наведи курсор, чтобы увидеть
-          современное название, если оно другое.
+          сколько записей о применении к нему относится. Если навести на название, появится
+          современное, когда оно другое.
         </p>
         {systems.length ? (
           <div className="rf-systems">
@@ -120,8 +120,8 @@ export default async function ReferencePage() {
           </div>
         ) : (
           <Empty>
-            Словарь показаний сейчас не загрузился: он большой и собирается дольше остальных.
-            Обнови страницу через минуту или открой <Link href="/atlas">атлас</Link>.
+            Словарь показаний сейчас не загрузился. Обнови страницу через минуту или открой{" "}
+            <Link href="/atlas">атлас</Link>.
           </Empty>
         )}
       </section>
@@ -174,8 +174,8 @@ export default async function ReferencePage() {
       <section className="section" id="biotopes">
         <SectionHead title="Где растут" />
         <p className="section-lead">
-          Лес, луг, болото, степь: места, где книги и наблюдения находят растения. Число
-          показывает, сколько видов атласа связано с этим местом.
+          Лес, луг, болото и степь это места, где книги и наблюдения находят растения. Число
+          показывает, сколько видов атласа связано с каждым местом.
         </p>
         {bioGroups.length ? (
           <div className="rf-biotopes">

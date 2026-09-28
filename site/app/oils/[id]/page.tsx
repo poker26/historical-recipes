@@ -19,7 +19,7 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   if (!o) return { title: "Эфирное масло", robots: { index: false } };
   const plant = o.plant?.name || o.source_plant_raw;
   return pageMeta({
-    title: `${cap(o.name)}: применение по книгам`,
+    title: `${cap(o.name)} и его применение по книгам`,
     description:
       `${cap(o.name)}${plant ? ` получают из растения ${plant}${o.part ? ` (${o.part})` : ""}` : ""}. ` +
       `${o.aroma_profile ? excerpt(cap(o.aroma_profile), 80) + ". " : ""}` +
@@ -139,7 +139,7 @@ export default async function OilPage({ params }: Params) {
       </section>
 
       <p className="footnote rf-foot">
-        Ароматерапия по книгам, доказательная база слабая: это история применения, а не совет.
+        Сведения об ароматерапии взяты из книг, и научных подтверждений у них мало. Это история применения, а не совет.
       </p>
       <Footer />
     </>

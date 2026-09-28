@@ -11,7 +11,7 @@ export function CareBlock({ card, field }: { card: SpeciesCard; field: FieldView
   const sections = (field?.care_sections ?? []).map((s) => (s ?? "").trim()).filter(Boolean);
   if (!care.length && !sections.length) return null;
   return (
-    <Block id="care" title="Уход" lead={field?.care_summary?.trim() || "Что пишут книги по комнатному цветоводству: свет, полив, земля, пересадка и размножение."}>
+    <Block id="care" title="Уход" lead={field?.care_summary?.trim() || "Что книги по комнатному цветоводству пишут о свете, поливе, земле, пересадке и размножении."}>
       {care.length
         ? care.map((sec, i) => {
             const voices = (sec.voices ?? []).filter((v) => v?.text);
@@ -44,10 +44,10 @@ function MentionRow({ m }: { m: MentionBook }) {
     <li>
       {m.bookId ? <Link href={`/library/${m.bookId}`}>«{m.book}»</Link> : <span>«{m.book}»</span>}
       {m.year ? `, ${m.year}` : ""}
-      {m.names.length ? <span> · как {m.names.map((n) => `«${n}»`).join(", ")}</span> : null}
+      {m.names.length ? <span>, в книге названо {m.names.map((n) => `«${n}»`).join(", ")}</span> : null}
       {m.pages.length ? (
         <span className="muted">
-          {" · стр. "}
+          {", стр. "}
           {m.pages.map((p, i) => (
             <span key={p}>
               {i > 0 ? ", " : null}
@@ -67,7 +67,7 @@ export function NamesBlock({ card }: { card: SpeciesCard }) {
   const firstBooks = card.mentions.slice(0, 12);
   const restBooks = card.mentions.slice(12);
   return (
-    <Block id="names" title="Имена" lead={card.names.length ? `Старые и народные названия, под которыми ${card.kingdom === "гриб" ? "гриб" : "растение"} встречается в книгах корпуса.` : undefined}>
+    <Block id="names" title="Имена" lead={card.names.length ? `Старые и народные названия, под которыми ${card.kingdom === "гриб" ? "этот гриб" : "это растение"} встречается в книгах.` : undefined}>
       {chips.length ? (
         <div className="chips pc-names">
           {chips.map((n, i) => (
@@ -119,10 +119,10 @@ function SourceRow({ s }: { s: SourceBook }) {
     <li>
       {s.bookId ? <Link href={`/library/${s.bookId}`}>{s.book}</Link> : <span>{s.book}</span>}
       {s.year ? `, ${s.year}` : ""}
-      {counts.length ? <span className="muted"> · {counts.join(", ")}</span> : null}
+      {counts.length ? <span className="muted">, {counts.join(" и ")}</span> : null}
       {s.pages.length ? (
         <div className="small muted">
-          страницы:{" "}
+          {s.pages.length === 1 ? "страница " : "страницы "}
           {s.pages.map((p, i) => (
             <span key={p}>
               {i > 0 ? ", " : null}
@@ -184,7 +184,7 @@ export function KinBlock({ card }: { card: SpeciesCard }) {
             {card.oils.map((o) => (
               <Link key={o.id} href={`/oils/${o.id}`} className="chip chip-leaf">
                 {o.name || "Эфирное масло"}
-                {o.part ? ` · ${o.part}` : ""}
+                {o.part ? `, ${o.part}` : ""}
               </Link>
             ))}
           </div>
