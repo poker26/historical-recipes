@@ -543,7 +543,8 @@ def decide(bp: BookPages, sig: dict, tres: dict, vres: dict, corpus_norm: str) -
             cand, d.author_source, conf = ta, "text", _conf(tres.get("confidence"))
             quote = tres.get("author_quote")
             found = grounded(quote, corpus_norm) and author_grounded(ta, normalize(quote or ""))
-            if va and not _same_surname(ta, va):
+            conflict = bool(va) and not _same_surname(ta, va)
+            if conflict:
                 # Распознавание исказило фамилию («Чинов» вместо «Чиков»): предлагаем
                 # прочитанное со скана, решает человек.
                 d.reasons.append(f"в тексте фамилия автора «{surnames(ta)[0]}», на скане «{surnames(va)[0]}»")
@@ -552,10 +553,10 @@ def decide(bp: BookPages, sig: dict, tres: dict, vres: dict, corpus_norm: str) -
             # Автор со скана титула: модель прочитала его с картинки, а в тексте страниц
             # должна найтись хотя бы фамилия.
             cand, d.author_source, conf = va, "scan", _conf(vres.get("confidence"))
-            found = author_grounded(va, corpus_norm)
+            found, conflict = author_grounded(va, corpus_norm), False
         if cand:
             d.author = cand
-            if not found:
+            if not found and not conflict:
                 first = (surnames(cand) or [cand])[0]
                 d.reasons.append(f"фамилия автора «{first}» не найдена там, где модель указала автора")
             if conf < MIN_CONF:
@@ -631,8 +632,17 @@ def _pending(bp_year: int | None, bp_author: str | None, dec: dict, applied: dic
     return out
 
 
-def _title(title: str, pending: dict, applied: dict | None, auto_left: bool) -> str:
+def _title(title: str, pending: dict, applied: dict | None, auto_left: bool,
+           need_year: bool = True, need_author: bool = True) -> str:
     name = f"«{title[:90]}»"
+    # Чего не нашлось из того, что было пусто: дописывается в конец заголовка.
+    got_year = "year" in pending or bool(applied and applied.get("year"))
+    got_author = "author" in pending or bool(applied and applied.get("author"))
+    missing = [w for w, need, got in (("год", need_year, got_year), ("автор", need_author, got_author))
+               if need and not got]
+    miss = ""
+    if missing:
+        miss = " и ".join(missing) + (" не найдены" if len(missing) > 1 else " не найден")
     done = []
     if applied and applied.get("year"):
         done.append(f"год {applied['year']}")
@@ -649,10 +659,11 @@ def _title(title: str, pending: dict, applied: dict | None, auto_left: bool) -> 
 
     if todo:
         verb = ("предложены" if len(todo) > 1 else "предложен") if auto_left else "проверить"
-        return f"{name}: {verb} " + " и ".join(todo) + (f"; {written(done)}" if done else "")
+        return (f"{name}: {verb} " + " и ".join(todo) + (f"; {written(done)}" if done else "")
+                + (f"; {miss}" if miss else ""))
     if done:
-        return f"{name}: {written(done)}"
-    return f"{name}: год и автор не найдены на первых и последних страницах"
+        return f"{name}: {written(done)}" + (f"; {miss}" if miss else "")
+    return f"{name}: {miss or 'год и автор не найдены'} на первых и последних страницах"
 
 
 async def save_finding(bp: BookPages, sig: dict, tres: dict, vres: dict, dec: Decision,
@@ -701,7 +712,8 @@ async def save_finding(bp: BookPages, sig: dict, tres: dict, vres: dict, dec: De
               llm_reasoning = EXCLUDED.llm_reasoning, llm_model = EXCLUDED.llm_model, llm_at = now()
             RETURNING id"""), {
             "id": fid, "cid": CHECK_ID, "sev": "P1" if risky else "P2", "eid": bp.id,
-            "title": _title(bp.title, pending, applied, auto_left)[:300],
+            "title": _title(bp.title, pending, applied, auto_left,
+                            bp.year is None, author_empty(bp.author))[:300],
             "ev": json.dumps(evidence, ensure_ascii=False, default=str),
             "fix": json.dumps(fix, ensure_ascii=False) if fix else None,
             "af": bool(fix), "st": status,
@@ -793,7 +805,8 @@ async def apply_dry_findings() -> dict:
                 "ev": json.dumps(ev, ensure_ascii=False, default=str),
                 "fix": json.dumps(fix, ensure_ascii=False) if fix else None,
                 "af": bool(fix), "st": status, "i": r.id,
-                "title": _title(book.get("title") or "", pending, applied, False)[:300]})
+                "title": _title(book.get("title") or "", pending, applied, False,
+                                book.get("year_before") is None, author_empty(book.get("author_before")))[:300]})
             await db.commit()
         done["year"] += int("year" in applied)
         done["author"] += int("author" in applied)
