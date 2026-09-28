@@ -3,7 +3,7 @@ import uuid
 from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import select, or_, func, text
+from sqlalchemy import select, or_, func, literal_column, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -491,13 +491,17 @@ async def plants_sitemap(offset: int = 0, limit: int = Query(5000, ge=1, le=2000
                          substantive: bool = False, db: AsyncSession = Depends(get_db)):
     """Карточки, прошедшие гейт публикации, для карты сайта и обхода атласа.
     ``substantive=true`` оставляет только карточки с содержанием (см. SUBSTANTIVE_SQL)."""
-    base = select(Plant.id, Plant.name, Plant.name_latin, Plant.kingdom, Plant.created_at).where(PUBLISHED_PRED)
+    # Дата для <lastmod>: когда последний раз пересобран очерк карточки. У карточки своей
+    # даты изменения нет, а придуманная дата хуже никакой: поисковик перестаёт ей верить.
+    lastmod = literal_column(
+        "(SELECT max(m.updated_at) FROM plant_reader_monograph m WHERE m.plant_id = plants.id)").label("lastmod")
+    base = select(Plant.id, Plant.name, Plant.name_latin, Plant.kingdom, lastmod).where(PUBLISHED_PRED)
     if substantive:
         base = base.where(SUBSTANTIVE_SQL)
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
     rows = (await db.execute(base.order_by(Plant.name, Plant.id).limit(limit).offset(offset))).all()
     return {"total": total, "items": [
-        {"id": str(i), "name": n, "name_latin": l, "kingdom": k, "created_at": c.isoformat() if c else None}
+        {"id": str(i), "name": n, "name_latin": l, "kingdom": k, "lastmod": c.isoformat() if c else None}
         for i, n, l, k, c in rows]}
 
 
