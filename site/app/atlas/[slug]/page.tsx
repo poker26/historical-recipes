@@ -7,11 +7,11 @@ import { Fragment } from "react";
 import { notFound, permanentRedirect } from "next/navigation";
 import { Header, Footer } from "../../ui";
 import { Empty } from "../../../components/common";
-import { SITE_URL, excerpt, plantHref, plantSlug } from "../../../lib/api";
+import { DEFAULT_OG, SITE_URL, excerpt, plantHref, plantSlug } from "../../../lib/api";
 import {
-  displayName, getCompoundInsights, getFieldView, getGenusPhotos, getObservations, getPairings, getPlantCard, getPlantRecipes,
-  jsonLd, largePhoto, normKind, passesGate, photoSourceOf, plateExists, plateKey, plateUrl, queryFrom, quoteOf,
-  resolvePlantParam, sameName, type GenusCard, type Photo, type PlantCard, type SpeciesCard,
+  cardTitle, displayName, getCompoundInsights, getFieldView, getGenusPhotos, getObservations, getPairings, getPlantCard, getPlantRecipes,
+  isSubstantive, jsonLd, largePhoto, normKind, passesGate, photoSourceOf, plateExists, plateKey, plateUrl, queryFrom, quoteOf,
+  resolvePlantParam, sameName, type FieldView, type GenusCard, type Photo, type PlantCard, type SpeciesCard,
 } from "../../../lib/api-plant";
 import { PlantHead, SafetyPanel, Toc } from "../../../components/plant/head";
 import { EssayBlock, SafetyBlock, UsesBlock } from "../../../components/plant/uses";
@@ -60,18 +60,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (res.state !== "ok") return { title: "Карточка вида", robots: { index: false, follow: true } };
   const card = res.card;
   const name = displayName(card.name);
-  const title = card.latin ? `${name} (${card.latin})` : name;
+  const title = cardTitle(card, name);
   const canonical = SITE_URL + plantHref(card.id, card.latin);
   let description: string;
   let image: string | null = null;
   let photoOk = false;
+  let field: FieldView | null = null;
   if (card.kind === "genus") {
     const photo = await genusPhoto(card);
     image = photo ? largePhoto(photo.url) : null;
     photoOk = !!photo;
     description = `Род ${name}${card.latin ? ` (${card.latin})` : ""} в атласе «Что растёт». Какие виды в него входят, как их применяли по книгам, какие вещества в них находили и что из них готовили.`;
   } else {
-    const field = await getFieldView(card.id);
+    field = await getFieldView(card.id);
     const lead = quoteOf(field?.lead_fact);
     description =
       field?.verdict?.trim() || lead?.text || card.firstQuote || card.description ||
@@ -84,12 +85,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       if (key && (await plateExists(key))) image = plateUrl(key);
     }
   }
-  const index = passesGate({ kingdom: card.kingdom, name: card.name, latin: card.latin, photo: photoOk });
+  // В индекс идёт карточка, прошедшая гейт публикации и с собственным содержанием.
+  const index = passesGate({ kingdom: card.kingdom, name: card.name, latin: card.latin, photo: photoOk }) && isSubstantive(card, field);
   return {
     title,
     description: excerpt(description, 160),
     alternates: { canonical },
-    openGraph: { ...OG_BASE, title, description: excerpt(description, 200), url: canonical, images: image ? [{ url: image }] : undefined },
+    openGraph: { ...OG_BASE, title, description: excerpt(description, 200), url: canonical, images: image ? [{ url: image }] : [DEFAULT_OG] },
     robots: index ? { index: true, follow: true } : { index: false, follow: true },
   };
 }

@@ -6,7 +6,7 @@ import { Crumbs, Empty, SectionHead, Tile } from "../../../components/common";
 import { BookCover } from "../../../components/library/BookCover";
 import { markQuery } from "../../../components/library/highlight";
 import { HighlightedText } from "../../../components/library/HighlightedText";
-import { SITE_URL, excerpt, fmtInt, isUuid, plantHref, pluralRu, titleYear } from "../../../lib/api";
+import { DEFAULT_OG, SITE_URL, excerpt, fmtInt, isUuid, plantHref, pluralRu, realAuthor, titleYear } from "../../../lib/api";
 import {
   ACCESS_CHIP, accessNote, domainLabel, firstReadablePage, getBook, param, recipeMeta, recipesTotal, searchBook,
   type BookDetail,
@@ -61,23 +61,28 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
   if (!r.data) return { title: "Книга", robots: { index: false } };
   const b = r.data;
   const url = `${SITE_URL}/library/${b.id}`;
-  const title = titleYear(b.title, b.year);
-  const who = [b.author, titleYear(`«${b.title}»`, b.year)].filter(Boolean).join(", ");
+  const author = realAuthor(b.author)?.replace(/[.\s]+$/, "") ?? null;
+  // Открытую книгу ищут словами «читать онлайн»: они стоят в заголовке.
+  const base = titleYear(b.title, b.year);
+  const title = (author ? `${author}. ${base}` : base) + (b.access === "open" ? ", читать онлайн" : "");
+  const who = [realAuthor(b.author), titleYear(`«${b.title}»`, b.year)].filter(Boolean).join(", ");
   const line = extractedLine(b);
   const description =
     `${who}. ` +
-    (line ? `Из книги в атлас вошли ${line}. ` : "") +
-    (b.access === "open" ? "Страницы книги можно листать целиком." : "Открыты номера страниц и цитаты, которые вошли в атлас.");
+    (b.access === "open" ? "Книгу можно читать онлайн целиком по сканам страниц. " : "") +
+    (line ? `Из книги в атлас вошли ${line}.` : b.access === "open" ? "" : "Открыты номера страниц и цитаты, которые вошли в атлас.");
+  // Закрытая книга показывает только описание: в индексе ей делать нечего.
+  const noindex = !!param(searchParams.q) || b.access === "closed";
   return {
     title,
-    description,
+    description: description.trim(),
     alternates: { canonical: url },
-    robots: param(searchParams.q) ? { index: false, follow: true } : undefined,
+    robots: noindex ? { index: false, follow: true } : undefined,
     openGraph: {
-      title, description, url, type: "book",
+      title, description: description.trim(), url, type: "book",
       ...(b.year ? { releaseDate: String(b.year) } : {}),
-      ...(b.author ? { authors: [b.author] } : {}),
-      ...(b.has_cover && b.access !== "closed" ? { images: [{ url: `${url}/cover.jpg?size=medium` }] } : {}),
+      ...(author ? { authors: [author] } : {}),
+      images: b.has_cover && b.access !== "closed" ? [{ url: `${url}/cover.jpg?size=medium` }] : [DEFAULT_OG],
     },
   };
 }
@@ -123,7 +128,7 @@ export default async function BookPage({ params, searchParams }: Props) {
 
   const pagesLine = b.pages > 1
     ? hasPdfPages
-      ? `${fmtInt(b.pages)} ${pluralRu(b.pages, "страница", "страницы", "страниц")}, каждую можно открыть картинкой и текстом.`
+      ? `${fmtInt(b.pages)} ${pluralRu(b.pages, "страница", "страницы", "страниц")}, каждую можно открыть сканом.`
       : `${fmtInt(b.pages)} ${pluralRu(b.pages, "страница", "страницы", "страниц")}, из них ${b.scan_pages ? fmtInt(b.scan_pages) + " со сканом" : "сканов нет"}.`
     : b.pages === 1 ? "Книга хранится одним текстом, без сканов страниц." : null;
 
@@ -131,10 +136,11 @@ export default async function BookPage({ params, searchParams }: Props) {
     "@context": "https://schema.org",
     "@type": "Book",
     name: b.title,
-    ...(b.author ? { author: { "@type": "Person", name: b.author } } : {}),
+    ...(realAuthor(b.author) ? { author: { "@type": "Person", name: b.author } } : {}),
     ...(b.year ? { datePublished: String(b.year) } : {}),
     inLanguage: "ru",
     url,
+    ...(b.access === "open" ? { isAccessibleForFree: true } : {}),
     ...(b.pages > 1 ? { numberOfPages: b.pages } : {}),
     ...(b.has_cover && !closed ? { image: `${url}/cover.jpg?size=medium` } : {}),
   };

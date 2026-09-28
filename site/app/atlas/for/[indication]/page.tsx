@@ -123,7 +123,9 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
       : `Какие растения применяли ${d.phrase} по травникам и справочникам с 1790 года. В атласе ${fmtInt(d.total)} ${speciesWord(d.total)} с фотографиями, цитатами из книг и сведениями о безопасности. Это история применения, а не медицинский совет.`
     : `В атласе пока нет видов, которые книги связывают с «${x}». Попробуй старое, современное или латинское название.`;
   const canonical = `${SITE_URL}/atlas/for/${encodeURIComponent(x.toLowerCase())}`;
-  const indexable = d.total > 0 && !firstParam(searchParams.view);
+  // Для действия («мочегонное») в индексе страница /actions/мочегонное с заголовком
+  // «Мочегонные растения»; здесь та же выборка, поэтому она остаётся без индекса.
+  const indexable = d.total > 0 && !firstParam(searchParams.view) && !d.isAction;
   return {
     title,
     description,

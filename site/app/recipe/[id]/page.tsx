@@ -3,7 +3,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Header, Footer } from "../../ui";
 import { Crumbs, Empty, Quote, Safety, SectionHead, SourceRef } from "../../../components/common";
-import { excerpt, isUuid, SITE_URL } from "../../../lib/api";
+import { DEFAULT_OG, excerpt, isUuid, realAuthor, SITE_URL } from "../../../lib/api";
+import { largePhoto } from "../../../lib/api-plant";
 import {
   KIND_CHIP_RU, amountText, getRecipe, getSimilarByCategory, getSimilarByPlant, inSentence,
   recipeTitle, recipeYear, refAuthor, worstIngredient, type Ingredient, type RecipeDetail,
@@ -23,13 +24,37 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { data: r } = await getRecipe(id);
   if (!r) return { title: "Рецепт", robots: { index: false } };
   const year = recipeYear(r);
+  const name = recipeTitle(r.name);
   return pageMeta({
-    title: `${recipeTitle(r.name)}, рецепт из книги «${r.book_title || "без названия"}»${year ? ` ${year} года` : ""}`,
-    description: excerpt(r.normalized_text || r.original_text, 160) || `Рецепт из книги «${r.book_title || "без названия"}» с дословным текстом и ингредиентами.`,
+    title: year ? `${name}, рецепт ${year} года` : `${name}, рецепт из книги «${excerpt(r.book_title || "без названия", 40)}»`,
+    description: recipeDescription(r, name, year),
     path: `/recipe/${r.id}`,
-    // В индекс идут только пошаговые домашние рецепты; заметки о дозах открываются по ссылке.
-    index: !!(r.step_by_step && r.home_doable),
+    // В индекс идут пошаговые домашние рецепты с текстом от 200 знаков. Заметки о дозах и
+    // короткие записи открываются по ссылке. Карта сайта отбирает рецепты по тому же
+    // правилу (/recipes/sitemap?min_text=200).
+    index: !!(r.step_by_step && r.home_doable) && (r.original_text ?? "").length >= 200,
   });
+}
+
+/** Описание для поисковика: начало рецепта без номера и повтора названия, потом источник. */
+function recipeDescription(r: RecipeDetail, name: string, year: number | null): string {
+  let body = (r.normalized_text || r.original_text || "").replace(/\s+/g, " ").trim();
+  body = body.replace(/^(№\s*)?\d{1,4}\s*[.)]\s*/, "");
+  if (name && body.toLowerCase().startsWith(name.toLowerCase())) {
+    body = body.slice(name.length).replace(/^[\s.,:;!?)(—–-]+/, "");
+  }
+  const book = r.book_title ? `Рецепт из книги «${excerpt(r.book_title, 50)}»${year ? `, ${year}` : ""}.` : "";
+  if (!body) return book || "Рецепт с дословным текстом из старой книги и ингредиентами.";
+  return [excerpt(body, Math.max(70, 158 - book.length)), book].filter(Boolean).join(" ");
+}
+
+/** Шаги для разметки Recipe: текст по предложениям, короткие обрывки не считаются шагом. */
+function recipeSteps(text: string): { "@type": "HowToStep"; text: string }[] {
+  const parts = text
+    .split(/\n+|(?<=[.!?])\s+(?=[А-ЯЁA-Z])/)
+    .map((s) => s.replace(/\s+/g, " ").trim())
+    .filter((s) => s.length >= 12);
+  return (parts.length ? parts : [text.trim()]).slice(0, 20).map((t) => ({ "@type": "HowToStep", text: t }));
 }
 
 function ingredientLine(i: Ingredient): string {
@@ -39,14 +64,23 @@ function ingredientLine(i: Ingredient): string {
 }
 
 function recipeJsonLd(r: RecipeDetail, title: string, year: number | null) {
+  // Картинка обязательна для расширенного сниппета рецепта. Фото блюда в старых книгах нет,
+  // поэтому берём фото растения из ингредиентов, а без него общую картинку сайта.
+  const photo = r.ingredients.find((i) => i.plant_photo)?.plant_photo;
+  const text = (r.normalized_text || r.original_text || "").trim();
   return {
     "@context": "https://schema.org",
     "@type": "Recipe",
     name: title,
     url: `${SITE_URL}/recipe/${r.id}`,
     inLanguage: "ru",
+    image: [photo ? largePhoto(photo) : DEFAULT_OG.url],
+    description: recipeDescription(r, title, year),
+    ...(realAuthor(r.book_author) ? { author: { "@type": "Person", name: r.book_author } } : {}),
+    ...(year ? { datePublished: String(year) } : {}),
     recipeCategory: r.category || undefined,
     recipeIngredient: r.ingredients.map(ingredientLine).filter(Boolean),
+    recipeInstructions: text ? recipeSteps(text) : undefined,
     isBasedOn: r.book_title
       ? {
           "@type": "Book",

@@ -950,6 +950,40 @@ export const jsonLd = (obj: unknown) => JSON.stringify(obj).replace(/</g, LT_ESC
 /** Совпадают ли имена без учёта регистра и «ё». */
 export const sameName = (a?: string | null, b?: string | null) => keyOf(a) === keyOf(b);
 
+/** Есть ли у карточки своё содержание для поисковика: записи о применении или о еде,
+ *  описание или очерк длиннее 200 знаков, у рода хотя бы два вида. Пустые карточки
+ *  получают noindex. Бэкенд отбирает карту сайта по тому же правилу (SUBSTANTIVE_SQL в
+ *  backend/app/routers/plants.py), поэтому в карту не попадает страница с noindex. */
+export function isSubstantive(card: PlantCard, field?: FieldView | null): boolean {
+  if (card.kind === "genus") return card.memberCount >= 2;
+  return (
+    card.usesTotal > 0 ||
+    card.culinary.total > 0 ||
+    (card.description ?? "").length >= 200 ||
+    (field?.description ?? "").length >= 200
+  );
+}
+
+/** Заголовок карточки под то, что ищут: «Зверобой (Hypericum perforatum), лечебные
+ *  свойства и применение», у грибов съедобность или ядовитость. Если с латынью выходит
+ *  длиннее 70 знаков, латынь уходит: поисковик всё равно обрежет хвост. */
+export function cardTitle(card: PlantCard, name: string): string {
+  const withLatin = card.latin ? `${name} (${card.latin})` : name;
+  let suffix = "";
+  if (card.kind === "genus") {
+    suffix = card.memberCount >= 2 ? ", виды и применение" : "";
+    return `Род ${withLatin}${suffix}`;
+  }
+  const level = card.safety?.level ?? null;
+  if (card.kingdom === "гриб") {
+    if (level != null && level >= 3) suffix = ", ядовитость и описание";
+    else if (level === 1 || level === 2) suffix = ", съедобность и описание";
+  } else if (card.usesTotal > 0) suffix = ", лечебные свойства и применение";
+  else if (card.culinary.total > 0) suffix = ", съедобность и рецепты";
+  const full = withLatin + suffix;
+  return full.length <= 70 || !suffix ? full : name + suffix;
+}
+
 /** Гейт индексации: растение или гриб, фото, кириллическое имя, латынь похожа на латынь. */
 export function passesGate(p: { kingdom: string | null; name: string; latin: string | null; photo: boolean }): boolean {
   const kingdomOk = p.kingdom === "растение" || p.kingdom === "гриб";
