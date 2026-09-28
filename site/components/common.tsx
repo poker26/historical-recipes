@@ -103,7 +103,7 @@ export function SourceRef({ book, bookId, year, author, page, hl }: SourceRefPro
       {bookHref ? <Link href={bookHref}>{label || "книга"}</Link> : <span>{label}</span>}
       {page ? (
         <>
-          {" · "}
+          {", "}
           {pageHref ? <Link href={pageHref}>стр. {page}</Link> : <span>стр. {page}</span>}
         </>
       ) : null}
@@ -189,7 +189,7 @@ export function PhotoCredit({ attribution, license, source }: { attribution?: st
   const who = creditShort(attribution) ?? "автор не указан";
   return (
     <div className="credit" title={attribution ?? undefined}>
-      Фото {who}{lic ? `, ${lic}` : ""}{src && !who.includes(src) ? `, ${src}` : ""}.
+      Фото {who}{lic && !who.toUpperCase().includes(lic) ? `, ${lic}` : ""}{src && !who.includes(src) ? `, ${src}` : ""}.
     </div>
   );
 }

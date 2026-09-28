@@ -97,7 +97,7 @@ export function LeaderTable({ rows, highlight }: { rows: LeaderRow[]; highlight?
             {r.rank ?? "—"}
           </span>
           <span style={{ flex: 1 }}>{r.nick}</span>
-          <span style={{ fontWeight: 700 }}>{r.score}</span>
+          <span style={{ fontWeight: 700 }}>{r.score} {pluralRu(r.score, "очко", "очка", "очков")}</span>
           <span style={{ fontSize: 12, color: "#9ca3af", width: 76, textAlign: "right" }}>
             {r.badges} {pluralRu(r.badges, "значок", "значка", "значков")}
           </span>

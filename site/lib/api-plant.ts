@@ -308,6 +308,71 @@ export function splitList(s: string | null | undefined): string[] {
 }
 
 /** Уникальные значения по ключу без регистра, в порядке первого появления. */
+// Части растения в записях книг пишутся по-разному: «лист», «листья», «листьев».
+// Для показа сводим их к одной форме, иначе строка «Части растения» состоит из повторов.
+const PART_CANON: [RegExp, string][] = [
+  [/^листь?[яеввы]*$|^листочк|^листок$|^лист$/, "листья"],
+  [/^соцвети/, "соцветия"],
+  [/^цвет(ы|ки|ков|ок|)$|^цветк/, "цветки"],
+  [/^сем(я|ена|ян)$/, "семена"],
+  [/^корн(и|ей)$|^корень$/, "корни"],
+  [/^корневищ/, "корневища"],
+  [/^трав(а|у|ы)$/, "трава"],
+  [/^плод(ы|ов|)$/, "плоды"],
+  [/^кор(а|у|ы)$/, "кора"],
+  [/^стебл|^стебел/, "стебли"],
+  [/^почк/, "почки"],
+  [/^ягод/, "ягоды"],
+  [/^побег/, "побеги"],
+  [/^клубн/, "клубни"],
+  [/^лукови/, "луковицы"],
+  [/^сок$/, "сок"],
+  [/^вс[её] растение$/, "всё растение"],
+];
+const PART_DROP = /^(сырь[её]|сырьё растения|растение)$/;
+
+/** Части из поля записи: «корневища и корни, листьев» → ["корневища", "корни", "листья"]. */
+export function canonParts(s: string | null | undefined): string[] {
+  const out: string[] = [];
+  for (const raw of splitList(s)) {
+    for (const piece of raw.split(/\s+и\s+/)) {
+      const p = piece.trim().toLowerCase().replace(/ё/g, "е");
+      if (!p || PART_DROP.test(p)) continue;
+      const hit = PART_CANON.find(([rx]) => rx.test(p));
+      out.push(hit ? hit[1] : piece.trim());
+    }
+  }
+  return out;
+}
+
+// Способы приготовления: делим на отдельные слова, множественное число сводим к
+// единственному, путь приёма («внутрь», «наружно») сюда не относится.
+const PREP_CANON: [RegExp, string][] = [
+  [/^настои$/, "настой"],
+  [/^отвары$/, "отвар"],
+  [/^настойки$/, "настойка"],
+  [/^сборы$/, "сбор"],
+  [/^компрессы$/, "компресс"],
+  [/^примочки$/, "примочка"],
+  [/^чаи$/, "чай"],
+  [/^ванны$/, "ванна"],
+  [/^мази$/, "мазь"],
+  [/^порошки$/, "порошок"],
+];
+const PREP_DROP = /^(внутрь|наружно|препараты|сырь[её])$/;
+
+export function canonPreps(s: string | null | undefined): string[] {
+  const out: string[] = [];
+  for (const raw of splitList(s)) {
+    const p = raw.trim();
+    const low = p.toLowerCase();
+    if (!p || p.length > 60 || PREP_DROP.test(low)) continue;
+    const hit = PREP_CANON.find(([rx]) => rx.test(low));
+    out.push(hit ? hit[1] : p);
+  }
+  return out;
+}
+
 class Uniq {
   private seen = new Map<string, string>();
   add(v: string | null | undefined) {
@@ -401,9 +466,8 @@ function buildUseGroups(uses: RawUse[]): { groups: UseGroup[]; total: number; qu
       }
       if (bk) g.books.add(bk);
       for (const i of splitList(u.indications)) g.ind.add(i);
-      for (const p of splitList(u.part)) g.parts.add(p);
-      const prep = clean(u.preparation);
-      if (prep && prep.length <= 90) g.preps.add(prep);
+      for (const p of canonParts(u.part)) g.parts.add(p);
+      for (const p of canonPreps(u.preparation)) g.preps.add(p);
     }
   }
   const sorted = Array.from(acc.values()).sort((a, b) => {
@@ -470,7 +534,7 @@ function buildCompounds(rows: RawCompound[]): { groups: CompoundGroup[]; total: 
       g.items.set(ik, it);
     }
     if (!it.compoundId && r.compound_id) it.compoundId = r.compound_id;
-    for (const p of splitList(r.part)) it.parts.add(p);
+    for (const p of canonParts(r.part)) it.parts.add(p);
     const book = clean(r.source);
     const sk = r.book_id || keyOf(book);
     if (sk && !it.sources.has(sk)) it.sources.set(sk, { book: book || "книга", bookId: r.book_id || null, year: r.year ?? null });

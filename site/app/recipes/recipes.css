@@ -68,7 +68,7 @@
   .rc-ings td { border: none; padding: 4px 14px; }
   .rc-ings td::before {
     content: attr(data-label); display: block; font-size: 11.5px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .03em; font-family: var(--font-golos), sans-serif;
+    font-family: var(--font-golos), sans-serif;
   }
   .rc-similar { grid-template-columns: 1fr; }
 }

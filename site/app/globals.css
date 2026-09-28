@@ -185,7 +185,7 @@ button, input, select { font: inherit; }
 .with-aside { display: grid; grid-template-columns: 260px 1fr; gap: 28px; align-items: start; }
 .aside { position: static; }
 .facet { margin-bottom: 18px; }
-.facet h4 { margin: 0 0 8px; font-size: 14px; color: var(--muted); font-family: var(--font-golos), sans-serif; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.facet h4 { margin: 0 0 8px; font-size: 14px; color: var(--muted); font-family: var(--font-golos), sans-serif; font-weight: 600; }
 .facet a, .facet span.val { display: flex; justify-content: space-between; gap: 8px; padding: 5px 10px; border-radius: 10px; text-decoration: none; color: var(--ink); font-size: 14px; }
 .facet a:hover { background: var(--cream); }
 .facet a.active { background: var(--leaf); color: var(--forest); font-weight: 600; }
@@ -195,7 +195,7 @@ button, input, select { font: inherit; }
 /* ——— таблицы ——— */
 .table { width: 100%; border-collapse: collapse; background: var(--cream); border-radius: var(--radius-row); overflow: hidden; box-shadow: var(--shadow); }
 .table th, .table td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--line); font-size: 14.5px; vertical-align: top; }
-.table th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .03em; }
+.table th { color: var(--muted); font-weight: 600; font-size: 13.5px; }
 .table tr:last-child td { border-bottom: none; }
 
 /* ——— пейджер и крошки ——— */
@@ -287,7 +287,7 @@ button, input, select { font: inherit; }
 /* ——— подвал ——— */
 .site-footer { margin-top: 64px; border-top: 1px solid var(--line); padding: 32px 0 40px; color: var(--muted); font-size: 14px; }
 .site-footer .wrap { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 24px; }
-.site-footer h4 { margin: 0 0 8px; font-family: var(--font-golos), sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink); }
+.site-footer h4 { margin: 0 0 8px; font-family: var(--font-golos), sans-serif; font-size: 14px; font-weight: 600; color: var(--ink); }
 .site-footer a { display: block; color: var(--muted); text-decoration: none; padding: 3px 0; }
 .site-footer a:hover { color: var(--forest); }
 .site-footer .fine { margin-top: 18px; font-size: 12.5px; }

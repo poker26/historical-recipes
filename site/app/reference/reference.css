@@ -72,8 +72,7 @@
   .rf-table tr:last-child { border-bottom: none; }
   .rf-table td { border: none; padding: 3px 14px; }
   .rf-table td::before {
-    content: attr(data-label); display: block; font-size: 11.5px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .03em;
+    content: attr(data-label); display: block; font-size: 12px; color: var(--muted);
   }
 }
 .rf-source { max-width: 240px; }

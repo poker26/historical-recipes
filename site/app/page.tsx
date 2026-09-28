@@ -212,7 +212,7 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
               <div className="muted">{[bookOfWeek.author, bookOfWeek.year].filter(Boolean).join(", ")}</div>
               <p style={{ margin: "12px 0 0", color: "#3f4a43" }}>
                 В книге {fmtInt(bookOfWeek.pages)} {pluralRu(bookOfWeek.pages, "страница", "страницы", "страниц")}.
-                {" "}Из неё в атлас попали {fmtInt(bookOfWeek.plants)} {pluralRu(bookOfWeek.plants, "растение", "растения", "растений")}
+                {" "}Из неё в атлас вошли {fmtInt(bookOfWeek.plants)} {pluralRu(bookOfWeek.plants, "растение", "растения", "растений")}
                 {" "}и {fmtInt(bookOfWeek.uses)} {pluralRu(bookOfWeek.uses, "цитата", "цитаты", "цитат")} о применении.
                 {" "}Срок авторских прав на книгу давно истёк, поэтому её можно листать страницу за страницей.
               </p>

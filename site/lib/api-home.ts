@@ -1,5 +1,6 @@
 // Данные главной, мест и прогулок: витрина сезона, кухня, эфир, книга недели, цифры корпуса.
 import { getJson, qs } from "./api";
+import { creditShort } from "./api-atlas";
 import type { Region } from "./regions";
 
 export type ShowcaseItem = {
@@ -23,10 +24,10 @@ export type KitchenItem = {
 
 /** «© автор · CC BY» для подписи снимка; null, если автора нет. */
 export function creditLine(attribution?: string | null, license?: string | null): string | null {
-  if (!attribution) return null;
-  const who = attribution.replace(/^\(c\)\s*/i, "").replace(/,?\s*some rights reserved.*$/i, "").replace(/\s*\(.*?\)\s*$/, "").trim();
-  const lic = license ? license.toUpperCase().replace(/-/g, " ") : "";
-  return `© ${who}${lic ? " · " + lic : ""}`;
+  const short = creditShort(attribution);
+  if (!short) return null;
+  const lic = license ? license.toUpperCase().replace(/^CC-/, "CC ") : "";
+  return lic && !short.toUpperCase().includes(lic) ? `${short}, ${lic}` : short;
 }
 export type Kitchen = { items: KitchenItem[]; title?: string; disclaimer?: string };
 export const getKitchen = (limit = 6) => getJson<Kitchen>(`/showcase/kitchen?limit=${limit}`, 3600);
