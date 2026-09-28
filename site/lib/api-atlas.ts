@@ -37,6 +37,9 @@ export type PlantQuery = {
   edible?: boolean;
   is_toxic?: boolean;
   published?: boolean;
+  /** Шкала съедобности 0–4: 1 съедобно, 2 условно съедобно, 3 опасно, 4 смертельно. */
+  safety_min?: number;
+  safety_max?: number;
   sort?: "name" | "uses" | "photo" | "match";
   limit: number;
   offset?: number;
@@ -301,13 +304,38 @@ const FUNGAL_RU = new Set<string>([
   "пластинчатые",
 ]);
 
-/** Латинское семейство из грязной строки: «ROSACEAE Juss.» → «Rosaceae»; иначе null. */
+/** Старые латинские имена семейств, у которых есть современные: одно семейство под двумя
+ *  именами. На сайте оно одно, под современным именем. Бэкенд ищет по тем же синонимам
+ *  (backend/app/routers/plants.py, _FAMILY_SYNONYMS). */
+const FAMILY_SYNONYM: Record<string, string> = {
+  Compositae: "Asteraceae", Gramineae: "Poaceae", Leguminosae: "Fabaceae", Labiatae: "Lamiaceae",
+  Umbelliferae: "Apiaceae", Cruciferae: "Brassicaceae", Palmae: "Arecaceae", Guttiferae: "Clusiaceae",
+};
+
+/** Русское имя на странице семейства: у переименованных семейств оба имени. */
+const FAMILY_TITLE_RU: Record<string, string> = {
+  Asteraceae: "астровые, или сложноцветные", Lamiaceae: "яснотковые, или губоцветные",
+  Brassicaceae: "капустные, или крестоцветные", Fabaceae: "бобовые", Poaceae: "злаки", Apiaceae: "зонтичные",
+};
+
+/** Русское имя семейства → латинское современное: «сложноцветные» → Asteraceae. */
+const RU_TO_LATIN: Record<string, string> = (() => {
+  const out: Record<string, string> = {};
+  for (const [lat, ru] of Object.entries(FAMILY_RU)) {
+    const canon = FAMILY_SYNONYM[lat] ?? lat;
+    if (!out[ru] || canon === lat) out[ru] = canon;
+  }
+  return out;
+})();
+
+/** Латинское семейство из грязной строки: «ROSACEAE Juss.» → «Rosaceae», «Compositae» →
+ *  «Asteraceae» (современное имя); иначе null. */
 export function latinFamily(s?: string | null): string | null {
   if (!s) return null;
   const w = s.trim().split(/[\s(,.;]/)[0].replace(/[^A-Za-z]/g, "");
   if (w.length < 6) return null;
   const t = w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-  return /ae$/.test(t) ? t : null;
+  return /ae$/.test(t) ? FAMILY_SYNONYM[t] ?? t : null;
 }
 
 /** Русское семейство из грязной строки: «семейство сложноцветных» → «сложноцветные»; мусор → null. */
@@ -334,8 +362,10 @@ export type FamilyFacet = { key: string; label: string; latin: string | null; co
 export function familyFacets(values: FacetValue[]): FamilyFacet[] {
   const map = new Map<string, FamilyFacet>();
   for (const v of values) {
-    const lat = latinFamily(v.value);
-    const ru = lat ? null : russianFamily(v.value);
+    const ru0 = latinFamily(v.value) ? null : russianFamily(v.value);
+    // «сложноцветные» и Compositae сходятся к Asteraceae: одно семейство, один пункт.
+    const lat = latinFamily(v.value) ?? (ru0 ? RU_TO_LATIN[ru0] ?? null : null);
+    const ru = lat ? null : ru0;
     const key = lat ?? ru;
     if (!key) continue;
     const cur = map.get(key);
@@ -345,7 +375,7 @@ export function familyFacets(values: FacetValue[]): FamilyFacet[] {
     }
     map.set(key, {
       key,
-      label: lat ? FAMILY_RU[lat] ?? lat : key,
+      label: lat ? FAMILY_TITLE_RU[lat] ?? FAMILY_RU[lat] ?? lat : key,
       latin: lat,
       count: v.count,
       fungal: lat ? FUNGAL_FAMILIES.has(lat) : FUNGAL_RU.has(key),
@@ -359,14 +389,39 @@ export function familyFacets(values: FacetValue[]): FamilyFacet[] {
 }
 
 /** Ключ семейства из параметра адреса, чтобы узнать активный пункт фасета. */
-export const familyKey = (value?: string | null): string | null =>
-  value ? latinFamily(value) ?? russianFamily(value) ?? value : null;
+export function familyKey(value?: string | null): string | null {
+  if (!value) return null;
+  const lat = latinFamily(value);
+  if (lat) return lat;
+  const ru = russianFamily(value);
+  return ru ? RU_TO_LATIN[ru] ?? ru : value;
+}
 
 /** Подпись выбранного семейства для чипа активного фильтра. */
 export function familyLabel(value: string): string {
-  const lat = latinFamily(value);
-  if (lat) return FAMILY_RU[lat] ? `${FAMILY_RU[lat]} (${lat})` : lat;
-  return russianFamily(value) ?? value;
+  const key = familyKey(value) ?? value;
+  if (/ae$/.test(key)) {
+    const ru = FAMILY_TITLE_RU[key] ?? FAMILY_RU[key];
+    return ru ? `${ru} (${key})` : key;
+  }
+  return key;
+}
+
+/** Заголовок страницы семейства: «Растения семейства розоцветных (Rosaceae)»,
+ *  у грибных семейств «Грибы семейства …». */
+export function familyPageTitle(value: string): string {
+  const key = familyKey(value) ?? value;
+  const lat = /ae$/.test(key) ? key : null;
+  const ru = lat ? FAMILY_TITLE_RU[lat] ?? FAMILY_RU[lat] ?? null : key;
+  const fungal = lat ? FUNGAL_FAMILIES.has(lat) : FUNGAL_RU.has(key);
+  const who = fungal ? "Грибы" : "Растения";
+  if (!ru) return `${who} семейства ${lat}`;
+  // Родительный падеж: «розоцветные» → «розоцветных», «злаки» → «злаков».
+  const gen = ru
+    .split(" ")
+    .map((w) => (w === "злаки" ? "злаков" : w.replace(/ые(,?)$/, "ых$1").replace(/ие(,?)$/, "их$1")))
+    .join(" ");
+  return `${who} семейства ${gen}${lat ? ` (${lat})` : ""}`;
 }
 
 const BIOTOPE_RU: Record<string, string> = {

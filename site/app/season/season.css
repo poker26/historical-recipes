@@ -1,0 +1,31 @@
+/* ——— что собирать по месяцам ——— */
+.season-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.season-item {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 16px; align-items: start;
+  background: var(--cream); border-radius: var(--radius-row); box-shadow: var(--shadow); padding: 14px;
+}
+.season-photo {
+  width: 96px; height: 96px; border-radius: 14px; overflow: hidden; background: var(--leaf);
+  display: flex; align-items: center; justify-content: center; color: var(--moss);
+}
+.season-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.season-photo svg { width: 60%; height: 60%; }
+.season-body { min-width: 0; display: grid; gap: 8px; }
+.season-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.season-name { font-weight: 600; font-size: 18px; text-decoration: none; color: var(--ink); }
+.season-name:hover { text-decoration: underline; }
+.season-kv { font-size: 14.5px; }
+.season-source { font-size: 14px; }
+.season-nav { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; margin: 8px 0 24px; font-weight: 600; }
+.season-nav a { text-decoration: none; }
+.season-months { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.season-month { display: grid; gap: 4px; text-decoration: none; color: var(--ink); padding: 16px; }
+.season-month.is-now { box-shadow: 0 0 0 2px var(--moss); }
+
+@media (max-width: 760px) {
+  .season-item { grid-template-columns: 64px minmax(0, 1fr); gap: 12px; padding: 12px; }
+  .season-photo { width: 64px; height: 64px; border-radius: 12px; }
+  .season-kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .season-kv dd { margin-bottom: 6px; }
+  .season-months { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

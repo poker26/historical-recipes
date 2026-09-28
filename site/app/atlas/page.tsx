@@ -1,11 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Header, Footer } from "../ui";
-import { Empty, Pager } from "../../components/common";
+import { Empty, MONTHS_PREP_RU, Pager } from "../../components/common";
+import { SAFETY_LANDINGS } from "../../components/atlas/SafetyLanding";
+import { seasonHref } from "../../lib/season";
 import { DEFAULT_OG, SITE_URL, fmtInt, pluralRu } from "../../lib/api";
 import {
   POPULAR_CONDITIONS,
   conditionPhrase,
+  familyKey,
+  familyPageTitle,
   getBiotopes,
   getFamilies,
   getPlantFacets,
@@ -28,9 +32,30 @@ type Props = { searchParams: SearchParams };
 const onlyFungi = (s: AtlasState) =>
   s.kingdom === "гриб" && activeFilterKeys(s).length === 1 && !s.sort && !s.view && !s.page;
 const isClean = (s: AtlasState) => activeFilterKeys(s).length === 0 && !s.sort && !s.view && !s.page;
+/** Страница семейства: из фильтров выбрано только семейство. Она идёт в индекс и в карту сайта. */
+const onlyFamily = (s: AtlasState) =>
+  !!s.family && activeFilterKeys(s).length === 1 && !s.sort && !s.view && !s.page;
+
+const FAMILY_LEAD = "Для каждого собрано, как его применяли по травникам и справочникам с 1790 года, что в нём содержится, чем он опасен и что из него готовили.";
 
 export async function generateMetadata({ searchParams }: Props): Promise<Metadata> {
   const s = parseAtlasParams(searchParams);
+  if (onlyFamily(s)) {
+    const key = familyKey(s.family) ?? s.family!;
+    const title = familyPageTitle(key);
+    const n = (await listPlants({ family: key, published: true, limit: 1 })).total;
+    const description = n
+      ? `${fmtInt(n)} ${pluralRu(n, "вид", "вида", "видов")} с фотографиями. ${FAMILY_LEAD}`
+      : "В атласе пока нет видов этого семейства с фотографией.";
+    const canonical = `${SITE_URL}${atlasHref({}, { family: key })}`;
+    return {
+      title,
+      description,
+      alternates: { canonical },
+      openGraph: { title, description, url: canonical, type: "website", images: [DEFAULT_OG] },
+      robots: n ? undefined : { index: false, follow: true },
+    };
+  }
   // Заголовок «Атлас грибов» у любой страницы только с царством «гриб»; в индекс идёт лишь первая.
   const fungi = s.kingdom === "гриб" && activeFilterKeys(s).length === 1;
   const indexable = onlyFungi(s) || isClean(s);
@@ -54,11 +79,12 @@ export default async function AtlasPage({ searchParams }: Props) {
   const filtered = activeFilterKeys(s).length > 0;
   const landing = isClean(s);
   const fungiOnly = s.kingdom === "гриб" && activeFilterKeys(s).length === 1;
+  const familyOnly = onlyFamily(s);
 
   const filters: Omit<PlantQuery, "limit"> = {
     q: s.q,
     kingdom: s.kingdom,
-    family: s.family,
+    family: s.family ? familyKey(s.family) ?? s.family : undefined,
     action: s.action,
     indication: s.indication,
     biotope: s.biotope,
@@ -137,7 +163,12 @@ export default async function AtlasPage({ searchParams }: Props) {
       <Header active="/atlas" />
 
       <section className={"hero-grad atlas-hero" + (landing ? "" : " atlas-hero-compact")}>
-        <h1>{fungiOnly ? "Атлас грибов" : "Атлас растений и грибов"}</h1>
+        <h1>{fungiOnly ? "Атлас грибов" : familyOnly ? familyPageTitle(s.family!) : "Атлас растений и грибов"}</h1>
+        {familyOnly && total ? (
+          <p className="lead">
+            В атласе {fmtInt(total)} {pluralRu(total, "вид", "вида", "видов")} этого семейства с фотографией. {FAMILY_LEAD}
+          </p>
+        ) : null}
         {landing && atlasTotal ? (
           <p className="lead">
             В атласе {fmtInt(atlasTotal)} {pluralRu(atlasTotal, "вид", "вида", "видов")} с фотографией. У каждого
@@ -169,6 +200,19 @@ export default async function AtlasPage({ searchParams }: Props) {
             ))}
             <Link href="/places" className="chip chip-lime">
               Что растёт рядом сейчас
+            </Link>
+          </div>
+        ) : null}
+        {landing ? (
+          <div className="atlas-entries">
+            <span className="atlas-entries-lbl">Подборки</span>
+            {SAFETY_LANDINGS.map((l) => (
+              <Link key={l.path} href={l.path} className="chip">
+                {l.title}
+              </Link>
+            ))}
+            <Link href={seasonHref(new Date().getMonth() + 1)} className="chip">
+              Что собирать в {MONTHS_PREP_RU[new Date().getMonth()]}
             </Link>
           </div>
         ) : null}

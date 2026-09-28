@@ -134,10 +134,11 @@ _MONTHS_PREP = ["январе", "феврале", "марте", "апреле", 
 
 @router.get("/harvest")
 async def harvest(month: int = Query(..., ge=1, le=12), limit: int = Query(48, ge=3, le=60),
-                  roots: bool = True, db: AsyncSession = Depends(get_db)):
+                  roots: bool = False, db: AsyncSession = Depends(get_db)):
     """Что заготавливают в месяце, по срокам сбора в книгах: страница сайта «что
-    собирать в сентябре». В отличие от полки приложения берёт и корни: осенью копают
-    именно их."""
+    собирать в сентябре». Корни по умолчанию не берём, как и полка приложения: у хорошо
+    описанных трав среди записей о корнях встречаются чужие, привязанные по ошибке
+    (замер 28.09: «зверобой, корневище, осенью»)."""
     return await _harvest_shelf(db, month, limit, [], roots=roots)
 
 
@@ -160,7 +161,8 @@ async def _harvest_shelf(db: AsyncSession, month: int, limit: int, biotopes: lis
             SELECT latin_key, inat_months FROM species_phenology
             WHERE corpus_months IS NOT NULL AND CAST(:m AS smallint) = ANY(corpus_months))
         SELECT p.id, p.name, p.name_latin, p.photo_url, p.photo_attribution, p.photo_license, p.safety_level,
-               h.part, h.season, h.method, b.title AS book, b.year, k.inat_months,
+               h.part, h.season, h.method, b.id AS book_id, b.title AS book, b.year, h.source_page,
+               k.inat_months,
                (SELECT count(*) FROM plant_medicinal_uses u WHERE u.plant_id = p.id) AS facts,
                (SELECT count(*) FROM recipe_ingredients ri
                   JOIN recipes r ON r.id = ri.recipe_id AND r.home_doable
@@ -201,6 +203,10 @@ async def _harvest_shelf(db: AsyncSession, month: int, limit: int, biotopes: lis
             "photo_attribution": r.photo_attribution, "photo_license": r.photo_license,
             "safety_level": r.safety_level, "recipes": r.recipes or 0,
             "biotope_match": False,
+            # те же сведения по полям, для сайта: часть, срок, способ и источник
+            "part": r.part, "season": when or None, "method": how or None,
+            "book_id": str(r.book_id) if r.book_id else None, "book": r.book, "year": r.year,
+            "page": r.source_page,
         })
     return {"items": out, "biotopes": biotopes, "month": month,
             "mode": "harvest", "title": f"Что заготавливают в {_MONTHS_PREP[month - 1]}"}

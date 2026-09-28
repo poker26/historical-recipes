@@ -309,8 +309,11 @@ async def list_plants(
         match_preds.append(or_(*preds))
         stmt = stmt.where(Plant.medicinal_uses.any(or_(*preds)))
     if family:
-        like = f"%{family.strip()}%"
-        stmt = stmt.where(or_(Plant.family.ilike(like), Plant.family_latin.ilike(like)))
+        preds = []
+        for term in family_terms(family):
+            like = f"%{term}%"
+            preds += [Plant.family.ilike(like), Plant.family_latin.ilike(like)]
+        stmt = stmt.where(or_(*preds))
     if is_toxic is not None:
         stmt = stmt.where(Plant.is_toxic.is_(is_toxic))
     if kingdom:
@@ -471,6 +474,32 @@ async def suggest(q: str = Query(..., min_length=2, max_length=80), limit: int =
         "actions": [{"name": a, "plants": n} for a, n in actions],
         "books": [{"id": str(r.id), "title": r.title, "author": r.author, "year": r.year} for r in books],
     }
+
+
+# Одно семейство под разными именами: старое латинское (Compositae) и современное
+# (Asteraceae), старое русское и новое. Фильтр ищет любое из них, иначе страница семейства
+# на сайте показывала бы только часть видов. Основы русских слов, потому что в книгах
+# пишут и «сложноцветные», и «семейство сложноцветных». Тот же список на сайте:
+# site/lib/api-atlas.ts, FAMILY_SYNONYM.
+_FAMILY_SYNONYMS = (
+    ("asteraceae", "compositae", "астров", "сложноцвет"),
+    ("poaceae", "gramineae", "злак", "мятликов"),
+    ("fabaceae", "leguminosae", "бобов", "мотыльков"),
+    ("lamiaceae", "labiatae", "яснотков", "губоцвет"),
+    ("apiaceae", "umbelliferae", "зонтич", "сельдерейн"),
+    ("brassicaceae", "cruciferae", "капустн", "крестоцвет"),
+    ("arecaceae", "palmae", "пальмов"),
+    ("clusiaceae", "guttiferae"),
+)
+
+
+def family_terms(family: str) -> list[str]:
+    """Все имена семейства для поиска подстрокой: «Compositae» → [asteraceae, compositae, …]."""
+    f = family.strip().lower()
+    for group in _FAMILY_SYNONYMS:
+        if any(t in f for t in group):
+            return list(group)
+    return [family.strip()]
 
 
 # Карточка «с содержанием» для поисковиков: есть записи о применении или о еде, или

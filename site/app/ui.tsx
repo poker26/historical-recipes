@@ -229,6 +229,8 @@ export function Footer() {
           <Link href="/library">Библиотека</Link>
           <Link href="/reference">Справочники</Link>
           <Link href="/places">Прогулки и места</Link>
+          <Link href="/season">Что собирать по месяцам</Link>
+          <Link href="/about">О проекте и методике</Link>
         </div>
         <div>
           <h4>Сообщество</h4>
