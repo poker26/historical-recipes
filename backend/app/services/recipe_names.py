@@ -62,8 +62,11 @@ _PROMPT = """Ты редактор справочника старинных р�
    списке ингредиентов. Ничего не добавляй от себя.
 3. Назначение («при кашле», «успокоительный») добавляй, только если оно прямо сказано в
    тексте рецепта.
-4. Не длиннее 70 знаков, без номера, в современной орфографии, с заглавной буквы.
-5. Если по тексту нельзя понять состав, верни пустую строку.
+4. Не повторяй форму средства в составе: не «Чай из чая», а «Чёрный чай высшего сорта»
+   или «Зелёный чай с эхинацеей». Если растение названо только в списке ингредиентов
+   (через «/» там даны его названия), всё равно назови его.
+5. Не длиннее 70 знаков, без номера, в современной орфографии, с заглавной буквы.
+6. Если нельзя понять состав ни по тексту, ни по ингредиентам, верни пустую строку.
 
 Верни JSON: {"name": "..."}"""
 
@@ -101,8 +104,9 @@ async def candidates(limit: int = 0, force: bool = False) -> list[dict]:
     async with async_session() as db:
         rows = (await db.execute(text("""
             SELECT r.id, r.book_id, r.name, r.original_text, r.normalized_text, r.category,
-                   coalesce((SELECT json_agg(coalesce(nullif(ri.name, ''), ri.original_name))
-                             FROM recipe_ingredients ri WHERE ri.recipe_id = r.id), '[]') AS ingredients
+                   coalesce((SELECT json_agg(concat_ws(' / ', nullif(ri.name, ''), nullif(ri.original_name, ''), pl.name))
+                             FROM recipe_ingredients ri LEFT JOIN plants pl ON pl.id = ri.plant_id
+                             WHERE ri.recipe_id = r.id), '[]') AS ingredients
             FROM recipes r
             WHERE r.home_doable AND coalesce(r.procedure_score, 0) >= 2 AND r.name IS NOT NULL
               AND length(coalesce(r.original_text, '')) >= 200
