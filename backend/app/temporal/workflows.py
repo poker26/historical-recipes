@@ -57,6 +57,7 @@ with workflow.unsafe.imports_passed_through():
     from app.temporal.photo_activities import photo_backfill_activity
     from app.temporal.book_meta_activities import book_meta_activity
     from app.temporal.site_warm_activities import site_warm_activity
+    from app.temporal.recipe_name_activities import recipe_rename_activity
     from app.temporal.identity_activities import (
         identity_dedup_activity, identity_shells_activity,
         identity_gbif_activity, identity_reid_activity, identity_resolve_activity,
@@ -947,6 +948,23 @@ class SiteWarmWorkflow:
             start_to_close_timeout=timedelta(hours=24),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"SiteWarmWorkflow done: { {k: v for k, v in out.items() if k != 'slowest'} }")
+        return out
+
+
+@workflow.defn
+class RecipeRenameWorkflow:
+    """Названия рецептов по составу вместо «Сбор № 1»: модель предлагает, проверка
+    пропускает только слова из самого рецепта. Сухой прогон (apply=False) только
+    предлагает. Журнал processing_log, шаг recipe_rename, откат по журналу.
+    Id 'recipe-rename' (+ '-dry', + '-{limit}')."""
+
+    @workflow.run
+    async def run(self, apply: bool = False, limit: int = 0, force: bool = False) -> dict:
+        out = await workflow.execute_activity(
+            recipe_rename_activity, args=[apply, limit, force],
+            start_to_close_timeout=timedelta(hours=12),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"RecipeRenameWorkflow done: { {k: v for k, v in out.items() if not isinstance(v, list)} }")
         return out
 
 
