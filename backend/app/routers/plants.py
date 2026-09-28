@@ -185,6 +185,8 @@ async def list_plants(
     biotope: str | None = None,
     has_photo: bool | None = None,
     published: bool | None = None,
+    safety_min: int | None = Query(None, ge=0, le=4),
+    safety_max: int | None = Query(None, ge=0, le=4),
     sort: str | None = None,
     limit: int | None = None,
     offset: int = 0,
@@ -227,6 +229,11 @@ async def list_plants(
         stmt = stmt.where(Plant.photo_url.isnot(None) if has_photo else Plant.photo_url.is_(None))
     if published:
         stmt = stmt.where(PUBLISHED_PRED)
+    # Шкала съедобности (RFC-edible-safety): страницы «съедобные грибы», «ядовитые грибы».
+    if safety_min is not None:
+        stmt = stmt.where(Plant.safety_level >= safety_min)
+    if safety_max is not None:
+        stmt = stmt.where(Plant.safety_level <= safety_max)
     if q:
         like = f"%{q.strip()}%"
         stmt = stmt.where(
@@ -466,13 +473,32 @@ async def suggest(q: str = Query(..., min_length=2, max_length=80), limit: int =
     }
 
 
+# Карточка «с содержанием» для поисковиков: есть записи о применении или о еде, или
+# очерк либо описание длиннее 200 знаков, или это род хотя бы с двумя видами. Пустые
+# карточки остаются в атласе, но в карту сайта не идут, а страница ставит noindex
+# (то же правило на сайте, site/lib/api-plant.ts, isSubstantive).
+SUBSTANTIVE_SQL = text("""(
+    EXISTS (SELECT 1 FROM plant_medicinal_uses u WHERE u.plant_id = plants.id)
+    OR EXISTS (SELECT 1 FROM plant_culinary_uses c WHERE c.plant_id = plants.id)
+    OR length(coalesce(plants.description, '')) >= 200
+    OR EXISTS (SELECT 1 FROM plant_reader_monograph m WHERE m.plant_id = plants.id
+               AND length(coalesce(m.monograph->>'description', '')) >= 200)
+    OR (plants.rank = 'genus' AND (SELECT count(*) FROM plants s WHERE s.parent_id = plants.id) >= 2))""")
+
+
 @router.get("/sitemap")
-async def plants_sitemap(offset: int = 0, limit: int = Query(5000, ge=1, le=20000), db: AsyncSession = Depends(get_db)):
-    """Карточки, прошедшие гейт публикации, для карты сайта и обхода атласа."""
-    base = select(Plant.id, Plant.name, Plant.name_latin, Plant.kingdom).where(PUBLISHED_PRED)
+async def plants_sitemap(offset: int = 0, limit: int = Query(5000, ge=1, le=20000),
+                         substantive: bool = False, db: AsyncSession = Depends(get_db)):
+    """Карточки, прошедшие гейт публикации, для карты сайта и обхода атласа.
+    ``substantive=true`` оставляет только карточки с содержанием (см. SUBSTANTIVE_SQL)."""
+    base = select(Plant.id, Plant.name, Plant.name_latin, Plant.kingdom, Plant.created_at).where(PUBLISHED_PRED)
+    if substantive:
+        base = base.where(SUBSTANTIVE_SQL)
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
     rows = (await db.execute(base.order_by(Plant.name, Plant.id).limit(limit).offset(offset))).all()
-    return {"total": total, "items": [{"id": str(i), "name": n, "name_latin": l, "kingdom": k} for i, n, l, k in rows]}
+    return {"total": total, "items": [
+        {"id": str(i), "name": n, "name_latin": l, "kingdom": k, "created_at": c.isoformat() if c else None}
+        for i, n, l, k, c in rows]}
 
 
 @router.get("/resolve")

@@ -161,15 +161,19 @@ async def recipe_categories(home_doable: bool | None = True, db: AsyncSession = 
 
 
 @router.get("/sitemap")
-async def recipes_sitemap(offset: int = 0, limit: int = Query(5000, ge=1, le=20000), db: AsyncSession = Depends(get_db)):
-    """Рецепты для карты сайта: домашние, пошаговые, с именем."""
-    rows = (await db.execute(text("""
-        SELECT id, name, category FROM recipes
-        WHERE home_doable AND coalesce(procedure_score, 0) >= 2 AND name IS NOT NULL
-        ORDER BY created_at, id LIMIT :lim OFFSET :off"""), {"lim": limit, "off": offset})).all()
-    total = (await db.execute(text(
-        "SELECT count(*) FROM recipes WHERE home_doable AND coalesce(procedure_score, 0) >= 2 AND name IS NOT NULL"))).scalar()
-    return {"total": total, "items": [{"id": str(i), "name": n, "category": c} for i, n, c in rows]}
+async def recipes_sitemap(offset: int = 0, limit: int = Query(5000, ge=1, le=20000),
+                          min_text: int = Query(0, ge=0, le=5000), db: AsyncSession = Depends(get_db)):
+    """Рецепты для карты сайта: домашние, пошаговые, с именем. ``min_text`` отсекает
+    короткие записи: у них нет своего содержания, и сайт ставит им noindex."""
+    where = ("home_doable AND coalesce(procedure_score, 0) >= 2 AND name IS NOT NULL "
+             "AND length(coalesce(original_text, '')) >= :mt")
+    rows = (await db.execute(text(f"""
+        SELECT id, name, category, created_at FROM recipes WHERE {where}
+        ORDER BY created_at, id LIMIT :lim OFFSET :off"""), {"lim": limit, "off": offset, "mt": min_text})).all()
+    total = (await db.execute(text(f"SELECT count(*) FROM recipes WHERE {where}"), {"mt": min_text})).scalar()
+    return {"total": total, "items": [
+        {"id": str(i), "name": n, "category": c, "created_at": t.isoformat() if t else None}
+        for i, n, c, t in rows]}
 
 
 @router.get("/{recipe_id}")

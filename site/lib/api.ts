@@ -5,6 +5,8 @@
 
 export const API = process.env.LANDING_API_BASE || process.env.SITE_API_BASE || "http://backend:8000/api";
 export const SITE_URL = process.env.SITE_URL || "https://botanik.fun";
+/** Картинка для соцсетей по умолчанию (app/opengraph-image.tsx). */
+export const DEFAULT_OG = { url: `${SITE_URL}/opengraph-image`, width: 1200, height: 630 };
 
 export class ApiError extends Error {
   constructor(public status: number, public path: string) {

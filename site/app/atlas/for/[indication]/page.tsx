@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Header, Footer } from "../../../ui";
 import { Crumbs, Empty } from "../../../../components/common";
-import { SITE_URL, fmtInt, pluralRu } from "../../../../lib/api";
+import { DEFAULT_OG, SITE_URL, fmtInt, pluralRu } from "../../../../lib/api";
 import {
   POPULAR_CONDITIONS,
   conditionPhrase,
@@ -128,7 +128,7 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
     title,
     description,
     alternates: { canonical },
-    openGraph: { title, description, url: canonical, type: "website" },
+    openGraph: { title, description, url: canonical, type: "website", images: [DEFAULT_OG] },
     robots: indexable ? undefined : { index: false, follow: true },
   };
 }

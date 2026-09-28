@@ -10,7 +10,9 @@ export function pageMeta({ title, description, path, index = true }: { title: st
     title,
     description,
     alternates: { canonical: url },
-    openGraph: { title, description, url, type: "website", siteName: "Что растёт", locale: "ru_RU" },
+    // Своё поле openGraph у страницы заменяет общее целиком, поэтому картинку по
+    // умолчанию (app/opengraph-image.tsx) повторяем здесь явно.
+    openGraph: { title, description, url, type: "website", siteName: "Что растёт", locale: "ru_RU", images: [{ url: `${SITE_URL}/opengraph-image`, width: 1200, height: 630 }] },
     ...(index ? {} : { robots: { index: false, follow: true } }),
   };
 }

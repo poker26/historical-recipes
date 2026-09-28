@@ -4,7 +4,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { creditShort } from "../lib/api-atlas";
-import { realAuthor } from "../lib/api";
+import { SITE_URL, realAuthor } from "../lib/api";
 
 /** Лист-заглушка для карточек без фотографии. */
 export function LeafGlyph() {
@@ -16,7 +16,29 @@ export function LeafGlyph() {
   );
 }
 
+/** Абсолютный адрес для разметки: кириллица закодирована, уже закодированное не портится. */
+function absUrl(href: string): string {
+  let h = href;
+  try {
+    h = encodeURI(decodeURI(href));
+  } catch {
+    // битая %-последовательность: оставляем как есть
+  }
+  return SITE_URL + h;
+}
+
 export function Crumbs({ items }: { items: { href?: string; label: string }[] }) {
+  // Та же цепочка разметкой BreadcrumbList: поисковики показывают её в сниппете вместо адреса.
+  const ld = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [{ href: "/", label: "Что растёт" }, ...items].map((it, i) => ({
+      "@type": "ListItem",
+      position: i + 1,
+      name: it.label,
+      ...(it.href ? { item: absUrl(it.href) } : {}),
+    })),
+  };
   return (
     <nav className="crumbs" aria-label="Путь">
       {items.map((it, i) => (
@@ -25,6 +47,7 @@ export function Crumbs({ items }: { items: { href?: string; label: string }[] })
           {it.href ? <Link href={it.href}>{it.label}</Link> : <span>{it.label}</span>}
         </span>
       ))}
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(ld).replace(/</g, "\\u003c") }} />
     </nav>
   );
 }

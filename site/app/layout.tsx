@@ -29,8 +29,15 @@ export const metadata: Metadata = {
     siteName: "Что растёт",
     locale: "ru_RU",
     url: SITE,
+    images: [{ url: `${SITE}/opengraph-image`, width: 1200, height: 630 }],
   },
   twitter: { card: "summary_large_image" },
+  // Коды подтверждения прав из Яндекс Вебмастера и Google Search Console приходят из
+  // окружения контейнера: получил код в кабинете, прописал переменную, пересоздал site.
+  verification: {
+    yandex: process.env.YANDEX_VERIFICATION || undefined,
+    google: process.env.GOOGLE_SITE_VERIFICATION || undefined,
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

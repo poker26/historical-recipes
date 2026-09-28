@@ -132,7 +132,17 @@ _MONTHS_PREP = ["январе", "феврале", "марте", "апреле", 
                 "августе", "сентябре", "октябре", "ноябре", "декабре"]
 
 
-async def _harvest_shelf(db: AsyncSession, month: int, limit: int, biotopes: list) -> dict:
+@router.get("/harvest")
+async def harvest(month: int = Query(..., ge=1, le=12), limit: int = Query(48, ge=3, le=60),
+                  roots: bool = True, db: AsyncSession = Depends(get_db)):
+    """Что заготавливают в месяце, по срокам сбора в книгах: страница сайта «что
+    собирать в сентябре». В отличие от полки приложения берёт и корни: осенью копают
+    именно их."""
+    return await _harvest_shelf(db, month, limit, [], roots=roots)
+
+
+async def _harvest_shelf(db: AsyncSession, month: int, limit: int, biotopes: list,
+                         roots: bool = False) -> dict:
     """Полка «что заготавливают в <месяце>» — из сроков сбора в корпусе.
 
     Источник — species_phenology.corpus_months (месяцы сбора надземных частей,
@@ -160,11 +170,11 @@ async def _harvest_shelf(db: AsyncSession, month: int, limit: int, biotopes: lis
         JOIN plant_harvests h ON h.plant_id = p.id AND h.season IS NOT NULL
         LEFT JOIN books b ON b.id = h.source_book_id
         WHERE p.name_latin IS NOT NULL AND p.name_latin !~ '[А-Яа-я]'
-          AND (h.part IS NULL OR h.part !~* 'корень|корни|корневищ|клубн|луковиц')
+          AND (CAST(:roots AS boolean) OR h.part IS NULL OR h.part !~* 'корень|корни|корневищ|клубн|луковиц')
           -- агрономия, а не сбор: «семена высевают под зиму», «выгонку начинают в декабре»
           AND (h.method IS NULL OR h.method !~* 'высева|посев|сеют|выгонк|высажива|обреза')
         ORDER BY facts DESC, p.id, (b.year IS NULL), length(coalesce(h.method, '')) DESC
-        LIMIT 1500"""), {"m": month})).all()
+        LIMIT 1500"""), {"m": month, "roots": roots})).all()
     best: dict = {}
     order: list = []
     for r in rows:

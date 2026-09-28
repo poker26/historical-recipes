@@ -70,6 +70,43 @@ def _book_dict(r: Any) -> dict:
     return d
 
 
+@router.get("/sitemap")
+async def library_sitemap(db: AsyncSession = Depends(get_db)):
+    """Книги и страницы открытых книг для карты сайта. Лёгкий запрос: список /books
+    считает по каждой книге растения и рецепты и на 400 книгах идёт 11 секунд.
+    Страница открытой книги идёт в карту, если с неё в атлас вошёл хотя бы один факт
+    или рецепт: только такие страницы сайт отдаёт в индекс."""
+    books = (await db.execute(text(
+        "SELECT id, year, tags, updated_at FROM books WHERE status = ANY(:st) ORDER BY year NULLS LAST, title"),
+        {"st": list(PUBLIC_STATUSES)})).all()
+    out_books, open_ids = [], []
+    for r in books:
+        acc = access_class(r.year, r.tags)
+        if acc == "closed":
+            continue
+        out_books.append({"id": str(r.id), "access": acc,
+                          "updated_at": r.updated_at.isoformat() if r.updated_at else None})
+        if acc == "open":
+            open_ids.append(r.id)
+    pages: list[dict] = []
+    if open_ids:
+        facts = " UNION ".join(
+            f"SELECT source_book_id AS book_id, source_page AS page FROM {t} "
+            f"WHERE source_book_id = ANY(:ids) AND source_page IS NOT NULL"
+            for t in ("plant_medicinal_uses", "plant_culinary_uses", "plant_harvests",
+                      "plant_habitats", "plant_toxicities"))
+        rows = (await db.execute(text(f"""
+            SELECT book_id, page FROM (
+                {facts}
+                UNION SELECT book_id, page_number FROM plant_book_mentions
+                      WHERE book_id = ANY(:ids) AND page_number IS NOT NULL
+                UNION SELECT book_id, source_page FROM recipes
+                      WHERE book_id = ANY(:ids) AND source_page IS NOT NULL) x
+            ORDER BY book_id, page"""), {"ids": open_ids})).all()
+        pages = [{"book_id": str(r.book_id), "page": r.page} for r in rows]
+    return {"books": out_books, "pages": pages}
+
+
 @router.get("/stats")
 async def library_stats(db: AsyncSession = Depends(get_db)):
     """Цифры для шапки библиотеки: книги, сканы, годы, страницы."""
