@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, literal, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -127,7 +127,9 @@ async def oils_for_condition(
     ]
     if action_id_set:
         preds.append(EssentialOilUse.action_id.in_(action_id_set))
-    preds += [EssentialOilUse.indication_ids.any(cid) for cid in concept_ids]
+    if concept_ids:
+        preds.append(EssentialOilUse.indication_ids.op("&&")(  # пересечение по GIN-индексу
+            literal(list(concept_ids), EssentialOilUse.indication_ids.type)))
 
     # Count matching uses per oil, most-relevant oil first.
     match_counts = (await db.execute(

@@ -13,7 +13,7 @@ Plus a read surface over the vocabularies for the admin UI / MCP layer.
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func, or_, text
+from sqlalchemy import select, func, literal, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -190,7 +190,8 @@ async def get_indication(indication_id: uuid.UUID, db: AsyncSession = Depends(ge
     fact_rows = (await db.execute(
         select(PlantMedicinalUse, Plant)
         .join(Plant, PlantMedicinalUse.plant_id == Plant.id)
-        .where(or_(*[PlantMedicinalUse.indication_ids.any(cid) for cid in concept_ids]))
+        .where(PlantMedicinalUse.indication_ids.op("&&")(  # пересечение по GIN-индексу
+            literal(concept_ids, PlantMedicinalUse.indication_ids.type)))
         .order_by(Plant.name)
     )).all()
     plants: dict[str, dict] = {}

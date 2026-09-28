@@ -3,7 +3,7 @@ import uuid
 from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import select, or_, func, literal_column, text
+from sqlalchemy import select, or_, func, literal, literal_column, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -281,7 +281,8 @@ async def list_plants(
             PlantMedicinalUse.action_id.in_(action_id_set),
         )
         match_preds.append(action_pred)
-        stmt = stmt.where(Plant.medicinal_uses.any(action_pred))
+        # Один проход по фактам вместо EXISTS с OR на каждую карточку.
+        stmt = stmt.where(Plant.id.in_(select(PlantMedicinalUse.plant_id).where(action_pred)))
     if indication:
         like = f"%{indication.strip()}%"
         # Resolve the query against the controlled vocabulary so a modern OR an
@@ -305,9 +306,13 @@ async def list_plants(
             )).scalars().all()
             concept_ids.update(children)
         preds = [PlantMedicinalUse.indications.ilike(like)]
-        preds += [PlantMedicinalUse.indication_ids.any(cid) for cid in concept_ids]
+        if concept_ids:
+            # Пересечение массивов (&&) идёт по GIN-индексу; «= ANY» на каждое из десятков
+            # понятий его не использовало (замер 28.09: 7,0 с против 0,8 с).
+            preds.append(PlantMedicinalUse.indication_ids.op("&&")(
+                literal(list(concept_ids), PlantMedicinalUse.indication_ids.type)))
         match_preds.append(or_(*preds))
-        stmt = stmt.where(Plant.medicinal_uses.any(or_(*preds)))
+        stmt = stmt.where(Plant.id.in_(select(PlantMedicinalUse.plant_id).where(or_(*preds))))
     if family:
         preds = []
         for term in family_terms(family):
@@ -334,10 +339,11 @@ async def list_plants(
         stmt = stmt.where(Plant.biotopes.any(PlantBiotope.biotope == biotope.strip()))
 
     if sort == "match" and match_preds:
-        matched_n = (select(func.count()).select_from(PlantMedicinalUse)
-                     .where(PlantMedicinalUse.plant_id == Plant.id, or_(*match_preds))
-                     .correlate(Plant).scalar_subquery())
-        stmt = stmt.order_by(matched_n.desc(), Plant.photo_url.is_(None), uses_n.desc(), Plant.name)
+        matched = (select(PlantMedicinalUse.plant_id.label("pid"), func.count().label("m"))
+                   .where(or_(*match_preds)).group_by(PlantMedicinalUse.plant_id).subquery())
+        stmt = stmt.outerjoin(matched, matched.c.pid == Plant.id)
+        stmt = stmt.order_by(func.coalesce(matched.c.m, 0).desc(), Plant.photo_url.is_(None),
+                             uses_n.desc(), Plant.name)
     elif sort in ("uses", "match"):
         stmt = stmt.order_by(uses_n.desc(), Plant.name)
     elif sort == "photo":
@@ -454,7 +460,7 @@ async def suggest(q: str = Query(..., min_length=2, max_length=80), limit: int =
         {"like": like, "pref": pref, "lim": limit})).all()
     indications = (await db.execute(text("""
         SELECT i.id, i.name, i.name_modern, i.system,
-               (SELECT count(*) FROM plant_medicinal_uses u WHERE i.id = ANY(u.indication_ids)) AS facts
+               (SELECT count(*) FROM plant_medicinal_uses u WHERE u.indication_ids @> ARRAY[i.id]) AS facts
         FROM indications i
         WHERE i.name ILIKE :like OR i.name_modern ILIKE :like OR array_to_string(i.archaic, ' ') ILIKE :like
               OR array_to_string(i.synonyms, ' ') ILIKE :like
@@ -541,9 +547,22 @@ async def resolve_plant(tail: str = Query(..., min_length=6, max_length=32, patt
     полный id по первым знакам. Неоднозначный хвост честно помечается."""
     rows = (await db.execute(text(
         "SELECT id FROM plants WHERE replace(id::text, '-', '') LIKE :t LIMIT 2"), {"t": tail.lower() + "%"})).all()
-    if not rows:
-        raise HTTPException(status_code=404, detail="Plant not found")
-    return {"id": str(rows[0][0]), "ambiguous": len(rows) > 1}
+    if rows:
+        return {"id": str(rows[0][0]), "ambiguous": len(rows) > 1}
+    # Карточку слили в другую (чистка идентичности): старый адрес ведёт на цель, чтобы
+    # ссылки и страницы в поиске не упирались в 404. Цель могли слить дальше: идём по цепочке.
+    t = tail.lower() + "%"
+    for _ in range(5):
+        nxt = (await db.execute(text(
+            "SELECT target_id FROM card_identity_audit WHERE action = 'merge' AND target_id IS NOT NULL "
+            "AND replace(plant_id::text, '-', '') LIKE :t ORDER BY at DESC LIMIT 1"), {"t": t})).scalar()
+        if nxt is None:
+            break
+        alive = (await db.execute(text("SELECT id FROM plants WHERE id = :id"), {"id": nxt})).scalar()
+        if alive is not None:
+            return {"id": str(alive), "ambiguous": False, "merged": True}
+        t = str(nxt).replace("-", "")
+    raise HTTPException(status_code=404, detail="Plant not found")
 
 
 @router.get("/families")
