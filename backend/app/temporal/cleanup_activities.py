@@ -551,6 +551,15 @@ async def genus_assembly_activity() -> dict:
     return {"phase": "genus_assembly", **res}
 
 
+# Ядовитость комнатных растений лежит в своей таблице по латыни вида или рода (см.
+# houseplant_cards.py). Предикат для карточки p: совпал вид, совпал род у записи на
+# уровне рода, или карточка сама родовая и запись о любом виде этого рода.
+_HOUSEPLANT_TOX = """(
+    lower(btrim(h.taxon_latin)) = lower(btrim(split_part(p.name_latin, ' ', 1) || ' ' || split_part(p.name_latin, ' ', 2)))
+    OR (position(' ' in btrim(h.taxon_latin)) = 0 AND lower(btrim(h.taxon_latin)) = lower(split_part(p.name_latin, ' ', 1)))
+    OR (p.rank = 'genus' AND lower(split_part(h.taxon_latin, ' ', 1)) = lower(split_part(p.name_latin, ' ', 1))))"""
+
+
 @activity.defn
 async def edible_safety_activity() -> dict:
     """Forager-safety classification (RFC-edible-safety): assign each species a level
@@ -577,7 +586,8 @@ async def edible_safety_activity() -> dict:
             WHERE p.safety_level IS NOT NULL AND p.safety_rationale LIKE '[auto]%' AND (
                 EXISTS (SELECT 1 FROM plant_toxicities t WHERE t.plant_id = p.id)
                 OR EXISTS (SELECT 1 FROM plant_culinary_uses c WHERE c.plant_id = p.id
-                           AND lower(btrim(c.edibility)) IN ('ядовито', 'ядовит')))"""))).rowcount
+                           AND lower(btrim(c.edibility)) IN ('ядовито', 'ядовит'))
+                OR EXISTS (SELECT 1 FROM houseplant_toxicity h WHERE h.latin_verified AND """ + _HOUSEPLANT_TOX + """))"""))).rowcount
         inedible = (await db.execute(text("""
             UPDATE plants p SET safety_level = NULL
             WHERE p.safety_level = 1 AND p.safety_rationale LIKE '[auto]%'
@@ -596,11 +606,19 @@ async def edible_safety_activity() -> dict:
                     "SELECT DISTINCT edibility FROM plant_culinary_uses WHERE plant_id=:p AND edibility IS NOT NULL"), {"p": pid})).all()
                 tox = (await db.execute(text(
                     "SELECT original_text FROM plant_toxicities WHERE plant_id=:p"), {"p": pid})).all()
+                house = (await db.execute(text(
+                    "SELECT h.severity, h.parts, h.symptoms, h.quote FROM houseplant_toxicity h, plants p "
+                    "WHERE p.id = :p AND h.latin_verified AND " + _HOUSEPLANT_TOX), {"p": pid})).all()
                 med = (await db.execute(text(
                     "SELECT count(*) FROM plant_medicinal_uses WHERE plant_id=:p"), {"p": pid})).scalar()
             data = {"name": p.name, "name_latin": p.name_latin, "family": p.family,
                     "edibility": [EDIBILITY_CANON.get((e[0] or "").strip().lower(), e[0]) for e in edi],
-                    "toxicity_texts": [t[0] for t in tox], "has_medicinal": bool(med)}
+                    "toxicity_texts": [t[0] for t in tox] + [
+                        f"[книга о комнатных растениях] {h.quote or h.symptoms or ''}"
+                        + (f" (опасные части: {', '.join(h.parts) if isinstance(h.parts, list) else h.parts})"
+                           if h.parts else "")
+                        for h in house if (h.quote or h.symptoms)],
+                    "has_medicinal": bool(med)}
             try:
                 res = await asyncio.wait_for(classify_safety(data), timeout=90)
             except Exception:
@@ -616,7 +634,8 @@ async def edible_safety_activity() -> dict:
         async with async_session() as db:
             rows = (await db.execute(text("""
                 SELECT p.id::text, p.name_latin,
-                  (SELECT count(*) FROM plant_toxicities t WHERE t.plant_id=p.id) ntox,
+                  (SELECT count(*) FROM plant_toxicities t WHERE t.plant_id=p.id)
+                  + (SELECT count(*) FROM houseplant_toxicity h WHERE h.latin_verified AND """ + _HOUSEPLANT_TOX + """) ntox,
                   (SELECT string_agg(DISTINCT lower(btrim(c.edibility)), '|')
                    FROM plant_culinary_uses c WHERE c.plant_id=p.id AND c.edibility IS NOT NULL) edi
                 FROM plants p
