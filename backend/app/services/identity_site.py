@@ -54,8 +54,7 @@ from app.services.identity_cleanup import (
     FACTS_SCORE, GBIF_PACE, GBIF_SPECIES, _audit, _kingdom_ok, _purge_qdrant, gbif_accepted, gbif_match,
     merge_card,
 )
-from app.services.identity_resolve import Vernacular, _INAT_HEADERS
-from app.services.inaturalist import INAT_BASE
+from app.services.identity_resolve import Vernacular, inat_taxa
 
 logger = logging.getLogger(__name__)
 Progress = Callable[[dict], None]
@@ -322,15 +321,19 @@ async def run_oldspell(apply: bool, progress: Progress | None = None) -> dict:
 
 # ------------------------------------------------------------------ genuslatin
 
+class InatUnavailable(Exception):
+    """iNaturalist не ответил и после повторов. Решение по карточке откладывается: пустой
+    ответ нельзя читать как «вида с таким именем нет»."""
+
+
 async def _inat_species_by_ru(client: httpx.AsyncClient, ru: str) -> list[dict]:
     try:
-        r = await client.get(f"{INAT_BASE}/taxa", params={"q": ru, "locale": "ru", "per_page": 8, "rank": "species"},
-                             headers=_INAT_HEADERS)
-        return r.json().get("results", []) if r.status_code == 200 else []
-    except (httpx.HTTPError, ValueError):
-        return []
+        res = await inat_taxa(client, {"q": ru, "locale": "ru", "per_page": 8, "rank": "species"})
     finally:
         await asyncio.sleep(1.2)
+    if res is None:
+        raise InatUnavailable(ru)
+    return res
 
 
 async def _inat_split(client: httpx.AsyncClient, inat_taxon: tuple[str, int | None] | None,
@@ -412,10 +415,13 @@ async def run_genuslatin(apply: bool, limit: int = 0, progress: Progress | None 
                 why = "эпитет с прописной, GBIF знает строчный" if new else None
             if not new:
                 ru = " ".join(_ru_words(r.name)[:3])
-                inat = await _inat_species_by_ru(client, ru)
-                yo = yo_variant(ru)
-                if yo and not any(ru_strong_match(r.name, t.get("preferred_common_name")) for t in inat):
-                    inat += await _inat_species_by_ru(client, yo)
+                try:
+                    inat = await _inat_species_by_ru(client, ru)
+                    yo = yo_variant(ru)
+                    if yo and not any(ru_strong_match(r.name, t.get("preferred_common_name")) for t in inat):
+                        inat += await _inat_species_by_ru(client, yo)
+                except InatUnavailable:
+                    continue  # без ответа iNaturalist карточку не трогаем и находку не пишем
                 for t in inat:
                     tname, tru = t.get("name") or "", t.get("preferred_common_name") or ""
                     if not tru or not ru_strong_match(r.name, tru):
@@ -756,11 +762,15 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
             cur_acc = await _gbif_species(client, f"{cur_genus} {cur_epi}", r.kingdom) if cur_genus and cur_epi else None
             cands: dict[str, set] = defaultdict(set)
             hints: dict[str, str] = {}
-            inat_taxa: dict[str, tuple[str, int | None]] = {}  # принятый бином GBIF → (бином и id iNaturalist)
+            inat_ids: dict[str, tuple[str, int | None]] = {}  # принятый бином GBIF → (бином и id iNaturalist)
             yo = yo_variant(head)
-            inat = await _inat_species_by_ru(client, head)
-            if yo and not any(_name_match(head, t.get("preferred_common_name")) for t in inat):
-                inat += await _inat_species_by_ru(client, yo)
+            inat_down = False
+            try:
+                inat = await _inat_species_by_ru(client, head)
+                if yo and not any(_name_match(head, t.get("preferred_common_name")) for t in inat):
+                    inat += await _inat_species_by_ru(client, yo)
+            except InatUnavailable:
+                inat, inat_down = [], True
             for t in inat:
                 tname, tru = t.get("name") or "", t.get("preferred_common_name") or ""
                 if tru and _name_match(head, tru) and len(tname.split()) >= 2:
@@ -768,7 +778,7 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
                     if acc:
                         cands[acc].add("iNaturalist")
                         hints[acc] = tru
-                        inat_taxa.setdefault(acc, (tname, t.get("id")))
+                        inat_ids.setdefault(acc, (tname, t.get("id")))
             gbif_v = await _gbif_by_vernacular(client, head)
             if yo and not any(_name_match(head, v) for _, v in gbif_v):
                 gbif_v += await _gbif_by_vernacular(client, yo)
@@ -780,12 +790,20 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
                         hints.setdefault(acc, vru)
             ranked = sorted(cands.items(), key=lambda kv: -len(kv[1]))
             decision, why, best = "left", "по русскому имени вид не найден", None
-            if ranked:
+            if inat_down:
+                why = "iNaturalist не ответил, карточка отложена до следующего прохода"
+            elif ranked:
                 best, srcs = ranked[0]
                 tie = len(ranked) > 1 and len(ranked[1][1]) == len(srcs)
                 same_as_now = bool(cur_acc) and best.split()[:2] == cur_acc.split()[:2]
-                split = await _inat_split(client, inat_taxa.get(best), cur_genus, cur_epi) if same_as_now else None
-                if split:
+                try:
+                    split = await _inat_split(client, inat_ids.get(best), cur_genus, cur_epi) if same_as_now else None
+                except InatUnavailable:
+                    split, inat_down = None, True
+                if inat_down:
+                    decision, best = "left", None
+                    why = "iNaturalist не ответил при сверке видов, карточка отложена до следующего прохода"
+                elif split:
                     # GBIF сводит вид, который называет имя карточки, в нынешний, а iNaturalist
                     # держит их разными видами («Подгруздок чернеющий» Russula nigricans и
                     # подгруздок чёрный R. adusta). Имя карточки называет именно этот вид.
@@ -811,7 +829,7 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
                     decision = "relatin" if ok else "left"
                     why = (f"другой род, {', '.join(sorted(srcs))} и модель ({llm.get('conf')}): {hints.get(best)}" if ok
                            else f"другой род, один источник, модель не подтвердила ({llm.get('latin')}, {llm.get('conf')})")
-            if decision == "left" and not ranked:
+            if decision == "left" and not ranked and not inat_down:
                 # Поиск по имени ничего не дал: вид предлагает модель, а проверяет обратный путь,
                 # народные названия предложенного вида должны содержать имя карточки.
                 async with async_session() as db:

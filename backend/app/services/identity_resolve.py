@@ -117,6 +117,30 @@ def lexical_link(card: str | None, ref: str | None, extra: list[str] | None = No
 
 # ------------------------------------------------------------------ народные названия
 
+async def inat_taxa(client: httpx.AsyncClient, params: dict, tries: int = 5) -> list[dict] | None:
+    """Поиск таксонов iNaturalist с повтором при отказе по частоте (429) и сбоях сервера.
+    None, если ответа так и не было. Пустой список вместо None значил бы «такого вида нет»,
+    и прогон решал бы по отказу сервиса: 29.09 из-за этого две проверенные замены латыни не
+    прошли в применённом прогоне, хотя прошли в пробном."""
+    for attempt in range(tries):
+        try:
+            r = await client.get(f"{INAT_BASE}/taxa", params=params, headers=_INAT_HEADERS)
+        except httpx.HTTPError:
+            await asyncio.sleep(3 * (attempt + 1))
+            continue
+        if r.status_code == 429 or r.status_code >= 500:
+            ra = r.headers.get("Retry-After")
+            await asyncio.sleep(float(ra) if (ra or "").isdigit() else 5 * (attempt + 1))
+            continue
+        if r.status_code != 200:
+            return None
+        try:
+            return r.json().get("results", [])
+        except ValueError:
+            return None
+    return None
+
+
 class Vernacular:
     """Народные названия таксона по GBIF (rus) и iNaturalist (ru), с кэшем на прогон."""
 
@@ -141,16 +165,14 @@ class Vernacular:
         except Exception:  # noqa: BLE001 — внешний справочник может молчать, это не ошибка прогона
             pass
         await asyncio.sleep(GBIF_PACE)
-        try:
-            t = (await self.client.get(f"{INAT_BASE}/taxa", params={"q": q, "locale": "ru", "per_page": 3},
-                                       headers=_INAT_HEADERS)).json()
-            for r in t.get("results", [])[:3]:
-                if (r.get("name") or "").lower() == q.lower() and r.get("preferred_common_name"):
-                    out.add(r["preferred_common_name"])
-        except Exception:  # noqa: BLE001
-            pass
+        res = await inat_taxa(self.client, {"q": q, "locale": "ru", "per_page": 3})
+        for r in (res or [])[:3]:
+            if (r.get("name") or "").lower() == q.lower() and r.get("preferred_common_name"):
+                out.add(r["preferred_common_name"])
         await asyncio.sleep(1.5)
-        self.cache[q] = out
+        # Без ответа iNaturalist названия неполные: в кэш не кладутся, следующий вызов спросит снова.
+        if res is not None:
+            self.cache[q] = out
         return out
 
     async def confirms(self, name: str | None, latin: str | None, extra: list[str] | None = None) -> bool:
