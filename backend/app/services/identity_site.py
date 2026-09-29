@@ -134,10 +134,14 @@ def species_evidence(name: str | None, vernaculars: set[str]) -> str | None:
             continue
         if len(a) >= 2 and len(b) >= 2 and ru_strong_match(name, v):
             return "name"
-        if len(a) == 1 and _stem(a[0]) == _stem(b[0]):
+        if len(a) == 1 and len(b) == 1 and _stem(a[0]) == _stem(b[0]):
             return "name"
         if len(a) == 2 and _PART_WORD.match(a[0]) and _stem(a[1]) == _stem(b[0]):
             return "part"
+    # Одно слово имени совпало только с первым словом народного названия («Прострел» и
+    # «прострел обыкновенный»): это род, а не вид. Не повод ни сливать, ни помечать.
+    if len(a) == 1 and any(_ru_words(v) and _stem(a[0]) == _stem(_ru_words(v)[0]) for v in vernaculars):
+        return "weak"
     return None
 
 
@@ -420,6 +424,8 @@ async def run_sametaxon(apply: bool, limit: int = 0, progress: Progress | None =
                     confirmed.append(m)
                 elif ev == "part":
                     parts.append(m)
+                elif ev == "weak":
+                    continue
                 else:
                     unconfirmed.append(m)
             if not names:
