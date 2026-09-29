@@ -510,12 +510,212 @@ async def run_junkname(apply: bool, progress: Progress | None = None) -> dict:
     return c
 
 
+# ------------------------------------------------------------------ mismatch
+
+_MISMATCH_SYS = (
+    "Ты ботаник-систематик. Дано название растения или гриба из старой русской книги, его нынешняя "
+    "латынь, которая, скорее всего, ошибочна, кандидат, найденный по русскому названию, и выписки о "
+    "применении. Определи, какой вид имеется в виду. Строго JSON: "
+    "{\"latin\": \"Genus species\", \"confidence\": 0..100}. Если не уверен, confidence ниже 60."
+)
+
+
+def _name_match(card_name: str | None, other: str | None) -> bool:
+    """Имя карточки совпадает с названием вида: два слова по первому и последнему, одно с одним."""
+    a, b = _ru_words(card_name), _ru_words(other)
+    if not a or not b:
+        return False
+    if len(a) >= 2 and len(b) >= 2:
+        return ru_strong_match(card_name, other)
+    return len(a) == 1 and len(b) == 1 and _stem(a[0]) == _stem(b[0])
+
+
+async def _mismatch_context(db, pid) -> str:
+    r = (await db.execute(text("""
+        SELECT p.description,
+          (SELECT string_agg(x, '; ') FROM (SELECT DISTINCT left(coalesce(u.original_text, u.action_raw, ''), 160) AS x
+             FROM plant_medicinal_uses u WHERE u.plant_id = p.id LIMIT 4) q) AS uses,
+          (SELECT string_agg(x, '; ') FROM (SELECT DISTINCT left(coalesce(h.original_text, h.biotope, ''), 120) AS x
+             FROM plant_habitats h WHERE h.plant_id = p.id LIMIT 2) q) AS habitat
+        FROM plants p WHERE p.id = :id"""), {"id": pid})).first()
+    if not r:
+        return ""
+    return "\n".join(x for x in [
+        f"Описание: {(r.description or '')[:500]}" if r.description else "",
+        f"Применение: {r.uses}" if r.uses else "",
+        f"Где растёт: {r.habitat}" if r.habitat else ""] if x)
+
+
+async def _llm_agrees(name: str, latin: str | None, candidate: str, context: str) -> tuple[bool, dict]:
+    from app.services.llm import chat_completion_json
+    user = (f"Название: {name}\nНынешняя латынь: {latin}\nКандидат по русскому названию: {candidate}\n"
+            f"{context}")
+    try:
+        res = await chat_completion_json([{"role": "system", "content": _MISMATCH_SYS},
+                                          {"role": "user", "content": user}],
+                                         task="plant_extraction", temperature=0.0, max_tokens=200)
+    except Exception as e:  # noqa: BLE001 — сбой модели не валит прогон, карточка просто остаётся
+        return False, {"error": type(e).__name__}
+    if not isinstance(res, dict):
+        return False, {"raw": str(res)[:200]}
+    got = " ".join(str(res.get("latin") or "").split()[:2]).lower()
+    conf = res.get("confidence") or 0
+    try:
+        conf = float(conf)
+    except (TypeError, ValueError):
+        conf = 0
+    return (got == " ".join(candidate.split()[:2]).lower() and conf >= 80), {"latin": res.get("latin"), "conf": conf}
+
+
+async def _refresh_taxon_data(client: httpx.AsyncClient, pid, new_latin: str, kingdom: str | None) -> str:
+    """Фото, современное имя и семейство от нового вида. Старые были от чужого вида,
+    поэтому без нового фото карточка остаётся без фото и уходит из атласа."""
+    from app.services.inaturalist import _ICONIC_FOR_KINGDOM, _has_cyrillic, resolve_taxon_photo
+    from app.services.photo_backfill import _mark_synced, _store_photo, fetch_taxon_photos, pick_licensed_photo
+
+    fam = None
+    d = await gbif_match(client, new_latin, "Fungi" if (kingdom or "").startswith("гриб") else "Plantae")
+    if d and d.get("family"):
+        fam = d["family"]
+    async with async_session() as db:
+        await db.execute(text("""
+            UPDATE plants SET photo_url = NULL, photo_attribution = NULL, photo_license = NULL, photo_source = NULL,
+                   inat_taxon_id = NULL, inat_synced_at = NULL, name_modern = NULL,
+                   family_latin = COALESCE(CAST(:fam AS text), family_latin),
+                   family = CASE WHEN CAST(:fam AS text) IS NULL THEN family END
+            WHERE id = :id"""), {"id": pid, "fam": fam})
+        await db.execute(text("""
+            UPDATE plant_reader_monograph SET monograph = monograph || jsonb_build_object(
+                'name_latin', CAST(:l AS text), 'photo_url', NULL, 'photo_attribution', NULL,
+                'photo_license', NULL, 'photo_source', NULL)
+            WHERE plant_id = :id"""), {"id": pid, "l": new_latin})
+        await db.commit()
+    iconic = _ICONIC_FOR_KINGDOM.get(kingdom or "растение", "Plantae")
+    res = await resolve_taxon_photo(client, new_latin, iconic=iconic)
+    await asyncio.sleep(1.5)
+    if not res or not res.get("taxon_id"):
+        return "фото нового вида не найдено"
+    common = res.get("common_name")
+    name_modern = common if _has_cyrillic(common) else None
+    picked = None
+    if res.get("photo_url"):
+        picked = {"photo_url": res["photo_url"], "photo_attribution": res.get("photo_attribution"),
+                  "photo_license": res.get("photo_license")}
+    else:
+        photos = await fetch_taxon_photos(client, res["taxon_id"])
+        await asyncio.sleep(1.5)
+        picked = pick_licensed_photo(photos or [])
+    if picked:
+        await _store_photo(pid, picked, "inaturalist", taxon_id=res["taxon_id"], name_modern=name_modern)
+        return "фото нового вида"
+    await _mark_synced(pid, taxon_id=res["taxon_id"], name_modern=name_modern)
+    return "у нового вида нет фото со свободной лицензией"
+
+
+async def _close_finding(pid, status: str, note: str, extra: dict) -> None:
+    async with async_session() as db:
+        await db.execute(text("""
+            UPDATE data_quality_findings SET status = :st, resolved_by = 'identity-site', resolved_at = now(),
+                   note = :note, evidence = COALESCE(evidence, '{}'::jsonb) || CAST(:ex AS jsonb)
+            WHERE check_id = :c AND entity_id = :e"""),
+            {"st": status, "note": note[:300], "ex": json.dumps({"mismatch": extra}, ensure_ascii=False, default=str),
+             "c": CHECK_MISMATCH, "e": str(pid)})
+        await db.commit()
+
+
+async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
+    """Латынь по русскому имени для карточек, чьё имя не подтвердилось народными
+    названиями их латыни (находки identity.site_mismatch). Вид берётся из iNaturalist и
+    народных названий GBIF при совпадении имени по первому и последнему слову и
+    подтверждается GBIF как вид того же царства. Тот же вид, что уже стоит: латынь верна,
+    находка закрывается. Другой вид того же рода: латынь меняется по одному источнику.
+    Другой род: нужны оба источника или согласие модели с уверенностью от 80."""
+    async with async_session() as db:
+        rows = (await db.execute(text("""
+            SELECT p.id, p.name, p.name_latin, p.kingdom FROM data_quality_findings f
+            JOIN plants p ON p.id::text = f.entity_id
+            WHERE f.check_id = :c AND f.status = 'open' ORDER BY p.name"""), {"c": CHECK_MISMATCH})).all()
+    if limit:
+        rows = rows[:limit]
+    c = {"step": "mismatch", "apply": apply, "cards": len(rows), "relatin": 0, "confirmed": 0, "left": 0,
+         "llm_yes": 0, "llm_no": 0, "sample": [], "confirmed_sample": [], "left_sample": []}
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
+        for n, r in enumerate(rows, 1):
+            head = re.split(r",|\(|\sили\s|;", r.name or "")[0].strip()
+            cur_genus, cur_epi, _cap = latin_core(r.name_latin)
+            cur_acc = await _gbif_species(client, f"{cur_genus} {cur_epi}", r.kingdom) if cur_genus and cur_epi else None
+            cands: dict[str, set] = defaultdict(set)
+            hints: dict[str, str] = {}
+            for t in await _inat_species_by_ru(client, head):
+                tname, tru = t.get("name") or "", t.get("preferred_common_name") or ""
+                if tru and _name_match(head, tru) and len(tname.split()) >= 2:
+                    acc = await _gbif_species(client, tname, r.kingdom)
+                    if acc:
+                        cands[acc].add("iNaturalist")
+                        hints[acc] = tru
+            for sci, vru in await _gbif_by_vernacular(client, head):
+                if _name_match(head, vru):
+                    acc = await _gbif_species(client, sci, r.kingdom)
+                    if acc:
+                        cands[acc].add("GBIF")
+                        hints.setdefault(acc, vru)
+            ranked = sorted(cands.items(), key=lambda kv: -len(kv[1]))
+            decision, why, best = "left", "по русскому имени вид не найден", None
+            if ranked:
+                best, srcs = ranked[0]
+                tie = len(ranked) > 1 and len(ranked[1][1]) == len(srcs)
+                same_as_now = bool(cur_acc) and best.split()[:2] == cur_acc.split()[:2]
+                if same_as_now:
+                    decision, why = "confirmed", f"имя подтверждает нынешнюю латынь ({', '.join(sorted(srcs))})"
+                elif tie:
+                    decision, why = "left", "по имени нашлось несколько видов: " + ", ".join(k for k, _ in ranked[:3])
+                elif cur_genus and best.split()[0].lower() == cur_genus.lower():
+                    decision, why = "relatin", f"тот же род, {', '.join(sorted(srcs))}: {hints.get(best)}"
+                elif len(srcs) >= 2:
+                    decision, why = "relatin", f"другой род, оба источника: {hints.get(best)}"
+                else:
+                    async with async_session() as db:
+                        ctx = await _mismatch_context(db, r.id)
+                    ok, llm = await _llm_agrees(r.name, r.name_latin, best, ctx)
+                    c["llm_yes" if ok else "llm_no"] += 1
+                    decision = "relatin" if ok else "left"
+                    why = (f"другой род, {', '.join(sorted(srcs))} и модель ({llm.get('conf')}): {hints.get(best)}" if ok
+                           else f"другой род, один источник, модель не подтвердила ({llm.get('latin')}, {llm.get('conf')})")
+            item = {"name": r.name, "old": r.name_latin, "new": best if decision == "relatin" else None, "why": why}
+            if decision == "relatin":
+                c["relatin"] += 1
+                if len(c["sample"]) < 120:
+                    c["sample"].append(item)
+                if apply:
+                    async with async_session() as db:
+                        await _audit(db, "site-mismatch", "relatin", r.id, r.name, r.name_latin,
+                                     extra={"new_latin": best, "why": why})
+                        await db.execute(text("UPDATE plants SET name_latin = :new, safety_level = NULL WHERE id = :id"),
+                                         {"new": best, "id": r.id})
+                        await db.commit()
+                    photo = await _refresh_taxon_data(client, r.id, best, r.kingdom)
+                    await _close_finding(r.id, "fixed", f"латынь исправлена: {best}; {photo}", item | {"photo": photo})
+            elif decision == "confirmed":
+                c["confirmed"] += 1
+                if len(c["confirmed_sample"]) < 60:
+                    c["confirmed_sample"].append(item)
+                if apply:
+                    await _close_finding(r.id, "dismissed", "латынь верна: " + why, item)
+            else:
+                c["left"] += 1
+                if len(c["left_sample"]) < 80:
+                    c["left_sample"].append(item)
+            if progress and n % 5 == 0:
+                progress({k: v for k, v in c.items() if not isinstance(v, list)} | {"done": n})
+    return c
+
+
 STEPS = {"stale": run_stale, "oldspell": run_oldspell, "genuslatin": run_genuslatin,
-         "sametaxon": run_sametaxon, "junkname": run_junkname}
+         "sametaxon": run_sametaxon, "junkname": run_junkname, "mismatch": run_mismatch}
 
 
 async def run_site_step(step: str, apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
     fn = STEPS[step]
-    if step in ("genuslatin", "sametaxon"):
+    if step in ("genuslatin", "sametaxon", "mismatch"):
         return await fn(apply=apply, limit=limit, progress=progress)
     return await fn(apply=apply, progress=progress)
