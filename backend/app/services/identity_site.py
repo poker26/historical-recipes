@@ -117,6 +117,40 @@ def ru_strong_match(card_name: str | None, other: str | None) -> bool:
     return _stem(a[0]) == _stem(b[0]) and _stem(a[-1]) == _stem(b[-1])
 
 
+# Народные названия в iNaturalist записаны через «ё», и поиск «Фиалка пестрая» там ничего
+# не находит, а «Фиалка пёстрая» находит вид. Для самых частых слов строится вариант с «ё».
+# Прилагательное меняется только целиком с окончанием: «пестролистный» и «черноплодный»
+# пишутся без «ё».
+_YO_STEMS = {"черн": "чёрн", "желт": "жёлт", "зелен": "зелён", "пестр": "пёстр", "тверд": "твёрд",
+             "жестк": "жёстк", "темн": "тёмн", "тополев": "тополёв", "звездчат": "звёздчат",
+             "трехцветн": "трёхцветн", "трехлистн": "трёхлистн", "четырехлистн": "четырёхлистн"}
+_YO_ENDINGS = {"ый", "ий", "ой", "ая", "яя", "ое", "ее", "ые", "ие"}
+_YO_NOUNS = {"береза": "берёза", "березка": "берёзка", "клен": "клён", "еж": "ёж", "елка": "ёлка",
+             "лен": "лён", "костер": "костёр", "мед": "мёд"}
+
+
+def _yo_word(w: str) -> str:
+    low = w.lower()
+    new = _YO_NOUNS.get(low)
+    if new is None:
+        for stem, yo in _YO_STEMS.items():
+            if low.startswith(stem) and low[len(stem):] in _YO_ENDINGS:
+                new = yo + low[len(stem):]
+                break
+    if new is None:
+        return w
+    return new[0].upper() + new[1:] if w[0].isupper() else new
+
+
+def yo_variant(name: str | None) -> str | None:
+    """Имя с «ё» в частых словах («Фиалка пестрая» → «Фиалка пёстрая») или None, если
+    менять нечего."""
+    if not name:
+        return None
+    new = "".join(_yo_word(p) if p and p[0].isalpha() else p for p in re.split(r"([^А-Яа-яЁё]+)", name))
+    return new if new != name else None
+
+
 _PART_WORD = re.compile(r"^(плод|корн|корен|лист|цвет|трав|семен|семя|кора|коры|ягод|почк|шишк|клубн|луковиц|"
                         r"сок|масл|побег|стебл|кожур)")
 
@@ -146,6 +180,15 @@ def species_evidence(name: str | None, vernaculars: set[str]) -> str | None:
     if len(a) == 1 and any(_ru_words(v) and _stem(a[0]) == _stem(_ru_words(v)[0]) for v in vernaculars):
         return "weak"
     return None
+
+
+async def _sync_monograph(db, pid, fields: dict) -> None:
+    """Имя, латынь и семейство страница карточки берёт из очерка. Шаг, который меняет их в
+    карточке, меняет и очерк, иначе на сайте остаётся прежнее (так было с переименованиями
+    29.09: в базе «Аистник», на странице «Аистникъ»)."""
+    await db.execute(text("UPDATE plant_reader_monograph SET monograph = monograph || CAST(:p AS jsonb), "
+                          "updated_at = now() WHERE plant_id = :id"),
+                     {"p": json.dumps(fields, ensure_ascii=False), "id": pid})
 
 
 async def _published(db, *cols):
@@ -272,6 +315,7 @@ async def run_oldspell(apply: bool, progress: Progress | None = None) -> dict:
                                                 THEN names_historical
                                                 ELSE array_append(COALESCE(names_historical, ARRAY[]::text[]), :old) END
                     WHERE id = CAST(:id AS uuid) AND name = :old"""), {"new": p["new"], "old": p["old"], "id": p["id"]})
+                await _sync_monograph(db, uuid.UUID(p["id"]), {"name": p["new"]})
             await db.commit()
     return result
 
@@ -287,6 +331,24 @@ async def _inat_species_by_ru(client: httpx.AsyncClient, ru: str) -> list[dict]:
         return []
     finally:
         await asyncio.sleep(1.2)
+
+
+async def _inat_split(client: httpx.AsyncClient, inat_taxon: tuple[str, int | None] | None,
+                      cur_genus: str | None, cur_epi: str | None) -> str | None:
+    """Бином iNaturalist, найденный по имени карточки, если GBIF свёл его в нынешний вид, а
+    iNaturalist держит нынешний бином отдельным действующим видом. None, если это то же
+    имя или настоящий синоним (iNaturalist ведёт оба бинома к одному виду)."""
+    if not inat_taxon or not cur_genus or not cur_epi:
+        return None
+    tname, tid = inat_taxon
+    binom = " ".join(tname.split()[:2])
+    cur = f"{cur_genus} {cur_epi}"
+    if binom.lower() == cur.lower():
+        return None
+    for t in await _inat_species_by_ru(client, cur):
+        if (t.get("name") or "").lower() == cur.lower() and t.get("is_active", True) and t.get("id") != tid:
+            return binom
+    return None
 
 
 async def _gbif_by_vernacular(client: httpx.AsyncClient, ru: str) -> list[tuple[str, str]]:
@@ -350,7 +412,11 @@ async def run_genuslatin(apply: bool, limit: int = 0, progress: Progress | None 
                 why = "эпитет с прописной, GBIF знает строчный" if new else None
             if not new:
                 ru = " ".join(_ru_words(r.name)[:3])
-                for t in await _inat_species_by_ru(client, ru):
+                inat = await _inat_species_by_ru(client, ru)
+                yo = yo_variant(ru)
+                if yo and not any(ru_strong_match(r.name, t.get("preferred_common_name")) for t in inat):
+                    inat += await _inat_species_by_ru(client, yo)
+                for t in inat:
                     tname, tru = t.get("name") or "", t.get("preferred_common_name") or ""
                     if not tru or not ru_strong_match(r.name, tru):
                         continue
@@ -380,6 +446,7 @@ async def run_genuslatin(apply: bool, limit: int = 0, progress: Progress | None 
                         await db.execute(text("UPDATE plants SET name_latin = :new, inat_synced_at = NULL "
                                               "WHERE id = :id AND name_latin IS NOT DISTINCT FROM :old"),
                                          {"new": new, "id": r.id, "old": r.name_latin})
+                        await _sync_monograph(db, r.id, {"name_latin": new})
                         await db.commit()
             else:
                 c["review"] += 1
@@ -506,6 +573,7 @@ async def run_junkname(apply: bool, progress: Progress | None = None) -> dict:
                                      extra={"new_name": new})
                         await db.execute(text("UPDATE plants SET name = :n, name_modern = COALESCE(name_modern, :n) "
                                               "WHERE id = :id AND name = :o"), {"n": new, "id": r.id, "o": r.name})
+                        await _sync_monograph(db, r.id, {"name": new})
                         await db.commit()
             else:
                 c["left"] += 1
@@ -610,17 +678,22 @@ async def _refresh_taxon_data(client: httpx.AsyncClient, pid, new_latin: str, ki
     if d and d.get("family"):
         fam = d["family"]
     async with async_session() as db:
+        # Русское имя семейства было от прежнего вида. Берётся то, что стоит у других
+        # карточек этого семейства, иначе страница остаётся без семейства.
+        fam_ru = (await db.execute(text(
+            "SELECT mode() WITHIN GROUP (ORDER BY family) FROM plants "
+            "WHERE family_latin = CAST(:fam AS text) AND family IS NOT NULL"), {"fam": fam})).scalar() if fam else None
         await db.execute(text("""
             UPDATE plants SET photo_url = NULL, photo_attribution = NULL, photo_license = NULL, photo_source = NULL,
                    inat_taxon_id = NULL, inat_synced_at = NULL, name_modern = NULL,
                    family_latin = COALESCE(CAST(:fam AS text), family_latin),
-                   family = CASE WHEN CAST(:fam AS text) IS NULL THEN family END
-            WHERE id = :id"""), {"id": pid, "fam": fam})
-        await db.execute(text("""
-            UPDATE plant_reader_monograph SET monograph = monograph || jsonb_build_object(
-                'name_latin', CAST(:l AS text), 'photo_url', NULL, 'photo_attribution', NULL,
-                'photo_license', NULL, 'photo_source', NULL)
-            WHERE plant_id = :id"""), {"id": pid, "l": new_latin})
+                   family = CASE WHEN CAST(:fam AS text) IS NULL THEN family ELSE CAST(:fam_ru AS text) END
+            WHERE id = :id"""), {"id": pid, "fam": fam, "fam_ru": fam_ru})
+        patch = {"name_latin": new_latin, "photo_url": None, "photo_attribution": None,
+                 "photo_license": None, "photo_source": None}
+        if fam:
+            patch |= {"family_latin": fam, "family": fam_ru}
+        await _sync_monograph(db, pid, patch)
         await db.commit()
     iconic = _ICONIC_FOR_KINGDOM.get(kingdom or "растение", "Plantae")
     res = await resolve_taxon_photo(client, new_latin, iconic=iconic)
@@ -659,9 +732,13 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
     """Латынь по русскому имени для карточек, чьё имя не подтвердилось народными
     названиями их латыни (находки identity.site_mismatch). Вид берётся из iNaturalist и
     народных названий GBIF при совпадении имени по первому и последнему слову и
-    подтверждается GBIF как вид того же царства. Тот же вид, что уже стоит: латынь верна,
-    находка закрывается. Другой вид того же рода: латынь меняется по одному источнику.
-    Другой род: нужны оба источника или согласие модели с уверенностью от 80."""
+    подтверждается GBIF как вид того же царства. Имя ищется и в написании через «ё».
+    Тот же вид, что уже стоит: латынь верна, находка закрывается; но если GBIF лишь свёл
+    найденный вид в нынешний, а iNaturalist их различает, латынь меняется на найденный вид.
+    Другой вид того же рода: латынь меняется по одному источнику. Другой род: нужны оба
+    источника или согласие модели с уверенностью от 80. Если поиск ничего не дал, вид
+    предлагает модель, а принимается он только при совпадении имени карточки с народным
+    названием вида, в том числе когда модель называет нынешний вид."""
     async with async_session() as db:
         rows = (await db.execute(text("""
             SELECT p.id, p.name, p.name_latin, p.kingdom FROM data_quality_findings f
@@ -679,14 +756,23 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
             cur_acc = await _gbif_species(client, f"{cur_genus} {cur_epi}", r.kingdom) if cur_genus and cur_epi else None
             cands: dict[str, set] = defaultdict(set)
             hints: dict[str, str] = {}
-            for t in await _inat_species_by_ru(client, head):
+            inat_taxa: dict[str, tuple[str, int | None]] = {}  # принятый бином GBIF → (бином и id iNaturalist)
+            yo = yo_variant(head)
+            inat = await _inat_species_by_ru(client, head)
+            if yo and not any(_name_match(head, t.get("preferred_common_name")) for t in inat):
+                inat += await _inat_species_by_ru(client, yo)
+            for t in inat:
                 tname, tru = t.get("name") or "", t.get("preferred_common_name") or ""
                 if tru and _name_match(head, tru) and len(tname.split()) >= 2:
                     acc = await _gbif_species(client, tname, r.kingdom)
                     if acc:
                         cands[acc].add("iNaturalist")
                         hints[acc] = tru
-            for sci, vru in await _gbif_by_vernacular(client, head):
+                        inat_taxa.setdefault(acc, (tname, t.get("id")))
+            gbif_v = await _gbif_by_vernacular(client, head)
+            if yo and not any(_name_match(head, v) for _, v in gbif_v):
+                gbif_v += await _gbif_by_vernacular(client, yo)
+            for sci, vru in gbif_v:
                 if _name_match(head, vru):
                     acc = await _gbif_species(client, sci, r.kingdom)
                     if acc:
@@ -698,7 +784,18 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
                 best, srcs = ranked[0]
                 tie = len(ranked) > 1 and len(ranked[1][1]) == len(srcs)
                 same_as_now = bool(cur_acc) and best.split()[:2] == cur_acc.split()[:2]
-                if same_as_now:
+                split = await _inat_split(client, inat_taxa.get(best), cur_genus, cur_epi) if same_as_now else None
+                if split:
+                    # GBIF сводит вид, который называет имя карточки, в нынешний, а iNaturalist
+                    # держит их разными видами («Подгруздок чернеющий» Russula nigricans и
+                    # подгруздок чёрный R. adusta). Имя карточки называет именно этот вид.
+                    hint = hints.get(best)
+                    if split.split()[0].lower() == (cur_genus or "").lower():
+                        decision, best = "relatin", split
+                        why = f"GBIF сводит {split} в нынешний вид, iNaturalist их различает: {hint}"
+                    else:
+                        decision, why = "left", f"GBIF сводит {split} в нынешний вид, iNaturalist различает, род другой"
+                elif same_as_now:
                     decision, why = "confirmed", f"имя подтверждает нынешнюю латынь ({', '.join(sorted(srcs))})"
                 elif tie:
                     decision, why = "left", "по имени нашлось несколько видов: " + ", ".join(k for k, _ in ranked[:3])
@@ -726,10 +823,17 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
                 if not acc:
                     why = f"поиск не нашёл, модель не уверена или GBIF не знает ({prop.get('latin')}, {prop.get('conf')})"
                 elif cur_acc and acc.split()[:2] == cur_acc.split()[:2]:
-                    if prop["conf"] >= 90:
-                        decision, why = "confirmed", f"модель ({prop['conf']}) подтверждает нынешнюю латынь"
-                    else:
+                    # Одной модели мало: описание карточки бывает от другого вида, и модель
+                    # соглашается с ним («Корица китайская» с описанием цейлонской корицы).
+                    # Латынь верна, только если имя карточки есть среди народных названий вида.
+                    names = await vern.names(acc)
+                    hit = next((v for v in names if _name_match(head, v)), None)
+                    if hit and prop["conf"] >= 90:
+                        decision, why = "confirmed", f"модель ({prop['conf']}) и народное название «{hit}» подтверждают нынешнюю латынь"
+                    elif hit:
                         why = f"модель за нынешнюю латынь, но уверенность {prop['conf']}"
+                    else:
+                        why = f"модель за нынешнюю латынь ({prop['conf']}), но среди народных названий вида нет «{head}»"
                 else:
                     names = await vern.names(acc)
                     hit = next((v for v in names if _name_match(head, v)), None)
