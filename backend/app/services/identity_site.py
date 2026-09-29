@@ -546,6 +546,34 @@ async def _mismatch_context(db, pid) -> str:
         f"Где растёт: {r.habitat}" if r.habitat else ""] if x)
 
 
+_PROPOSE_SYS = (
+    "Ты ботаник-систематик. Дано название растения или гриба из старой русской книги, латынь, которая у "
+    "карточки стоит сейчас (она может быть ошибочной), и выписки о применении. Назови вид, который обозначает "
+    "это русское название в ботанической литературе. Строго JSON: "
+    "{\"latin\": \"Genus species\", \"confidence\": 0..100}. Если название неоднозначно или не известно, "
+    "confidence ниже 60."
+)
+
+
+async def _llm_propose(name: str, latin: str | None, context: str) -> dict:
+    from app.services.llm import chat_completion_json
+    user = f"Название: {name}\nНынешняя латынь: {latin}\n{context}"
+    try:
+        res = await chat_completion_json([{"role": "system", "content": _PROPOSE_SYS},
+                                          {"role": "user", "content": user}],
+                                         task="plant_extraction", temperature=0.0, max_tokens=200)
+    except Exception as e:  # noqa: BLE001 — сбой модели не валит прогон, карточка остаётся
+        return {"error": type(e).__name__}
+    if not isinstance(res, dict):
+        return {}
+    try:
+        conf = float(res.get("confidence") or 0)
+    except (TypeError, ValueError):
+        conf = 0.0
+    latin_p = " ".join(str(res.get("latin") or "").split()[:2])
+    return {"latin": latin_p, "conf": conf}
+
+
 async def _llm_agrees(name: str, latin: str | None, candidate: str, context: str) -> tuple[bool, dict]:
     from app.services.llm import chat_completion_json
     user = (f"Название: {name}\nНынешняя латынь: {latin}\nКандидат по русскому названию: {candidate}\n"
@@ -640,6 +668,7 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
     c = {"step": "mismatch", "apply": apply, "cards": len(rows), "relatin": 0, "confirmed": 0, "left": 0,
          "llm_yes": 0, "llm_no": 0, "sample": [], "confirmed_sample": [], "left_sample": []}
     async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
+        vern = Vernacular(client)
         for n, r in enumerate(rows, 1):
             head = re.split(r",|\(|\sили\s|;", r.name or "")[0].strip()
             cur_genus, cur_epi, _cap = latin_core(r.name_latin)
@@ -681,6 +710,30 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
                     decision = "relatin" if ok else "left"
                     why = (f"другой род, {', '.join(sorted(srcs))} и модель ({llm.get('conf')}): {hints.get(best)}" if ok
                            else f"другой род, один источник, модель не подтвердила ({llm.get('latin')}, {llm.get('conf')})")
+            if decision == "left" and not ranked:
+                # Поиск по имени ничего не дал: вид предлагает модель, а проверяет обратный путь,
+                # народные названия предложенного вида должны содержать имя карточки.
+                async with async_session() as db:
+                    ctx = await _mismatch_context(db, r.id)
+                prop = await _llm_propose(r.name, r.name_latin, ctx)
+                acc = None
+                if prop.get("latin") and prop.get("conf", 0) >= 80:
+                    acc = await _gbif_species(client, prop["latin"], r.kingdom, exact_only=True)
+                if not acc:
+                    why = f"поиск не нашёл, модель не уверена или GBIF не знает ({prop.get('latin')}, {prop.get('conf')})"
+                elif cur_acc and acc.split()[:2] == cur_acc.split()[:2]:
+                    if prop["conf"] >= 90:
+                        decision, why = "confirmed", f"модель ({prop['conf']}) подтверждает нынешнюю латынь"
+                    else:
+                        why = f"модель за нынешнюю латынь, но уверенность {prop['conf']}"
+                else:
+                    names = await vern.names(acc)
+                    hit = next((v for v in names if _name_match(head, v)), None)
+                    if hit:
+                        decision, best = "relatin", acc
+                        why = f"модель ({prop['conf']}), народное название вида: {hit}"
+                    else:
+                        why = f"модель предлагает {acc}, но среди народных названий вида нет «{head}»"
             item = {"name": r.name, "old": r.name_latin, "new": best if decision == "relatin" else None, "why": why}
             if decision == "relatin":
                 c["relatin"] += 1
