@@ -51,7 +51,8 @@ from sqlalchemy import literal_column, select, text
 from app.database import async_session
 from app.models.plant import Plant
 from app.services.identity_cleanup import (
-    FACTS_SCORE, GBIF_PACE, _audit, _kingdom_ok, _purge_qdrant, gbif_accepted, gbif_match, merge_card,
+    FACTS_SCORE, GBIF_PACE, GBIF_SPECIES, _audit, _kingdom_ok, _purge_qdrant, gbif_accepted, gbif_match,
+    merge_card,
 )
 from app.services.identity_resolve import Vernacular, _INAT_HEADERS
 from app.services.inaturalist import INAT_BASE
@@ -77,17 +78,22 @@ def is_junk(name: str | None) -> bool:
 
 
 def latin_core(latin: str | None) -> tuple[str | None, str | None, bool]:
-    """(род, эпитет, эпитет_с_прописной). Автор, «sp.», «L.» эпитетом не считаются."""
-    m = _EPI.match((latin or "").strip())
+    """(род, эпитет, эпитет_с_прописной). Автор, «sp.», «L.» эпитетом не считаются.
+    Слово с прописной считается эпитетом старой записи («Aconitum Anthora L.») только без
+    точки после него (иначе это сокращение автора: «Adenophora Fisch.») и если за ним не
+    идёт ещё одно строчное слово (составной эпитет «Filix femina» так не разобрать)."""
+    raw = (latin or "").strip()
+    m = _EPI.match(raw)
     if not m:
         return None, None, False
     genus, epi = m.group(1), m.group(2)
     if epi and epi.lower() in _NOT_EPI:
         epi = None
     capital = bool(epi and epi[0].isupper())
-    if capital and len(epi) < 4:  # «Anthora» да, «Br», «DC» нет
-        epi = None
-        capital = False
+    if capital:
+        rest = raw[m.end():]
+        if len(epi) < 4 or rest.startswith(".") or re.match(r"\s+[a-z]{3,}", rest):
+            epi, capital = None, False
     return genus, epi.lower() if epi else None, capital
 
 
@@ -276,13 +282,34 @@ async def _inat_species_by_ru(client: httpx.AsyncClient, ru: str) -> list[dict]:
         await asyncio.sleep(1.2)
 
 
-async def _gbif_species(client: httpx.AsyncClient, binomial: str, card_kingdom: str | None) -> str | None:
-    """Принятый бином по GBIF, если это вид нужного царства и совпадение точное или
-    нечёткое с высокой уверенностью; иначе None."""
+async def _gbif_by_vernacular(client: httpx.AsyncClient, ru: str) -> list[tuple[str, str]]:
+    """Виды основного справочника GBIF, у которых есть русское народное название,
+    похожее на запрос: [(бином, русское название)]."""
+    out: list[tuple[str, str]] = []
+    try:
+        r = await client.get(f"{GBIF_SPECIES}/search", params={
+            "q": ru, "qField": "VERNACULAR", "rank": "SPECIES", "limit": 10,
+            "datasetKey": "d7dddbf4-2cf0-4f39-9b2a-bb099caae36c"})
+        for t in (r.json().get("results", []) if r.status_code == 200 else []):
+            sci = t.get("canonicalName")
+            for v in t.get("vernacularNames") or []:
+                if v.get("language") == "rus" and sci and v.get("vernacularName"):
+                    out.append((sci, v["vernacularName"]))
+    except (httpx.HTTPError, ValueError):
+        pass
+    await asyncio.sleep(GBIF_PACE)
+    return out
+
+
+async def _gbif_species(client: httpx.AsyncClient, binomial: str, card_kingdom: str | None,
+                        exact_only: bool = False) -> str | None:
+    """Принятый бином по GBIF, если это вид нужного царства и совпадение точное (или, без
+    exact_only, нечёткое с высокой уверенностью); иначе None."""
     kingdom = "Fungi" if (card_kingdom or "").startswith("гриб") else "Plantae"
     d = await gbif_match(client, binomial, kingdom)
     await asyncio.sleep(GBIF_PACE)
-    if not d or d.get("matchType") not in ("EXACT", "FUZZY") or (d.get("confidence") or 0) < 90:
+    ok_types = ("EXACT",) if exact_only else ("EXACT", "FUZZY")
+    if not d or d.get("matchType") not in ok_types or (d.get("confidence") or 0) < 90:
         return None
     if d.get("rank") != "SPECIES" or not _kingdom_ok(card_kingdom, d.get("kingdom")):
         return None
@@ -312,7 +339,7 @@ async def run_genuslatin(apply: bool, limit: int = 0, progress: Progress | None 
         for n, (r, genus, epi, capital) in enumerate(cands, 1):
             new, why, inat_hint = None, None, None
             if capital and epi:
-                new = await _gbif_species(client, f"{genus} {epi}", r.kingdom)
+                new = await _gbif_species(client, f"{genus} {epi}", r.kingdom, exact_only=True)
                 why = "эпитет с прописной, GBIF знает строчный" if new else None
             if not new:
                 ru = " ".join(_ru_words(r.name)[:3])
@@ -327,6 +354,14 @@ async def run_genuslatin(apply: bool, limit: int = 0, progress: Progress | None 
                     new = await _gbif_species(client, tname, r.kingdom)
                     why = f"iNaturalist: {inat_hint}" if new else f"GBIF не подтвердил {tname}"
                     break
+            if not new and not (why or "").startswith("iNaturalist даёт другой род"):
+                for sci, vru in await _gbif_by_vernacular(client, ru):
+                    if not ru_strong_match(r.name, vru) or sci.split()[0].lower() != genus.lower():
+                        continue
+                    new = await _gbif_species(client, sci, r.kingdom)
+                    if new:
+                        why = f"GBIF, народное название: {sci} ({vru})"
+                        break
             if new and new.split()[0].lower() == genus.lower() or (new and capital):
                 c["relatin"] += 1
                 if len(c["sample"]) < 60:
