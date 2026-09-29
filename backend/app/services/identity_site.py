@@ -63,7 +63,7 @@ CHECK_MISMATCH = "identity.site_mismatch"
 CHECK_LATIN = "identity.site_latin"
 
 _CYR = re.compile(r"[А-Яа-яЁё]")
-_OLD = re.compile(r"[ѣіѳѵѢІѲѴ]|ъ(?=$|[^а-яё])")
+_OLD = re.compile(r"[ѣіѳѵѢІѲѴ]|[ъЪ](?=$|[^а-яёА-ЯЁ])")
 _OLD_MAP = str.maketrans({"ѣ": "е", "Ѣ": "Е", "і": "и", "І": "И", "ѳ": "ф", "Ѳ": "Ф", "ѵ": "и", "Ѵ": "И"})
 # Испорченное распознаванием имя: заглавная внутри слова («ГНеёг»), инициал автора в
 # скобках или в конце («(Г.)», «Втазяса Г.»). Это латынь, прочитанная как кириллица.
@@ -241,7 +241,7 @@ async def run_oldspell(apply: bool, progress: Progress | None = None) -> dict:
         lex = await _lexicon(db)
         rows = (await db.execute(text("""
             SELECT id, name, name_latin FROM plants
-            WHERE kingdom IN ('растение', 'гриб') AND name ~ '[ѣіѳѵѢІѲѴ]|ъ([^а-яё]|$)'"""))).all()
+            WHERE kingdom IN ('растение', 'гриб') AND name ~ '[ѣіѳѵѢІѲѴ]|[ъЪ]([^а-яёА-ЯЁ]|$)'"""))).all()
     plan, skipped = [], []
     for r in rows:
         new = modernize(r.name, lex)
