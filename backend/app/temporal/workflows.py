@@ -61,7 +61,7 @@ with workflow.unsafe.imports_passed_through():
     from app.temporal.identity_activities import (
         identity_dedup_activity, identity_shells_activity,
         identity_gbif_activity, identity_reid_activity, identity_resolve_activity,
-        identity_amirdovlat_activity, identity_twins_activity,
+        identity_amirdovlat_activity, identity_twins_activity, identity_site_activity,
     )
     from app.temporal.houseplant_activities import (
         card_latin_cleanup_activity,
@@ -909,6 +909,8 @@ class IdentityCleanupWorkflow:
             out = await workflow.execute_activity(identity_amirdovlat_activity, args=[apply, limit], **kw)
         elif step == "twins":
             out = await workflow.execute_activity(identity_twins_activity, apply, **kw)
+        elif step in ("stale", "oldspell", "genuslatin", "sametaxon", "junkname"):
+            out = await workflow.execute_activity(identity_site_activity, args=[step, apply, limit], **kw)
         else:
             raise ValueError(f"unknown identity step: {step}")
         workflow.logger.info(f"IdentityCleanupWorkflow[{step}] done: {out}")

@@ -1,0 +1,475 @@
+"""Ошибки карточек, которые видит поисковик (сайт botanik.fun), замер 29.09.2026.
+
+Открытые находки по карточкам индекса наполовину устарели: карточки с тех пор исправлены
+прогонами reid и resolve, а находки остались. Поэтому ошибки перемерены по текущим данным
+на 6 106 карточках индекса: 259 групп, где у нескольких карточек один вид при разных
+именах; 143 карточки с видовым именем и латынью только рода; около 40 имён в
+дореформенной орфографии или испорченных распознаванием; больше 800 устаревших находок.
+
+Шаги (``scripts/identity_run.py --step <шаг> [--apply] [--limit N]``, сухой прогон без
+--apply только считает и показывает выборку):
+
+- ``stale``: закрыть находки, чья проблема в карточке уже исправлена или самой карточки
+  больше нет. Меняется только статус находки.
+- ``oldspell``: имя в дореформенной орфографии («Мох исландскій», «Ленъ») переписывается
+  в современной. Правка принимается, только если каждое изменённое слово встречается в
+  именах других карточек в современном написании («Маръ» становится «Марь», потому что
+  «марь» известна, а «мар» нет; «Бересклѣдъ» остаётся, потому что сейчас пишут
+  «бересклет»). Старое имя уходит в исторические названия.
+- ``genuslatin``: у карточки видовое имя («Цикута ядовитая»), а латынь только рода
+  («Cicuta»). Вид ищется в iNaturalist по русскому имени; принимается, только если
+  русское имя iNaturalist совпадает с именем карточки по первому и последнему слову,
+  род тот же, что у карточки, а GBIF знает бином как вид растения или гриба того же
+  царства. Прописной эпитет («Astragalus Sieversianus») исправляется строчным при
+  точном совпадении в GBIF. Всё остальное пишется находкой ``identity.site_latin``.
+- ``sametaxon``: у нескольких карточек один вид. Сливаются только карточки, имя каждой
+  из которых подтверждено народными названиями вида (GBIF rus, iNaturalist ru), и
+  карточки с испорченным именем («Етойит асшапит (Г.) ГНеёг.» при Erodium cicutarium).
+  Карточка, чьё имя не подтверждено («Голубика» с латынью черники), не трогается и
+  получает находку ``identity.site_mismatch``: у неё, скорее всего, неверна латынь.
+- ``junkname``: испорченное имя без двойника заменяется русским именем вида из
+  iNaturalist или GBIF.
+
+Каждое слияние и переименование пишется в ``card_identity_audit`` (step ``site-*``).
+Слияние сбрасывает уровень съедобности цели: после ``sametaxon --apply`` запустить
+``scripts/edible_safety_run.py``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+import uuid
+from collections import defaultdict
+from typing import Callable
+
+import httpx
+from sqlalchemy import literal_column, select, text
+
+from app.database import async_session
+from app.models.plant import Plant
+from app.services.identity_cleanup import (
+    FACTS_SCORE, GBIF_PACE, _audit, _kingdom_ok, _purge_qdrant, gbif_accepted, gbif_match, merge_card,
+)
+from app.services.identity_resolve import Vernacular, _INAT_HEADERS
+from app.services.inaturalist import INAT_BASE
+
+logger = logging.getLogger(__name__)
+Progress = Callable[[dict], None]
+
+CHECK_MISMATCH = "identity.site_mismatch"
+CHECK_LATIN = "identity.site_latin"
+
+_CYR = re.compile(r"[А-Яа-яЁё]")
+_OLD = re.compile(r"[ѣіѳѵѢІѲѴ]|ъ(?=$|[^а-яё])")
+_OLD_MAP = str.maketrans({"ѣ": "е", "Ѣ": "Е", "і": "и", "І": "И", "ѳ": "ф", "Ѳ": "Ф", "ѵ": "и", "Ѵ": "И"})
+# Испорченное распознаванием имя: заглавная внутри слова («ГНеёг»), инициал автора в
+# скобках или в конце («(Г.)», «Втазяса Г.»). Это латынь, прочитанная как кириллица.
+_JUNK = re.compile(r"[а-яё][А-ЯЁ]|\([А-ЯЁA-Z]{1,3}\.\)|\s[А-ЯЁ][а-яё]?\.\s*$")
+_EPI = re.compile(r"^([A-Z][a-z]+)(?:\s+(?:×\s*)?([A-Za-z][a-z-]{2,}))?")
+_NOT_EPI = {"sp", "spp", "var", "subsp", "ssp", "ex", "et", "and", "und", "l"}
+
+
+def is_junk(name: str | None) -> bool:
+    return bool(_JUNK.search(name or ""))
+
+
+def latin_core(latin: str | None) -> tuple[str | None, str | None, bool]:
+    """(род, эпитет, эпитет_с_прописной). Автор, «sp.», «L.» эпитетом не считаются."""
+    m = _EPI.match((latin or "").strip())
+    if not m:
+        return None, None, False
+    genus, epi = m.group(1), m.group(2)
+    if epi and epi.lower() in _NOT_EPI:
+        epi = None
+    capital = bool(epi and epi[0].isupper())
+    if capital and len(epi) < 4:  # «Anthora» да, «Br», «DC» нет
+        epi = None
+        capital = False
+    return genus, epi.lower() if epi else None, capital
+
+
+def _ru_words(name: str | None) -> list[str]:
+    head = re.split(r",|\(|\sили\s|;", name or "")[0]
+    return [w for w in re.findall(r"[а-яё-]+", head.lower().replace("ё", "е")) if len(w) >= 2]
+
+
+def _stem(w: str) -> str:
+    return w[:max(3, min(6, len(w) - 2))]
+
+
+def ru_strong_match(card_name: str | None, other: str | None) -> bool:
+    """Первое и последнее слово совпадают по основе: «Цикута ядовитая» = «цикута ядовитая»."""
+    a, b = _ru_words(card_name), _ru_words(other)
+    if len(a) < 2 or len(b) < 2:
+        return False
+    return _stem(a[0]) == _stem(b[0]) and _stem(a[-1]) == _stem(b[-1])
+
+
+_PART_WORD = re.compile(r"^(плод|корн|корен|лист|цвет|трав|семен|семя|кора|коры|ягод|почк|шишк|клубн|луковиц|"
+                        r"сок|масл|побег|стебл|кожур)")
+
+
+def species_evidence(name: str | None, vernaculars: set[str]) -> str | None:
+    """Подтверждено ли имя карточки народными названиями вида. «name»: имя совпадает с
+    народным названием по первому и последнему слову (одно слово сравнивается с первым
+    словом названия); «part»: это часть вида («Плоды черники»). Совпадение только первого
+    слова у двусловного имени не считается: «Береза маньчжурская» и «берёза повислая»
+    это разные виды одного рода. Исторические названия карточки не используются: среди
+    них бывают чужие."""
+    a = _ru_words(name)
+    if not a:
+        return None
+    for v in vernaculars:
+        b = _ru_words(v)
+        if not b:
+            continue
+        if len(a) >= 2 and len(b) >= 2 and ru_strong_match(name, v):
+            return "name"
+        if len(a) == 1 and _stem(a[0]) == _stem(b[0]):
+            return "name"
+        if len(a) == 2 and _PART_WORD.match(a[0]) and _stem(a[1]) == _stem(b[0]):
+            return "part"
+    return None
+
+
+async def _published(db, *cols):
+    score = literal_column(FACTS_SCORE.replace("p.id", "plants.id")).label("score")
+    kids = literal_column("(SELECT count(*) FROM plants c WHERE c.parent_id = plants.id)").label("kids")
+    from app.routers.plants import PUBLISHED_PRED
+    return (await db.execute(select(
+        Plant.id, Plant.name, Plant.name_latin, Plant.kingdom, Plant.rank, Plant.names_historical,
+        score, kids, *cols).where(PUBLISHED_PRED))).all()
+
+
+async def _finding(db, check_id: str, pid, title: str, evidence: dict) -> None:
+    await db.execute(text("""
+        INSERT INTO data_quality_findings
+          (id, check_id, severity, entity_type, entity_id, title, evidence, suggested_fix,
+           auto_fixable, status, first_seen, last_seen)
+        VALUES (CAST(:id AS uuid), :cid, 'P1', 'plant', :eid, :title, CAST(:ev AS jsonb),
+                CAST(:fix AS jsonb), false, 'open', now(), now())
+        ON CONFLICT (check_id, entity_id) DO UPDATE SET
+          title = EXCLUDED.title, evidence = EXCLUDED.evidence, status = 'open', last_seen = now()"""),
+        {"id": str(uuid.uuid4()), "cid": check_id, "eid": str(pid), "title": title[:300],
+         "ev": json.dumps(evidence, ensure_ascii=False, default=str),
+         "fix": json.dumps({"action": "review", "plant_id": str(pid)})})
+
+
+# ------------------------------------------------------------------ stale
+
+async def run_stale(apply: bool, progress: Progress | None = None) -> dict:
+    """Закрыть находки, чья проблема уже исправлена или карточки больше нет."""
+    async with async_session() as db:
+        rows = (await db.execute(text("""
+            SELECT f.id, f.check_id, f.title, f.evidence, p.id AS pid, p.name, p.name_latin
+            FROM data_quality_findings f LEFT JOIN plants p ON p.id::text = f.entity_id::text
+            WHERE f.status = 'open' AND f.entity_type = 'plant' AND f.check_id = ANY(:checks)"""),
+            {"checks": ["norm.mixed_script", "identity.latin_backfill", "identity.fill_latin",
+                        "identity.latin_ocr_garbled", "identity.name_ocr_garbled",
+                        "identity.latin_unresolvable"]})).all()
+        close: dict[str, list] = defaultdict(list)
+        keep: dict[str, int] = defaultdict(int)
+        for f in rows:
+            ev = f.evidence or {}
+            why = None
+            if f.pid is None:
+                why = "карточки больше нет (слита или удалена)"
+            elif f.check_id == "norm.mixed_script" and not _CYR.search(f.name_latin or ""):
+                why = "в латыни карточки больше нет кириллицы"
+            elif f.check_id in ("identity.latin_backfill", "identity.fill_latin") and latin_core(f.name_latin)[0] \
+                    and "не растение" not in (f.title or ""):
+                why = "латынь у карточки уже заполнена"
+            elif f.check_id == "identity.latin_ocr_garbled" and ev.get("garbled_latin") != f.name_latin:
+                why = "битая латынь в карточке уже заменена"
+            elif f.check_id == "identity.name_ocr_garbled" and ev.get("name") and ev.get("name") != f.name:
+                why = "битое имя в карточке уже заменено"
+            elif f.check_id == "identity.latin_unresolvable" and ev.get("name_latin") != f.name_latin:
+                why = "латынь в карточке уже другая"
+            if why:
+                close[why].append(f.id)
+            else:
+                keep[f.check_id] += 1
+        result = {"step": "stale", "apply": apply, "close": {k: len(v) for k, v in close.items()},
+                  "closed": sum(len(v) for v in close.values()), "keep_open": dict(keep)}
+        if apply:
+            for why, ids in close.items():
+                await db.execute(text("""
+                    UPDATE data_quality_findings SET status = 'stale', resolved_by = 'identity-site',
+                           resolved_at = now(), note = :why WHERE id = ANY(:ids)"""), {"why": why, "ids": ids})
+            await db.commit()
+    return result
+
+
+# ------------------------------------------------------------------ oldspell
+
+async def _lexicon(db) -> set[str]:
+    names = (await db.execute(text(
+        "SELECT name FROM plants WHERE kingdom IN ('растение', 'гриб') AND name IS NOT NULL"))).scalars().all()
+    words: set[str] = set()
+    for n in names:
+        if _OLD.search(n):
+            continue
+        words |= {w.lower().replace("ё", "е") for w in re.findall(r"[А-Яа-яЁё-]+", n)}
+    return words
+
+
+def modernize(name: str, lexicon: set[str]) -> str | None:
+    """Имя в современной орфографии или None, если хоть одно слово не удалось проверить."""
+    parts = re.split(r"([^А-Яа-яЁёѢѣІіѲѳѴѵ-]+)", name)
+    out = []
+    for p in parts:
+        if not _OLD.search(p):
+            out.append(p)
+            continue
+        base = p.translate(_OLD_MAP)
+        cands = [base]
+        if base.endswith(("ъ", "Ъ")):
+            cands = [base[:-1], base[:-1] + "ь"]
+        good = [c for c in cands if c.lower().replace("ё", "е") in lexicon]
+        if not good:
+            return None
+        out.append(good[0])
+    new = "".join(out)
+    return new if new != name and not _OLD.search(new) else None
+
+
+async def run_oldspell(apply: bool, progress: Progress | None = None) -> dict:
+    async with async_session() as db:
+        lex = await _lexicon(db)
+        rows = (await db.execute(text("""
+            SELECT id, name, name_latin FROM plants
+            WHERE kingdom IN ('растение', 'гриб') AND name ~ '[ѣіѳѵѢІѲѴ]|ъ([^а-яё]|$)'"""))).all()
+    plan, skipped = [], []
+    for r in rows:
+        new = modernize(r.name, lex)
+        (plan if new else skipped).append({"id": str(r.id), "old": r.name, "new": new, "latin": r.name_latin})
+    result = {"step": "oldspell", "apply": apply, "candidates": len(rows), "rename": len(plan),
+              "skipped": len(skipped), "sample": plan[:40], "skipped_sample": skipped[:25]}
+    if apply:
+        async with async_session() as db:
+            for p in plan:
+                await _audit(db, "site-oldspell", "rename", uuid.UUID(p["id"]), p["old"], p["latin"],
+                             extra={"new_name": p["new"]})
+                await db.execute(text("""
+                    UPDATE plants SET name = :new,
+                        names_historical = CASE WHEN :old = ANY(COALESCE(names_historical, ARRAY[]::text[]))
+                                                THEN names_historical
+                                                ELSE array_append(COALESCE(names_historical, ARRAY[]::text[]), :old) END
+                    WHERE id = CAST(:id AS uuid) AND name = :old"""), {"new": p["new"], "old": p["old"], "id": p["id"]})
+            await db.commit()
+    return result
+
+
+# ------------------------------------------------------------------ genuslatin
+
+async def _inat_species_by_ru(client: httpx.AsyncClient, ru: str) -> list[dict]:
+    try:
+        r = await client.get(f"{INAT_BASE}/taxa", params={"q": ru, "locale": "ru", "per_page": 8, "rank": "species"},
+                             headers=_INAT_HEADERS)
+        return r.json().get("results", []) if r.status_code == 200 else []
+    except (httpx.HTTPError, ValueError):
+        return []
+    finally:
+        await asyncio.sleep(1.2)
+
+
+async def _gbif_species(client: httpx.AsyncClient, binomial: str, card_kingdom: str | None) -> str | None:
+    """Принятый бином по GBIF, если это вид нужного царства и совпадение точное или
+    нечёткое с высокой уверенностью; иначе None."""
+    kingdom = "Fungi" if (card_kingdom or "").startswith("гриб") else "Plantae"
+    d = await gbif_match(client, binomial, kingdom)
+    await asyncio.sleep(GBIF_PACE)
+    if not d or d.get("matchType") not in ("EXACT", "FUZZY") or (d.get("confidence") or 0) < 90:
+        return None
+    if d.get("rank") != "SPECIES" or not _kingdom_ok(card_kingdom, d.get("kingdom")):
+        return None
+    if d.get("status") == "ACCEPTED":
+        return d.get("canonicalName")
+    key = d.get("acceptedUsageKey") or d.get("usageKey")
+    acc = await gbif_accepted(client, key) if key else None
+    await asyncio.sleep(GBIF_PACE)
+    return acc
+
+
+async def run_genuslatin(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
+    async with async_session() as db:
+        rows = await _published(db)
+    cands = []
+    for r in rows:
+        genus, epi, capital = latin_core(r.name_latin)
+        if not genus or r.rank == "genus" or is_junk(r.name):
+            continue
+        if (epi is None or capital) and len(_ru_words(r.name)) >= 2:
+            cands.append((r, genus, epi, capital))
+    if limit:
+        cands = cands[:limit]
+    c = {"step": "genuslatin", "apply": apply, "candidates": len(cands), "relatin": 0, "review": 0,
+         "sample": [], "review_sample": []}
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
+        for n, (r, genus, epi, capital) in enumerate(cands, 1):
+            new, why, inat_hint = None, None, None
+            if capital and epi:
+                new = await _gbif_species(client, f"{genus} {epi}", r.kingdom)
+                why = "эпитет с прописной, GBIF знает строчный" if new else None
+            if not new:
+                ru = " ".join(_ru_words(r.name)[:3])
+                for t in await _inat_species_by_ru(client, ru):
+                    tname, tru = t.get("name") or "", t.get("preferred_common_name") or ""
+                    if not tru or not ru_strong_match(r.name, tru):
+                        continue
+                    inat_hint = f"{tname} ({tru})"
+                    if tname.split()[0].lower() != genus.lower():
+                        why = f"iNaturalist даёт другой род: {inat_hint}"
+                        break
+                    new = await _gbif_species(client, tname, r.kingdom)
+                    why = f"iNaturalist: {inat_hint}" if new else f"GBIF не подтвердил {tname}"
+                    break
+            if new and new.split()[0].lower() == genus.lower() or (new and capital):
+                c["relatin"] += 1
+                if len(c["sample"]) < 60:
+                    c["sample"].append({"name": r.name, "old": r.name_latin, "new": new, "why": why})
+                if apply:
+                    async with async_session() as db:
+                        await _audit(db, "site-genuslatin", "relatin", r.id, r.name, r.name_latin,
+                                     extra={"new_latin": new, "why": why})
+                        await db.execute(text("UPDATE plants SET name_latin = :new, inat_synced_at = NULL "
+                                              "WHERE id = :id AND name_latin IS NOT DISTINCT FROM :old"),
+                                         {"new": new, "id": r.id, "old": r.name_latin})
+                        await db.commit()
+            else:
+                c["review"] += 1
+                if len(c["review_sample"]) < 40:
+                    c["review_sample"].append({"name": r.name, "latin": r.name_latin, "why": why or "iNaturalist не нашёл вид с таким именем", "new": new})
+                if apply:
+                    async with async_session() as db:
+                        await _finding(db, CHECK_LATIN, r.id,
+                                       f"«{r.name}»: видовое имя, а латынь только рода ({r.name_latin})",
+                                       {"name": r.name, "latin": r.name_latin, "why": why, "proposed": new,
+                                        "inat": inat_hint})
+                        await db.commit()
+            if progress and n % 10 == 0:
+                progress({k: v for k, v in c.items() if not isinstance(v, list)} | {"done": n})
+    return c
+
+
+# ------------------------------------------------------------------ sametaxon
+
+async def run_sametaxon(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
+    async with async_session() as db:
+        rows = await _published(db)
+    groups: dict[tuple, list] = defaultdict(list)
+    for r in rows:
+        genus, epi, _cap = latin_core(r.name_latin)
+        if genus and epi:
+            groups[(genus.lower(), epi, r.kingdom)].append(r)
+    groups = {k: v for k, v in groups.items() if len(v) > 1}
+    keys = sorted(groups)[: limit or None]
+    c = {"step": "sametaxon", "apply": apply, "groups": len(keys), "merged": 0, "flagged": 0,
+         "groups_merged": 0, "no_vernacular": 0, "sample": [], "flag_sample": []}
+    dead: list[str] = []
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
+        vern = Vernacular(client)
+        for n, key in enumerate(keys, 1):
+            members = groups[key]
+            binomial = f"{key[0].capitalize()} {key[1]}"
+            names = await vern.names(binomial)
+            confirmed, parts, junk, unconfirmed = [], [], [], []
+            for m in members:
+                ev = None if is_junk(m.name) else species_evidence(m.name, names)
+                if is_junk(m.name):
+                    junk.append(m)
+                elif ev == "name":
+                    confirmed.append(m)
+                elif ev == "part":
+                    parts.append(m)
+                else:
+                    unconfirmed.append(m)
+            if not names:
+                c["no_vernacular"] += 1
+            pool = confirmed or ([] if not junk else sorted(unconfirmed, key=lambda m: (m.kids or 0, m.score or 0))[-1:])
+            if not pool:
+                continue
+            target = max(pool, key=lambda m: (m.kids or 0, m.score or 0))
+            sources = [m for m in confirmed if m.id != target.id] + (parts if confirmed else []) + junk
+            flagged = [m for m in unconfirmed if m.id != target.id]
+            if sources:
+                c["groups_merged"] += 1
+            for s in sources:
+                c["merged"] += 1
+                if len(c["sample"]) < 60:
+                    c["sample"].append({"taxon": binomial, "source": s.name, "target": target.name,
+                                        "why": "имя испорчено" if s in junk else "часть вида" if s in parts
+                                        else "оба имени есть в народных названиях вида",
+                                        "vernacular": sorted(names)[:6]})
+                if apply:
+                    async with async_session() as db:
+                        await merge_card(db, s.id, target.id, "site-sametaxon",
+                                         f"same taxon {binomial}; vernacular: {', '.join(sorted(names)[:5])}")
+                        await db.commit()
+                    dead.append(str(s.id))
+            for f in flagged:
+                c["flagged"] += 1
+                if len(c["flag_sample"]) < 40:
+                    c["flag_sample"].append({"taxon": binomial, "card": f.name, "kept": target.name,
+                                             "vernacular": sorted(names)[:6]})
+                if apply:
+                    async with async_session() as db:
+                        await _finding(db, CHECK_MISMATCH, f.id,
+                                       f"«{f.name}»: латынь {binomial}, но имя не из народных названий этого вида",
+                                       {"name": f.name, "latin": f.name_latin, "taxon": binomial,
+                                        "vernacular": sorted(names), "same_taxon_card": target.name})
+                        await db.commit()
+            if progress and n % 10 == 0:
+                progress({k: v for k, v in c.items() if not isinstance(v, list)} | {"done": n})
+    if dead:
+        await _purge_qdrant(dead)
+    return c
+
+
+# ------------------------------------------------------------------ junkname
+
+async def run_junkname(apply: bool, progress: Progress | None = None) -> dict:
+    async with async_session() as db:
+        rows = [r for r in await _published(db) if is_junk(r.name)]
+    c = {"step": "junkname", "apply": apply, "candidates": len(rows), "renamed": 0, "left": 0,
+         "sample": [], "left_sample": []}
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
+        vern = Vernacular(client)
+        for r in rows:
+            genus, epi, _cap = latin_core(r.name_latin)
+            new = None
+            if genus and epi:
+                cands = [v.strip() for v in await vern.names(f"{genus} {epi}")
+                         if re.fullmatch(r"[А-ЯЁа-яё][а-яё -]+", v.strip())]
+                # двусловное название вида раньше родового одного слова, короткое раньше длинного
+                cands.sort(key=lambda v: (len(v.split()) != 2, len(v)))
+                new = cands[0] if cands else None
+            if new:
+                new = new[:1].upper() + new[1:]
+                c["renamed"] += 1
+                c["sample"].append({"old": r.name, "new": new, "latin": r.name_latin})
+                if apply:
+                    async with async_session() as db:
+                        await _audit(db, "site-junkname", "rename", r.id, r.name, r.name_latin,
+                                     extra={"new_name": new})
+                        await db.execute(text("UPDATE plants SET name = :n, name_modern = COALESCE(name_modern, :n) "
+                                              "WHERE id = :id AND name = :o"), {"n": new, "id": r.id, "o": r.name})
+                        await db.commit()
+            else:
+                c["left"] += 1
+                c["left_sample"].append({"name": r.name, "latin": r.name_latin})
+    return c
+
+
+STEPS = {"stale": run_stale, "oldspell": run_oldspell, "genuslatin": run_genuslatin,
+         "sametaxon": run_sametaxon, "junkname": run_junkname}
+
+
+async def run_site_step(step: str, apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
+    fn = STEPS[step]
+    if step in ("genuslatin", "sametaxon"):
+        return await fn(apply=apply, limit=limit, progress=progress)
+    return await fn(apply=apply, progress=progress)

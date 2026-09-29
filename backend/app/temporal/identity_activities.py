@@ -14,6 +14,7 @@ from temporalio import activity
 from app.services.identity_cleanup import run_dedup, run_gbif, run_reid, run_shells, run_twins
 from app.services.identity_resolve import run_resolve
 from app.services.identity_amirdovlat import run_amirdovlat
+from app.services.identity_site import run_site_step
 
 
 def _report(progress: dict) -> None:
@@ -43,6 +44,12 @@ async def identity_reid_activity(limit: int = 0) -> dict:
 @activity.defn
 async def identity_resolve_activity(apply: bool = False, limit: int = 0) -> dict:
     return await run_resolve(apply=apply, limit=limit, progress=_report)
+
+
+@activity.defn
+async def identity_site_activity(step: str, apply: bool = False, limit: int = 0) -> dict:
+    """Ошибки карточек, которые видит поисковик: stale, oldspell, genuslatin, sametaxon, junkname."""
+    return await run_site_step(step, apply=apply, limit=limit, progress=_report)
 
 
 @activity.defn
