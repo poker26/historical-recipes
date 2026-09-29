@@ -488,8 +488,13 @@ async def run_junkname(apply: bool, progress: Progress | None = None) -> dict:
                 # двусловное название вида раньше родового одного слова, короткое раньше длинного
                 cands.sort(key=lambda v: (len(v.split()) != 2, len(v)))
                 new = cands[0] if cands else None
+                if new:
+                    new = new[:1].upper() + new[1:]
+                else:
+                    # Русского названия нет: имя становится латынью вида. Такая карточка
+                    # не проходит гейт публикации и уходит из атласа, но остаётся в поиске.
+                    new = f"{genus} {epi}"
             if new:
-                new = new[:1].upper() + new[1:]
                 c["renamed"] += 1
                 c["sample"].append({"old": r.name, "new": new, "latin": r.name_latin})
                 if apply:
