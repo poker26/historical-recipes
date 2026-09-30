@@ -1086,7 +1086,9 @@ async def _drift_decide(client: httpx.AsyncClient, vern: Vernacular, r) -> tuple
             if ok:
                 return "relatin", best, f"по русскому имени ({', '.join(sorted(srcs))}): {hints.get(best)}"
     # Вида нет, но род по первому слову имени противоречит новой латыни: ставится род.
-    if words and words[0] not in _POLYSEMOUS_GENUS_WORDS and (
+    # Имя, начатое прилагательным («солончаковая валериана»), род первым словом не называет.
+    adjective_first = bool(words) and re.search(r"(ая|яя|ый|ий|ой|ое|ее|ые|ие)$", words[0]) is not None
+    if words and not adjective_first and words[0] not in _POLYSEMOUS_GENUS_WORDS and (
             genus_contradicts or (acc_new and not _genus_name_match(r.name, await vern.names(g_new)))):
         ru_genus = ru_genus or await _genus_by_ru_word(client, words[0], r.kingdom)
         if ru_genus and ru_genus[0].lower() != (g_new or "").lower():
