@@ -46,6 +46,7 @@ from collections import defaultdict
 from typing import Callable
 
 import httpx
+from rapidfuzz.distance import Levenshtein
 from sqlalchemy import literal_column, select, text
 
 from app.database import async_session
@@ -1003,6 +1004,10 @@ async def _drift_decide(client: httpx.AsyncClient, vern: Vernacular, r) -> tuple
     g_new, e_new, _ = latin_core(new) if s_new in ("вид", "род") else (None, None, False)
     if g_old and g_new and g_old.lower() == g_new.lower() and e_old == e_new:
         return "sync", new, "та же латынь, другая запись"
+    # Латинское имя («Bursa», «Chondrostereum purpureum») ставила сама чистка вместе с латынью:
+    # в базе они согласованы, а русского имени, с которым сверять, нет.
+    if not _CYR.search(r.name or ""):
+        return "sync", new, "имя карточки латинское, в базе имя и латынь согласованы"
     q_new, q_old = _in_quotes(new, quotes), _in_quotes(old, quotes)
     if q_new:
         return "sync", new, "новая латынь стоит в цитатах источника"
@@ -1010,6 +1015,14 @@ async def _drift_decide(client: httpx.AsyncClient, vern: Vernacular, r) -> tuple
     acc_old = await _gbif_species(client, f"{g_old} {e_old}", r.kingdom) if (g_old and e_old) else None
     if acc_new and acc_old and acc_new.split()[:2] == acc_old.split()[:2]:
         return "sync", new, f"синонимы по GBIF: {acc_new}"
+    # Опечатка в прежней латыни («Crotolaria crispta»): GBIF её не знает, а новая отличается
+    # на одну-две буквы. Имя карточки при этом должно хоть как-то совпасть с народными
+    # названиями нового вида, иначе «Белянка» ушла бы в чужой млечник (albidus → alpinus).
+    if (acc_new and not acc_old and g_old and e_old and e_new
+            and Levenshtein.distance(g_old.lower(), g_new.lower()) <= 2
+            and Levenshtein.distance(e_old, e_new) <= 2):
+        if species_evidence(r.name, await vern.names(acc_new)) is not None:
+            return "sync", new, "исправлена опечатка в прежней латыни"
     genus_contradicts = False
     if acc_new:
         if species_evidence(r.name, await vern.names(acc_new)) in ("name", "part"):
