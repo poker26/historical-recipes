@@ -372,6 +372,10 @@ _PLACE_TTL = 90 * 86400
 # После отказа 429 живые запросы к iNaturalist из этого процесса не делаются до этого
 # момента (time.monotonic): отдаётся кэш, даже устаревший, иначе ответ без наблюдений.
 _pause_until = 0.0
+# «Где встречается» для страниц карточек: не чаще одного живого запроса за столько секунд
+# на процесс (2 воркера × 2 запроса к iNaturalist = до 12 в минуту со всего сайта).
+_OBS_LIVE_GAP = 20.0
+_obs_live_at = 0.0
 
 
 def _note_throttle(resp: httpx.Response) -> bool:
@@ -550,6 +554,14 @@ async def find_observations(
                  "count": 0, "observations": [], "error": "iNaturalist asks to slow down (429)"}
     if _paused():
         return hit[0] if hit else throttled
+    # Потолок живых запросов: страницы карточек обходят роботы, и без потолка они съедали
+    # суточный лимит iNaturalist, общий с определением и «Растениями рядом» в приложении.
+    # Не чаще раза в _OBS_LIVE_GAP секунд на процесс; остальным кэш или пустой ответ.
+    global _obs_live_at
+    now = time.monotonic()
+    if now - _obs_live_at < _OBS_LIVE_GAP:
+        return hit[0] if hit else {**throttled, "error": "live iNaturalist lookups are rate-capped"}
+    _obs_live_at = now
     async with httpx.AsyncClient(timeout=30) as client:
         place_info = None
         if place_id is None and place:
