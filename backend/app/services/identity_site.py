@@ -200,6 +200,9 @@ async def _published(db, *cols):
 
 
 async def _finding(db, check_id: str, pid, title: str, evidence: dict) -> None:
+    # Находка, закрытая как «латынь верна» (dismissed, в том числе после ручной сверки с
+    # источником 30.09), при повторном срабатывании проверки не открывается снова:
+    # иначе каждый прогон sametaxon возвращал бы в работу уже проверенные карточки.
     await db.execute(text("""
         INSERT INTO data_quality_findings
           (id, check_id, severity, entity_type, entity_id, title, evidence, suggested_fix,
@@ -207,7 +210,9 @@ async def _finding(db, check_id: str, pid, title: str, evidence: dict) -> None:
         VALUES (CAST(:id AS uuid), :cid, 'P1', 'plant', :eid, :title, CAST(:ev AS jsonb),
                 CAST(:fix AS jsonb), false, 'open', now(), now())
         ON CONFLICT (check_id, entity_id) DO UPDATE SET
-          title = EXCLUDED.title, evidence = EXCLUDED.evidence, status = 'open', last_seen = now()"""),
+          title = EXCLUDED.title, last_seen = now(),
+          evidence = COALESCE(data_quality_findings.evidence, '{}'::jsonb) || EXCLUDED.evidence,
+          status = CASE WHEN data_quality_findings.status = 'dismissed' THEN 'dismissed' ELSE 'open' END"""),
         {"id": str(uuid.uuid4()), "cid": check_id, "eid": str(pid), "title": title[:300],
          "ev": json.dumps(evidence, ensure_ascii=False, default=str),
          "fix": json.dumps({"action": "review", "plant_id": str(pid)})})
