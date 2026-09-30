@@ -94,6 +94,10 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
                 # пока карточку не разберут (находка identity.site_drift открыта).
                 "AND NOT EXISTS (SELECT 1 FROM data_quality_findings f WHERE f.check_id = 'identity.site_drift' "
                 "AND f.status = 'open' AND f.entity_id = plants.id::text) "
+                # латынь очерка расходится с базой: шаг drift эту карточку ещё не проверил,
+                # и перегенерация вынесла бы на страницу непроверенную латынь.
+                "AND NOT EXISTS (SELECT 1 FROM plant_reader_monograph rm WHERE rm.plant_id = plants.id "
+                "AND rm.monograph->>'name_latin' IS DISTINCT FROM plants.name_latin) "
                 "AND id::text > :c ORDER BY id LIMIT :n"), {"c": cursor, "n": batch})).all()
         if not rows:
             break
