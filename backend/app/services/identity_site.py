@@ -1140,9 +1140,12 @@ async def run_drift(apply: bool, limit: int = 0, progress: Progress | None = Non
             SELECT p.id, p.name, p.name_latin, p.kingdom, p.rank,
                    m.monograph->>'name' AS m_name, m.monograph->>'name_latin' AS m_latin
             FROM plant_reader_monograph m JOIN plants p ON p.id = m.plant_id
-            WHERE m.monograph->>'name_latin' IS DISTINCT FROM p.name_latin
-               OR m.monograph->>'name' IS DISTINCT FROM p.name
-            ORDER BY p.name"""))).all()
+            WHERE (m.monograph->>'name_latin' IS DISTINCT FROM p.name_latin
+                   OR m.monograph->>'name' IS DISTINCT FROM p.name)
+              -- открытая находка identity.site_drift: карточка ждёт ручного разбора, шаг её не трогает
+              AND NOT EXISTS (SELECT 1 FROM data_quality_findings f WHERE f.check_id = :chk
+                              AND f.status = 'open' AND f.entity_id = p.id::text)
+            ORDER BY p.name"""), {"chk": CHECK_DRIFT})).all()
     if limit:
         rows = rows[:limit]
     c = {"step": "drift", "apply": apply, "cards": len(rows), "sync": 0, "revert": 0, "relatin": 0, "genus": 0,
