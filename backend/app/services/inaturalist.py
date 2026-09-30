@@ -15,8 +15,10 @@ Design notes (validated against the live API):
 """
 
 import asyncio
+import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -24,6 +26,7 @@ from sqlalchemy import select, func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import async_session
 from app.models.plant import Plant, PlantBookMention
 from app.services.data_quality.validators.name_junk import clean_display_name
 from app.models.inat_cache import InatTaxonCache
@@ -328,6 +331,58 @@ def _place_query_variants(query: str) -> list[str]:
     return out
 
 
+# Кэш «где встречается» (таблица inat_observation_cache, миграция 037). Страница карточки
+# на сайте спрашивает наблюдения при каждой сборке, роботы обходят тысячи карточек, и
+# 30.09.2026 бэкенд делал ~1 400 запросов к iNaturalist за 15 минут, 73% из них с отказом
+# 429. Наблюдения в регионе за неделю почти не меняются, место не меняется вовсе.
+_OBS_TTL = 7 * 86400
+_PLACE_TTL = 90 * 86400
+# После отказа 429 живые запросы к iNaturalist из этого процесса не делаются до этого
+# момента (time.monotonic): отдаётся кэш, даже устаревший, иначе ответ без наблюдений.
+_pause_until = 0.0
+
+
+def _note_throttle(resp: httpx.Response) -> bool:
+    """True и пауза, если iNaturalist ответил 429."""
+    global _pause_until
+    if resp.status_code != 429:
+        return False
+    ra = resp.headers.get("Retry-After")
+    _pause_until = time.monotonic() + (float(ra) if (ra or "").isdigit() else 60.0)
+    logger.warning("iNat 429 on %s; live calls paused", resp.request.url.path)
+    return True
+
+
+def _paused() -> bool:
+    return time.monotonic() < _pause_until
+
+
+async def _cache_get(key: str) -> tuple[dict, float] | None:
+    """(ответ, возраст в секундах) или None. Без таблицы или при сбое базы работаем без кэша."""
+    try:
+        async with async_session() as db:
+            row = (await db.execute(text(
+                "SELECT payload, extract(epoch FROM now() - fetched_at) AS age "
+                "FROM inat_observation_cache WHERE key = :k"), {"k": key})).first()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("inat cache read failed: %s", type(e).__name__)
+        return None
+    return (row.payload, float(row.age)) if row else None
+
+
+async def _cache_put(key: str, payload: dict) -> None:
+    try:
+        async with async_session() as db:
+            await db.execute(text("""
+                INSERT INTO inat_observation_cache (key, payload, fetched_at)
+                VALUES (:k, CAST(:p AS jsonb), now())
+                ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now()"""),
+                {"k": key, "p": json.dumps(payload, ensure_ascii=False, default=str)})
+            await db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("inat cache write failed: %s", type(e).__name__)
+
+
 def _place_relevant(query: str, name: str) -> bool:
     """True if an autocomplete candidate's name plausibly *is* the queried place,
     not just a place that happens to sit inside it. iNat echoes the parent region
@@ -371,43 +426,43 @@ async def resolve_place(client: httpx.AsyncClient, query: str) -> dict | None:
     Vernacular phrasing ("окрестности Суздаля") is handled by trying a few
     derived autocomplete queries (see ``_place_query_variants``); relevance is
     always scored against the ORIGINAL query so a truncated stem can't drift to
-    an unrelated place."""
+    an unrelated place.
+
+    Найденное место хранится в inat_observation_cache 90 дней: сайт спрашивает одну и
+    ту же «Moscow» для каждой карточки."""
+    key = "place:" + " ".join(query.lower().split())
+    hit = await _cache_get(key)
+    if hit and hit[1] < _PLACE_TTL:
+        return hit[0]
+    if _paused():
+        return hit[0] if hit else None
     for variant in _place_query_variants(query):
         try:
             resp = await client.get(f"{INAT_BASE}/places/autocomplete",
                                     params={"q": variant}, headers=_HEADERS)
+            if _note_throttle(resp):
+                return hit[0] if hit else None
             if resp.status_code != 200:
                 logger.warning(f"iNat places HTTP {resp.status_code} for {variant!r}")
                 continue
             results = resp.json().get("results", [])
         except (httpx.HTTPError, ValueError) as e:
             logger.warning(f"iNat places error for {variant!r}: {type(e).__name__}: {e}")
-            return None
+            return hit[0] if hit else None
         results = [p for p in results
                    if not _GRID_CELL_RE.match(str(p.get("name") or ""))
                    and _place_relevant(query, str(p.get("name") or ""))]
         if not results:
             continue
         best = max(results, key=lambda p: p.get("bbox_area") or 0.0)
-        return {
+        found = {
             "place_id": best.get("id"),
             "display_name": best.get("display_name"),
             "bbox_area": best.get("bbox_area"),
         }
+        await _cache_put(key, found)
+        return found
     return None
-
-
-async def _obs_total(client: httpx.AsyncClient, scope: dict) -> int | None:
-    """Cheap frequency: total research-grade observations matching ``scope``
-    (per_page=0 returns only the count, no records). None on error."""
-    try:
-        resp = await client.get(f"{INAT_BASE}/observations",
-                                params={**scope, "per_page": 0}, headers=_HEADERS)
-        if resp.status_code != 200:
-            return None
-        return resp.json().get("total_results")
-    except (httpx.HTTPError, ValueError):
-        return None
 
 
 async def _obs_seasonality(client: httpx.AsyncClient, scope: dict) -> dict | None:
@@ -417,7 +472,7 @@ async def _obs_seasonality(client: httpx.AsyncClient, scope: dict) -> dict | Non
         resp = await client.get(f"{INAT_BASE}/observations/histogram", headers=_HEADERS,
                                 params={**scope, "date_field": "observed",
                                         "interval": "month_of_year"})
-        if resp.status_code != 200:
+        if _note_throttle(resp) or resp.status_code != 200:
             return None
         hist = resp.json().get("results", {}).get("month_of_year", {})
         return {int(k): v for k, v in hist.items()}
@@ -447,12 +502,29 @@ async def find_observations(
     month observation counts — when to look), and a newest-first sample of
     ``observations`` each carrying ``place_guess`` (where exactly) + coords + photo
     and attribution (iNat ToS requires displaying it). Never raises — on any error
-    it returns empty fields plus an ``error``/``note`` so a consumer degrades."""
+    it returns empty fields plus an ``error``/``note`` so a consumer degrades.
+
+    Полный ответ хранится неделю в inat_observation_cache; после отказа 429 и при сбоях
+    отдаётся сохранённый ответ, даже устаревший. Живой ответ стоит два запроса: общее
+    число берётся из того же ответа, что и список (у наблюдений исследовательского
+    уровня фото и координаты есть всегда, фильтр списка число почти не меняет)."""
+    key = "obs:" + json.dumps({"t": taxon_id, "lat": lat, "lng": lng, "r": radius_km,
+                               "place": " ".join((place or "").lower().split()) or None,
+                               "pid": place_id, "n": limit}, sort_keys=True)
+    hit = await _cache_get(key)
+    if hit and hit[1] < _OBS_TTL:
+        return hit[0]
+    throttled = {"taxon_id": taxon_id, "scope": None, "total_count": None, "seasonality": None,
+                 "count": 0, "observations": [], "error": "iNaturalist asks to slow down (429)"}
+    if _paused():
+        return hit[0] if hit else throttled
     async with httpx.AsyncClient(timeout=30) as client:
         place_info = None
         if place_id is None and place:
             place_info = await resolve_place(client, place)
             if place_info is None:
+                if _paused():
+                    return hit[0] if hit else throttled
                 return {"taxon_id": taxon_id, "scope": None, "total_count": None,
                         "seasonality": None, "count": 0, "observations": [],
                         "error": f"place not found: {place!r}"}
@@ -471,9 +543,6 @@ async def find_observations(
 
         base = {"taxon_id": taxon_id, "quality_grade": "research", "locale": "ru", **scope}
 
-        total = await _obs_total(client, base)
-        seasonality = await _obs_seasonality(client, base)
-
         list_params = {**base, "per_page": min(max(limit, 1), 50),
                        "order_by": "observed_on", "order": "desc",
                        "photos": "true", "geo": "true"}
@@ -481,19 +550,22 @@ async def find_observations(
             resp = await client.get(f"{INAT_BASE}/observations", params=list_params, headers=_HEADERS)
         except httpx.HTTPError as e:
             logger.warning(f"iNat observations error for taxon {taxon_id}: {type(e).__name__}: {e}")
-            return {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
-                    "total_count": total, "seasonality": seasonality,
-                    "count": 0, "observations": [], "error": str(e)}
-        if resp.status_code != 200:
-            return {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
-                    "total_count": total, "seasonality": seasonality,
-                    "count": 0, "observations": [], "error": f"iNat HTTP {resp.status_code}"}
+            return hit[0] if hit else {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
+                                       "total_count": None, "seasonality": None,
+                                       "count": 0, "observations": [], "error": str(e)}
+        if _note_throttle(resp) or resp.status_code != 200:
+            return hit[0] if hit else {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
+                                       "total_count": None, "seasonality": None,
+                                       "count": 0, "observations": [], "error": f"iNat HTTP {resp.status_code}"}
         try:
-            results = resp.json().get("results", [])
+            body = resp.json()
+            results = body.get("results", [])
+            total = body.get("total_results")
         except ValueError as e:
-            return {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
-                    "total_count": total, "seasonality": seasonality,
-                    "count": 0, "observations": [], "error": f"bad body: {e}"}
+            return hit[0] if hit else {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
+                                       "total_count": None, "seasonality": None,
+                                       "count": 0, "observations": [], "error": f"bad body: {e}"}
+        seasonality = await _obs_seasonality(client, base)
 
     obs: list[dict] = []
     for r in results:
@@ -512,9 +584,13 @@ async def find_observations(
             "photo_attribution": photo.get("attribution"),
             "photo_license": photo.get("license_code"),
         })
-    return {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
-            "total_count": total, "seasonality": seasonality,
-            "count": len(obs), "observations": obs}
+    result = {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
+              "total_count": total, "seasonality": seasonality,
+              "count": len(obs), "observations": obs}
+    # Без сезонности ответ неполный: не кэшируется, следующая сборка спросит снова.
+    if seasonality is not None:
+        await _cache_put(key, result)
+    return result
 
 
 async def enrich_plants_inat(
