@@ -113,7 +113,8 @@ def _pick_taxon(results: list[dict], wanted: str, iconic: str | None = None) -> 
     return cands[0] if cands else None
 
 
-async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic: str | None = None) -> dict | None:
+async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic: str | None = None,
+                              fast: bool = False) -> dict | None:
     """Resolve one Latin name to {taxon_id, photo_url, photo_attribution,
     photo_license, common_name}. Photo fields are None when the species has no
     photo or its license isn't reusable.
@@ -127,19 +128,28 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
       name, or iNat has no such taxon). Caller marks it SYNCED so we stop
       hitting iNat for it.
 
-    On HTTP 429 backs off and retries a few times, honoring ``Retry-After``."""
+    On HTTP 429 backs off and retries a few times, honoring ``Retry-After``.
+
+    ``fast=True`` — для запроса пользователя (определение по фото): одна попытка, без
+    пауз, а после недавнего отказа 429 обращения нет вовсе. 29.09.2026 паузы до 50 с на
+    каждое имя держали ответ определения дольше, чем ждёт приложение, и треть
+    определений за день до пользователя не дошла."""
     query = _clean_binomial(name_latin)
     if not query:
         return {"taxon_id": None}  # unusable Latin (abbrev/genus-only) — never resolvable
+    if fast and _paused():
+        return None
     params = {"q": query, "rank": "species", "is_active": "true", "per_page": 5, "locale": "ru"}
     if iconic:
         params["iconic_taxa"] = iconic
     results = None
-    for attempt in range(4):
+    for attempt in range(1 if fast else 4):
         try:
             resp = await client.get(f"{INAT_BASE}/taxa", params=params, headers=_HEADERS)
         except (httpx.HTTPError, ValueError) as e:
             logger.warning(f"iNat taxa error for {query!r}: {type(e).__name__}: {e}")
+            return None
+        if fast and _note_throttle(resp):
             return None
         if resp.status_code == 429:
             retry_after = resp.headers.get("Retry-After")
@@ -183,6 +193,33 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
     return out
 
 
+async def _fast_resolve(keys: list[str], budget_s: float = 6.0) -> list[dict | None]:
+    """Разрешение имён для ответа пользователю: по одной попытке на имя, таймаут
+    запроса 4 с, на всё вместе не больше ``budget_s``. Не уложились — None (сбой не
+    кэшируется, имя подтянет следующее определение). Определение от этого не зависит:
+    вид даёт PlantNet, отсюда только русское имя и фото для видов вне корпуса."""
+    now = time.monotonic()
+    # Определение зовёт русские имена, а следом фото тех же видов: второй вызов берёт
+    # ответ из памяти процесса, а не спрашивает iNaturalist ещё раз.
+    todo = [k for k in keys if not (k in _FAST_MEMO and now - _FAST_MEMO[k][0] < 600)]
+    if todo:
+        try:
+            async with httpx.AsyncClient(timeout=4) as client:
+                got = await asyncio.wait_for(
+                    asyncio.gather(*(resolve_taxon_photo(client, k, fast=True) for k in todo)), timeout=budget_s)
+        except Exception:  # noqa: BLE001 — таймаут бюджета или сбой сети: без имён, но быстро
+            got = [None] * len(todo)
+        for k, res in zip(todo, got):
+            if res is not None:
+                _FAST_MEMO[k] = (now, res)
+        if len(_FAST_MEMO) > 5000:
+            _FAST_MEMO.clear()
+    return [(_FAST_MEMO.get(k) or (0, None))[1] for k in keys]
+
+
+_FAST_MEMO: dict[str, tuple[float, dict]] = {}
+
+
 async def resolve_names_ru(db: AsyncSession, latins: list[str]) -> dict[str, dict]:
     """Map each input Latin name → ``{"name_ru": str|None, "taxon_id": int|None}``.
 
@@ -215,8 +252,7 @@ async def resolve_names_ru(db: AsyncSession, latins: list[str]) -> dict[str, dic
     # 2) Resolve the misses against iNat, concurrently, and persist definitive ones.
     misses = [k for k in wanted if k not in cache]
     if misses:
-        async with httpx.AsyncClient(timeout=30) as client:
-            results = await asyncio.gather(*(resolve_taxon_photo(client, k) for k in misses))
+        results = await _fast_resolve(misses)
         to_insert: list[dict] = []
         for key, res in zip(misses, results):
             if res is None:
@@ -262,11 +298,7 @@ async def resolve_registry_photos(db: AsyncSession, latins: list[str]) -> dict[s
     cache = {lk: {"photo_url": pu, "photo_attribution": at, "common_name": cn} for lk, pu, at, cn in rows}
     misses = [k for k in wanted if k not in cache]
     if misses:
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                results = await asyncio.gather(*(resolve_taxon_photo(client, k) for k in misses))
-        except Exception:
-            results = [None] * len(misses)
+        results = await _fast_resolve(misses)
         for k, res in zip(misses, results):
             if res is None:
                 continue                                    # transient — leave uncached

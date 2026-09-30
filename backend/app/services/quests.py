@@ -201,19 +201,36 @@ def _biotope_tier_ladder(biotope: str) -> list[dict]:
 
 
 async def _species_counts(client, lat, lng, radius_km, month=None):
-    """iNat species frequency near a point (Plantae, research-grade), count desc."""
+    """iNat species frequency near a point (Plantae, research-grade), count desc.
+
+    Ответ хранится в inat_observation_cache трое суток, точка округляется до сотых градуса
+    (около километра): соседние пользователи получают список без обращения к iNaturalist.
+    Живой запрос ждёт не больше 12 с, а после отказа 429 процесс минуту не ходит в
+    iNaturalist и отдаёт сохранённый список, даже устаревший. До 30.09.2026 «Растения
+    рядом» каждый раз перебирали до четырёх радиусов вживую по 30 с, и приложение бросало
+    около трети запросов, при ограничении iNaturalist половину."""
+    from app.services.inaturalist import _cache_get, _cache_put, _note_throttle, _paused
+    lat, lng = round(float(lat), 2), round(float(lng), 2)
+    key = f"sc:{lat},{lng},{radius_km},{month or ''}"
+    hit = await _cache_get(key)
+    if hit and hit[1] < 3 * 86400:
+        return hit[0].get("items", [])
+    stale = hit[0].get("items", []) if hit else []
+    if _paused():
+        return stale
     params = {"lat": lat, "lng": lng, "radius": radius_km, "iconic_taxa": "Plantae",
               "quality_grade": "research", "per_page": 50, "locale": "ru"}
     if month:
         params["month"] = month
     try:
-        r = await client.get(f"{INAT_BASE}/observations/species_counts", params=params, headers=_HEADERS)
-        if r.status_code != 200:
-            return []
+        r = await client.get(f"{INAT_BASE}/observations/species_counts", params=params, headers=_HEADERS,
+                             timeout=12)
+        if _note_throttle(r) or r.status_code != 200:
+            return stale
         results = r.json().get("results", [])
     except (httpx.HTTPError, ValueError) as e:
         logger.warning("iNat species_counts %s,%s r=%s: %s", lat, lng, radius_km, str(e)[:60])
-        return []
+        return stale
     out = []
     for row in results:
         t = row.get("taxon") or {}
@@ -222,6 +239,7 @@ async def _species_counts(client, lat, lng, radius_km, month=None):
             "rank": t.get("rank"), "count": row.get("count"),
             "photo": (t.get("default_photo") or {}).get("medium_url"),
         })
+    await _cache_put(key, {"items": out})
     return out
 
 
