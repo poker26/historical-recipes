@@ -921,6 +921,24 @@ def _in_quotes(latin: str | None, quotes: str) -> bool:
     return re.search(r"(?<![a-z])" + re.escape(epi) + r"(?![a-z])", quotes) is not None
 
 
+# Русское слово, которым называют сразу несколько научных родов: по нему род не ставится
+# («горец» это Persicaria, Polygonum, Aconogonon и Bistorta; «плаун» это и Diphasiastrum).
+_POLYSEMOUS_GENUS_WORDS = {"горец", "трутовик", "ромашка", "осот", "кипрей", "плаун", "папоротник", "мох",
+                           "лишайник", "гриб", "губка", "трава", "корень", "дерево", "кустарник", "водоросль",
+                           "дудник", "камыш", "пузырник", "лапчатка", "марь", "бурачок", "василек"}
+
+
+async def _genus_consistent(vern: "Vernacular", card_name: str | None, latin: str | None) -> bool:
+    """Род латыни не противоречит первому слову имени: совпадает с народным названием рода,
+    или у рода нет русского названия, или слово многозначное."""
+    genus, _epi, _cap = latin_core(latin)
+    words = _ru_words(card_name)
+    if not genus or not words or words[0] in _POLYSEMOUS_GENUS_WORDS:
+        return True
+    gnames = await vern.names(genus)
+    return not gnames or _genus_name_match(card_name, gnames)
+
+
 def _genus_name_match(card_name: str | None, names: set[str]) -> bool:
     """Первое слово имени карточки совпадает с первым словом народного названия рода."""
     a = _ru_words(card_name)
@@ -1013,7 +1031,11 @@ async def _drift_decide(client: httpx.AsyncClient, vern: Vernacular, r) -> tuple
         return "sync", new, "новая латынь стоит в цитатах источника"
     acc_new = await _gbif_species(client, f"{g_new} {e_new}", r.kingdom) if (g_new and e_new) else None
     acc_old = await _gbif_species(client, f"{g_old} {e_old}", r.kingdom) if (g_old and e_old) else None
-    if acc_new and acc_old and acc_new.split()[:2] == acc_old.split()[:2]:
+    # Синонимия доказывает только, что прежняя и новая латынь одно и то же. Неверными
+    # бывают обе («Щетинник зелёный»: Poa rubra → Eragrostis capillaris вместо Setaria
+    # viridis), поэтому род ещё сверяется с первым словом имени.
+    if (acc_new and acc_old and acc_new.split()[:2] == acc_old.split()[:2]
+            and await _genus_consistent(vern, r.name, acc_new)):
         return "sync", new, f"синонимы по GBIF: {acc_new}"
     # Опечатка в прежней латыни («Crotolaria crispta»): GBIF её не знает, а новая отличается
     # на одну-две буквы. Имя карточки при этом должно хоть как-то совпасть с народными
@@ -1064,7 +1086,8 @@ async def _drift_decide(client: httpx.AsyncClient, vern: Vernacular, r) -> tuple
             if ok:
                 return "relatin", best, f"по русскому имени ({', '.join(sorted(srcs))}): {hints.get(best)}"
     # Вида нет, но род по первому слову имени противоречит новой латыни: ставится род.
-    if words and (genus_contradicts or (acc_new and not _genus_name_match(r.name, await vern.names(g_new)))):
+    if words and words[0] not in _POLYSEMOUS_GENUS_WORDS and (
+            genus_contradicts or (acc_new and not _genus_name_match(r.name, await vern.names(g_new)))):
         ru_genus = ru_genus or await _genus_by_ru_word(client, words[0], r.kingdom)
         if ru_genus and ru_genus[0].lower() != (g_new or "").lower():
             return "genus", ru_genus[0], f"род по первому слову имени: {ru_genus[1]} = {ru_genus[0]}"
@@ -1126,19 +1149,30 @@ async def run_drift(apply: bool, limit: int = 0, progress: Progress | None = Non
          "review": 0, "name_only": 0, "deferred": 0, "items": []}
     async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
         vern = Vernacular(client)
-        for n, r in enumerate(rows, 1):
-            try:
-                decision, latin, why = await _drift_decide(client, vern, r)
-            except InatUnavailable:
-                decision, latin, why = "deferred", None, "iNaturalist не ответил, карточка отложена"
-            photo = ""
-            if apply and decision != "deferred":
-                photo = await _drift_apply(client, r, decision, latin, why)
-            c[decision] += 1
-            c["items"].append({"n": r.name, "o": r.m_latin, "c": r.name_latin, "d": decision, "l": latin,
-                               "w": why + (f"; {photo}" if photo else "")})
-            if progress and n % 10 == 0:
-                progress({k: v for k, v in c.items() if k != "items"} | {"done": n})
+        # Две карточки одновременно: больше даёт отказы iNaturalist (у него предел около
+        # запроса в секунду, а бэкенд ходит туда же за наблюдениями).
+        sem = asyncio.Semaphore(2)
+        done = 0
+
+        async def one(r) -> None:
+            nonlocal done
+            async with sem:
+                try:
+                    decision, latin, why = await _drift_decide(client, vern, r)
+                except InatUnavailable:
+                    decision, latin, why = "deferred", None, "iNaturalist не ответил, карточка отложена"
+                photo = ""
+                if apply and decision != "deferred":
+                    photo = await _drift_apply(client, r, decision, latin, why)
+                c[decision] += 1
+                c["items"].append({"n": r.name, "o": r.m_latin, "c": r.name_latin, "d": decision, "l": latin,
+                                   "w": why + (f"; {photo}" if photo else "")})
+                done += 1
+                if progress and done % 10 == 0:
+                    progress({k: v for k, v in c.items() if k != "items"} | {"done": done})
+
+        for i in range(0, len(rows), 20):
+            await asyncio.gather(*(one(r) for r in rows[i:i + 20]))
     return c
 
 
