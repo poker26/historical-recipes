@@ -909,7 +909,7 @@ class IdentityCleanupWorkflow:
             out = await workflow.execute_activity(identity_amirdovlat_activity, args=[apply, limit], **kw)
         elif step == "twins":
             out = await workflow.execute_activity(identity_twins_activity, apply, **kw)
-        elif step in ("stale", "oldspell", "genuslatin", "sametaxon", "junkname", "mismatch"):
+        elif step in ("stale", "oldspell", "genuslatin", "sametaxon", "junkname", "mismatch", "drift"):
             out = await workflow.execute_activity(identity_site_activity, args=[step, apply, limit], **kw)
         else:
             raise ValueError(f"unknown identity step: {step}")

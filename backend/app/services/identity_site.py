@@ -894,12 +894,247 @@ async def run_mismatch(apply: bool, limit: int = 0, progress: Progress | None = 
     return c
 
 
+# ------------------------------------------------------------------ drift
+
+CHECK_DRIFT = "identity.site_drift"
+
+
+def latin_shape(latin: str | None) -> str:
+    """«вид», «род», «сокращение» («A. eichwaldii») или «мусор» (кириллица, цифры, пусто)."""
+    s = (latin or "").strip()
+    # Мусор ищется только в роде и эпитете: искажённый автор («Vosk. et Sin8.») вид не портит.
+    head = " ".join(s.split()[:2])
+    if not s or _CYR.search(head) or re.search(r"[0-9$|{}\[\]]", head):
+        return "мусор"
+    genus, epi, _cap = latin_core(s)
+    if not genus:
+        return "сокращение" if re.match(r"^[A-Z]\.\s*[a-z]", s) else "мусор"
+    return "вид" if epi else "род"
+
+
+def _in_quotes(latin: str | None, quotes: str) -> bool:
+    """Видовой эпитет латыни стоит целым словом в цитатах карточки (они в нижнем регистре)."""
+    genus, epi, _cap = latin_core(latin)
+    if not genus or not epi or len(epi) < 4:
+        return False
+    return re.search(r"(?<![a-z])" + re.escape(epi) + r"(?![a-z])", quotes) is not None
+
+
+def _genus_name_match(card_name: str | None, names: set[str]) -> bool:
+    """Первое слово имени карточки совпадает с первым словом народного названия рода."""
+    a = _ru_words(card_name)
+    if not a:
+        return False
+    return any(_ru_words(v) and _stem(a[0]) == _stem(_ru_words(v)[0]) for v in names)
+
+
+async def _card_quotes(db, pid) -> str:
+    q = (await db.execute(text("""
+        SELECT string_agg(lower(left(x, 600)), ' ') AS qt FROM (
+          SELECT original_text AS x FROM plant_book_mentions WHERE plant_id = :id
+          UNION ALL SELECT original_text FROM plant_medicinal_uses WHERE plant_id = :id
+          UNION ALL SELECT original_text FROM plant_habitats WHERE plant_id = :id) s
+        WHERE x IS NOT NULL"""), {"id": pid})).scalar()
+    return (q or "")[:300000]
+
+
+async def _gbif_genus(client: httpx.AsyncClient, genus: str, card_kingdom: str | None) -> str | None:
+    kingdom = "Fungi" if (card_kingdom or "").startswith("гриб") else "Plantae"
+    d = await gbif_match(client, genus, kingdom)
+    await asyncio.sleep(GBIF_PACE)
+    if not d or d.get("matchType") != "EXACT" or d.get("rank") != "GENUS" or not _kingdom_ok(card_kingdom, d.get("kingdom")):
+        return None
+    return d.get("canonicalName")
+
+
+async def _genus_by_ru_word(client: httpx.AsyncClient, word: str, card_kingdom: str | None) -> tuple[str, str] | None:
+    """Род, чьё русское название в iNaturalist совпадает со словом («ситник» → Juncus)."""
+    try:
+        res = await inat_taxa(client, {"q": word, "locale": "ru", "per_page": 5, "rank": "genus"})
+    finally:
+        await asyncio.sleep(1.2)
+    if res is None:
+        raise InatUnavailable(word)
+    for t in res:
+        tru, tname = t.get("preferred_common_name") or "", t.get("name") or ""
+        if tru and _ru_words(tru) and _stem(_ru_words(tru)[0]) == _stem(word) and len(tname.split()) == 1:
+            gen = await _gbif_genus(client, tname, card_kingdom)
+            if gen:
+                return gen, tru
+    return None
+
+
+async def _candidates_by_name(client: httpx.AsyncClient, head: str, kingdom: str | None):
+    """Виды по русскому имени (iNaturalist и народные названия GBIF), как в mismatch."""
+    cands: dict[str, set] = defaultdict(set)
+    hints: dict[str, str] = {}
+    yo = yo_variant(head)
+    inat = await _inat_species_by_ru(client, head)
+    if yo and not any(_name_match(head, t.get("preferred_common_name")) for t in inat):
+        inat += await _inat_species_by_ru(client, yo)
+    for t in inat:
+        tname, tru = t.get("name") or "", t.get("preferred_common_name") or ""
+        if tru and _name_match(head, tru) and len(tname.split()) >= 2:
+            acc = await _gbif_species(client, tname, kingdom)
+            if acc:
+                cands[acc].add("iNaturalist")
+                hints[acc] = tru
+    gbif_v = await _gbif_by_vernacular(client, head)
+    if yo and not any(_name_match(head, v) for _, v in gbif_v):
+        gbif_v += await _gbif_by_vernacular(client, yo)
+    for sci, vru in gbif_v:
+        if _name_match(head, vru):
+            acc = await _gbif_species(client, sci, kingdom)
+            if acc:
+                cands[acc].add("GBIF")
+                hints.setdefault(acc, vru)
+    return sorted(cands.items(), key=lambda kv: -len(kv[1])), hints
+
+
+async def _drift_decide(client: httpx.AsyncClient, vern: Vernacular, r) -> tuple[str, str | None, str]:
+    old, new = r.m_latin, r.name_latin
+    if old == new:
+        return "name_only", None, "поменялось только имя"
+    head = re.split(r",|\(|\sили\s|;", r.name or "")[0].strip()
+    async with async_session() as db:
+        quotes = await _card_quotes(db, r.id)
+    s_old, s_new = latin_shape(old), latin_shape(new)
+    g_old, e_old, _ = latin_core(old) if s_old in ("вид", "род") else (None, None, False)
+    g_new, e_new, _ = latin_core(new) if s_new in ("вид", "род") else (None, None, False)
+    if g_old and g_new and g_old.lower() == g_new.lower() and e_old == e_new:
+        return "sync", new, "та же латынь, другая запись"
+    q_new, q_old = _in_quotes(new, quotes), _in_quotes(old, quotes)
+    if q_new:
+        return "sync", new, "новая латынь стоит в цитатах источника"
+    acc_new = await _gbif_species(client, f"{g_new} {e_new}", r.kingdom) if (g_new and e_new) else None
+    acc_old = await _gbif_species(client, f"{g_old} {e_old}", r.kingdom) if (g_old and e_old) else None
+    if acc_new and acc_old and acc_new.split()[:2] == acc_old.split()[:2]:
+        return "sync", new, f"синонимы по GBIF: {acc_new}"
+    genus_contradicts = False
+    if acc_new:
+        if species_evidence(r.name, await vern.names(acc_new)) in ("name", "part"):
+            return "sync", new, "имя карточки среди народных названий новой латыни"
+    elif g_new and not e_new:
+        gnames = await vern.names(g_new)
+        if _genus_name_match(r.name, gnames):
+            return "sync", new, "первое слово имени = народное название нового рода"
+        genus_contradicts = bool(gnames)
+    if acc_old:
+        ev_old = species_evidence(r.name, await vern.names(acc_old))
+        # Цитата может лишь упоминать чужой вид («в отличие от…»): прежний род не должен
+        # противоречить первому слову имени карточки («Никандра» при Physalifolium).
+        gnames_old = await vern.names(g_old)
+        genus_ok = not gnames_old or _genus_name_match(r.name, gnames_old)
+        if ev_old in ("name", "part") or (q_old and genus_ok):
+            return "revert", old, ("имя карточки среди народных названий прежней латыни"
+                                   if ev_old in ("name", "part") else "прежняя латынь стоит в цитатах источника")
+    elif g_old and not e_old and s_new != "вид":
+        if await _gbif_genus(client, g_old, r.kingdom) and _genus_name_match(r.name, await vern.names(g_old)):
+            return "revert", old, "первое слово имени = народное название прежнего рода"
+    # Ни одна не подтверждена: вид по русскому имени.
+    ranked, hints = await _candidates_by_name(client, head, r.kingdom) if head else ([], {})
+    words = _ru_words(r.name)
+    ru_genus = None
+    if ranked:
+        best, srcs = ranked[0]
+        tie = len(ranked) > 1 and len(ranked[1][1]) == len(srcs)
+        if acc_new and best.split()[:2] == acc_new.split()[:2]:
+            return "sync", new, f"поиск по имени даёт новую латынь ({', '.join(sorted(srcs))})"
+        if acc_old and best.split()[:2] == acc_old.split()[:2]:
+            return "revert", old, f"поиск по имени даёт прежнюю латынь ({', '.join(sorted(srcs))})"
+        if not tie:
+            bg = best.split()[0].lower()
+            ok = bg in {(g_new or "").lower(), (g_old or "").lower()} or len(srcs) >= 2
+            if not ok and words:
+                ru_genus = await _genus_by_ru_word(client, words[0], r.kingdom)
+                ok = bool(ru_genus) and ru_genus[0].lower() == bg
+            if ok:
+                return "relatin", best, f"по русскому имени ({', '.join(sorted(srcs))}): {hints.get(best)}"
+    # Вида нет, но род по первому слову имени противоречит новой латыни: ставится род.
+    if words and (genus_contradicts or (acc_new and not _genus_name_match(r.name, await vern.names(g_new)))):
+        ru_genus = ru_genus or await _genus_by_ru_word(client, words[0], r.kingdom)
+        if ru_genus and ru_genus[0].lower() != (g_new or "").lower():
+            return "genus", ru_genus[0], f"род по первому слову имени: {ru_genus[1]} = {ru_genus[0]}"
+    return "review", None, f"не подтверждена ни прежняя ({s_old}), ни новая ({s_new}) латынь"
+
+
+async def _drift_apply(client: httpx.AsyncClient, r, decision: str, latin: str | None, why: str) -> str:
+    if decision in ("sync", "name_only"):
+        async with async_session() as db:
+            fam = (await db.execute(text("SELECT family, family_latin FROM plants WHERE id = :id"), {"id": r.id})).first()
+            patch = {"name": r.name}
+            if decision == "sync":
+                patch |= {"name_latin": r.name_latin, "family": fam.family, "family_latin": fam.family_latin}
+            await _sync_monograph(db, r.id, patch)
+            await db.commit()
+        return ""
+    if decision in ("revert", "relatin", "genus"):
+        async with async_session() as db:
+            await _audit(db, "site-drift", "relatin", r.id, r.name, r.name_latin,
+                         extra={"new_latin": latin, "why": why, "decision": decision, "page_latin": r.m_latin})
+            await db.execute(text("UPDATE plants SET name_latin = :new, safety_level = NULL WHERE id = :id"),
+                             {"new": latin, "id": r.id})
+            await db.commit()
+        photo = await _refresh_taxon_data(client, r.id, latin, r.kingdom)
+        async with async_session() as db:
+            await _sync_monograph(db, r.id, {"name": r.name})
+            await db.commit()
+        return photo
+    if decision == "review":
+        async with async_session() as db:
+            await _finding(db, CHECK_DRIFT, r.id,
+                           f"«{r.name}»: на странице {r.m_latin}, в карточке {r.name_latin}; ни одна латынь не подтверждена",
+                           {"page_latin": r.m_latin, "card_latin": r.name_latin, "why": why})
+            await db.commit()
+    return ""
+
+
+async def run_drift(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
+    """Очерк показывает латынь, которая была у карточки при его генерации, а чистка 25–26.09
+    (reid, gbif, resolve) поменяла её у ~1 500 карточек только в базе. Шаг решает по каждой:
+    новая латынь подтверждена — переносится в очерк; подтверждена прежняя — возвращается в
+    карточку; иначе вид ищется по русскому имени, а если и он не найден, но первое слово имени
+    называет другой род, ставится этот род. Свидетельства: латынь в цитатах самой карточки (у
+    Анненкова и определителей она стоит в тексте статьи), имя карточки среди народных
+    названий вида (GBIF, iNaturalist), синонимия GBIF. Модель не используется: одного её
+    согласия мало. Неподтверждённое пишется находкой identity.site_drift, и генератор
+    очерков такую карточку пропускает до разбора."""
+    async with async_session() as db:
+        rows = (await db.execute(text("""
+            SELECT p.id, p.name, p.name_latin, p.kingdom, p.rank,
+                   m.monograph->>'name' AS m_name, m.monograph->>'name_latin' AS m_latin
+            FROM plant_reader_monograph m JOIN plants p ON p.id = m.plant_id
+            WHERE m.monograph->>'name_latin' IS DISTINCT FROM p.name_latin
+               OR m.monograph->>'name' IS DISTINCT FROM p.name
+            ORDER BY p.name"""))).all()
+    if limit:
+        rows = rows[:limit]
+    c = {"step": "drift", "apply": apply, "cards": len(rows), "sync": 0, "revert": 0, "relatin": 0, "genus": 0,
+         "review": 0, "name_only": 0, "deferred": 0, "items": []}
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
+        vern = Vernacular(client)
+        for n, r in enumerate(rows, 1):
+            try:
+                decision, latin, why = await _drift_decide(client, vern, r)
+            except InatUnavailable:
+                decision, latin, why = "deferred", None, "iNaturalist не ответил, карточка отложена"
+            photo = ""
+            if apply and decision != "deferred":
+                photo = await _drift_apply(client, r, decision, latin, why)
+            c[decision] += 1
+            c["items"].append({"n": r.name, "o": r.m_latin, "c": r.name_latin, "d": decision, "l": latin,
+                               "w": why + (f"; {photo}" if photo else "")})
+            if progress and n % 10 == 0:
+                progress({k: v for k, v in c.items() if k != "items"} | {"done": n})
+    return c
+
+
 STEPS = {"stale": run_stale, "oldspell": run_oldspell, "genuslatin": run_genuslatin,
-         "sametaxon": run_sametaxon, "junkname": run_junkname, "mismatch": run_mismatch}
+         "sametaxon": run_sametaxon, "junkname": run_junkname, "mismatch": run_mismatch, "drift": run_drift}
 
 
 async def run_site_step(step: str, apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
     fn = STEPS[step]
-    if step in ("genuslatin", "sametaxon", "mismatch"):
+    if step in ("genuslatin", "sametaxon", "mismatch", "drift"):
         return await fn(apply=apply, limit=limit, progress=progress)
     return await fn(apply=apply, progress=progress)

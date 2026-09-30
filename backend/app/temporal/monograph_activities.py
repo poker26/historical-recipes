@@ -90,6 +90,10 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
                 # safety verdict (level + deadly twin shown first). NULL = not yet
                 # classified → wait for EdibleSafetyWorkflow.
                 "AND safety_level IS NOT NULL "
+                # identity-gated: латынь, не подтверждённая шагом drift, в очерк не идёт,
+                # пока карточку не разберут (находка identity.site_drift открыта).
+                "AND NOT EXISTS (SELECT 1 FROM data_quality_findings f WHERE f.check_id = 'identity.site_drift' "
+                "AND f.status = 'open' AND f.entity_id = plants.id::text) "
                 "AND id::text > :c ORDER BY id LIMIT :n"), {"c": cursor, "n": batch})).all()
         if not rows:
             break
