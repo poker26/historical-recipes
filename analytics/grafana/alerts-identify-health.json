@@ -1,0 +1,37 @@
+{
+  "folder": "Что растёт — тревоги",
+  "ruleGroup": "identify-health",
+  "interval_s": 300,
+  "rules": [
+    {
+      "uid": "inat-429",
+      "title": "iNaturalist отказывает серверу (429)",
+      "for": "0m",
+      "sql": "SELECT count(*)::float AS value FROM inat_rate_events WHERE at > now() - interval '15 minutes'",
+      "threshold": 5,
+      "range_s": 900,
+      "summary": "За 15 минут iNaturalist отказал серверу больше пяти раз.",
+      "description": "Лимит iNaturalist один на IP сервера и общий для приложения и сайта. Отказы снижают русские имена и фото в определении и «Растения рядом». Посмотреть источник отказов: SELECT source, count(*) FROM inat_rate_events WHERE at > now() - interval '1 hour' GROUP BY 1."
+    },
+    {
+      "uid": "identify-slow",
+      "title": "Определение по фото отвечает медленно",
+      "for": "0m",
+      "sql": "SELECT count(*)::float AS value FROM identifications WHERE created_at > now() - interval '1 hour' AND elapsed_ms > 20000",
+      "threshold": 2,
+      "range_s": 3600,
+      "summary": "За час больше двух определений ответили дольше 20 секунд.",
+      "description": "Люди уходят с экрана через 20–30 секунд, и такое определение до них не доходит. 29.09.2026 так терялась треть определений из-за ожидания iNaturalist."
+    },
+    {
+      "uid": "identify-engine-errors",
+      "title": "Движок определения отвечает ошибками",
+      "for": "0m",
+      "sql": "SELECT count(*)::float AS value FROM identifications WHERE created_at > now() - interval '1 hour' AND failure_reason = 'engine_error'",
+      "threshold": 5,
+      "range_s": 3600,
+      "summary": "За час больше пяти определений закончились ошибкой PlantNet или Kindwise.",
+      "description": "Ошибка движка: квота, таймаут или прокси. Подробности в identifications.failure_detail."
+    }
+  ]
+}

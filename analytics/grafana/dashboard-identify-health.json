@@ -1,0 +1,35 @@
+{
+  "uid": "identify-health",
+  "title": "Здоровье определения по фото",
+  "tags": ["chto-rastet", "health"],
+  "timezone": "browser",
+  "time": {"from": "now-7d", "to": "now"},
+  "refresh": "5m",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "timeseries", "title": "Время ответа определения, секунды (медиана и 90%)",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "supabase_ro"},
+      "fieldConfig": {"defaults": {"unit": "s", "min": 0}, "overrides": []},
+      "targets": [{"refId": "A", "format": "time_series", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT date_trunc('hour', created_at) AS time, percentile_cont(0.5) WITHIN GROUP (ORDER BY elapsed_ms) / 1000.0 AS \"медиана\", percentile_cont(0.9) WITHIN GROUP (ORDER BY elapsed_ms) / 1000.0 AS \"90%\" FROM identifications WHERE $__timeFilter(created_at) AND elapsed_ms IS NOT NULL GROUP BY 1 ORDER BY 1"}]
+    },
+    {
+      "type": "barchart", "title": "Определений в час: всего, дольше 20 секунд, с ошибкой движка",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "supabase_ro"},
+      "options": {"xTickLabelRotation": -45, "stacking": "none"},
+      "targets": [{"refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT to_char(date_trunc('hour', created_at), 'DD.MM HH24') AS \"час\", count(*) AS \"всего\", count(*) FILTER (WHERE elapsed_ms > 20000) AS \"дольше 20 с\", count(*) FILTER (WHERE failure_reason = 'engine_error') AS \"ошибка движка\" FROM identifications WHERE $__timeFilter(created_at) GROUP BY date_trunc('hour', created_at) ORDER BY date_trunc('hour', created_at)"}]
+    },
+    {
+      "type": "barchart", "title": "Отказы iNaturalist (429) в час, по тому, кто получил отказ",
+      "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "supabase_ro"},
+      "options": {"xTickLabelRotation": -45, "stacking": "normal"},
+      "targets": [{"refId": "A", "format": "table", "rawQuery": true, "editorMode": "code",
+        "rawSql": "SELECT to_char(date_trunc('hour', at), 'DD.MM HH24') AS \"час\", count(*) FILTER (WHERE source = 'identify') AS \"определение\", count(*) FILTER (WHERE source = 'nearby') AS \"рядом\", count(*) FILTER (WHERE source = 'site') AS \"сайт\", count(*) FILTER (WHERE source NOT IN ('identify', 'nearby', 'site')) AS \"фоновые задачи\" FROM inat_rate_events WHERE $__timeFilter(at) GROUP BY date_trunc('hour', at) ORDER BY date_trunc('hour', at)"}]
+    }
+  ]
+}
