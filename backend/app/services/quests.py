@@ -120,6 +120,9 @@ def window_dates(label: str, year: int) -> tuple[date, date]:
 
 _RADII_KM = [2, 5, 10, 25]      # adaptive: expand until enough candidates (RFC §13.6)
 _MIN_CANDIDATES = 15
+# Общий срок на перебор радиусов в «Растениях рядом» и прогулке. Приложение ждёт до минуты,
+# но люди уходят с экрана через 20–30 с (замер 29–30.09); со списком из кэша ответ мгновенный.
+_NEARBY_BUDGET_S = 12.0
 _NEAR_TIE = 0.85                # badge credit if a set species scores ≥85% of the top
                                 # candidate (sibling-species ranking is near-random)
 
@@ -200,7 +203,7 @@ def _biotope_tier_ladder(biotope: str) -> list[dict]:
             for i, n in enumerate(needs)]
 
 
-async def _species_counts(client, lat, lng, radius_km, month=None):
+async def _species_counts(client, lat, lng, radius_km, month=None, timeout=12.0):
     """iNat species frequency near a point (Plantae, research-grade), count desc.
 
     Ответ хранится в inat_observation_cache трое суток, точка округляется до сотых градуса
@@ -224,7 +227,7 @@ async def _species_counts(client, lat, lng, radius_km, month=None):
         params["month"] = month
     try:
         r = await client.get(f"{INAT_BASE}/observations/species_counts", params=params, headers=_HEADERS,
-                             timeout=12)
+                             timeout=timeout)
         if _note_throttle(r) or r.status_code != 200:
             return stale
         results = r.json().get("results", [])
@@ -253,10 +256,15 @@ async def build_walk(db: AsyncSession, lat: float, lng: float,
                      month: int | None = None, theme: str | None = None, target: int = 5) -> dict:
     used_radius = _RADII_KM[-1]
     recognizable: list[dict] = []
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _NEARBY_BUDGET_S
     async with httpx.AsyncClient(timeout=30) as client:
         for radius in _RADII_KM:
-            species = await _species_counts(client, lat, lng, radius, month=month)
-            recognizable = [s for s in species if _recognizable(s)]
+            remaining = deadline - loop.time()
+            if remaining < 2:
+                break  # срок на исходе: отдаём список за меньший радиус
+            species = await _species_counts(client, lat, lng, radius, month=month, timeout=min(12.0, remaining))
+            recognizable = [s for s in species if _recognizable(s)] or recognizable
             if len(recognizable) >= _MIN_CANDIDATES:
                 used_radius = radius
                 break
@@ -305,10 +313,15 @@ async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None =
     bios = {biotope} if biotope else await asyncio.to_thread(biotope_at, lat, lng)
     used_radius = _RADII_KM[-1]
     recognizable: list[dict] = []
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _NEARBY_BUDGET_S
     async with httpx.AsyncClient(timeout=30) as client:
         for radius in _RADII_KM:
-            species = await _species_counts(client, lat, lng, radius, month=month)
-            recognizable = [s for s in species if _recognizable(s)]
+            remaining = deadline - loop.time()
+            if remaining < 2:
+                break  # срок на исходе: отдаём список за меньший радиус
+            species = await _species_counts(client, lat, lng, radius, month=month, timeout=min(12.0, remaining))
+            recognizable = [s for s in species if _recognizable(s)] or recognizable
             if len(recognizable) >= _MIN_CANDIDATES:
                 used_radius = radius
                 break
