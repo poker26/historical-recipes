@@ -16,7 +16,7 @@ from sqlalchemy import text
 from temporalio import activity
 
 from app.database import async_session
-from app.services import osm
+from app.services import inat_budget, osm
 from app.services import quests as quests_svc
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,9 @@ async def build_place_sets_activity(window_label: str, taxon_group: str = "plant
             {"w": window_label, "g": taxon_group})).all()]
     built = low_density = 0
     for i, pid in enumerate(ids):
+        # Запрос к iNaturalist на каждое место: пакетная сборка берёт жетон из общего фонового
+        # бюджета, иначе тысячи мест подряд съедают лимит, общий с определением по фото.
+        await inat_budget.acquire_background()
         try:
             async with async_session() as db:
                 res = await quests_svc.compute_species_set(db, pid, window_label, taxon_group=taxon_group)
@@ -68,7 +71,7 @@ async def build_place_sets_activity(window_label: str, taxon_group: str = "plant
                 low_density += 1
         except Exception as ex:
             logger.warning("set build %s failed: %s", pid, str(ex)[:80])
-        activity.heartbeat({"done": i + 1, "total": len(ids), "built": built, "low_density": low_density})
+        inat_budget.heartbeat({"done": i + 1, "total": len(ids), "built": built, "low_density": low_density})
     return {"group": taxon_group, "total": len(ids), "built": built, "low_density": low_density}
 
 

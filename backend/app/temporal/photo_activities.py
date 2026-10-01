@@ -13,6 +13,7 @@ import logging
 
 from temporalio import activity
 
+from app.services import inat_budget
 from app.services.photo_backfill import backfill_photos, parse_since
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ async def photo_backfill_activity(since_iso: str, limit: int = 0) -> dict:
         logger.info("photo backfill: продолжаем, счётчики %s", counters)
 
     def report(progress: dict) -> None:
-        activity.heartbeat(progress)
+        inat_budget.heartbeat(progress)   # ожидание жетона iNaturalist повторит счётчики, а не сотрёт их
 
     return await backfill_photos(parse_since(since_iso), limit=limit,
                                  progress=report, counters=counters)

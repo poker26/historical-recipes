@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from temporalio import activity
 
+from app.services import inat_budget
 from app.services.identity_cleanup import run_dedup, run_gbif, run_reid, run_shells, run_twins
 from app.services.identity_resolve import run_resolve
 from app.services.identity_amirdovlat import run_amirdovlat
@@ -18,7 +19,7 @@ from app.services.identity_site import run_site_step
 
 
 def _report(progress: dict) -> None:
-    activity.heartbeat(progress)
+    inat_budget.heartbeat(progress)   # ожидание жетона iNaturalist повторит этот ход, а не затрёт его
 
 
 @activity.defn

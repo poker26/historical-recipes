@@ -18,6 +18,7 @@ from sqlalchemy import text
 from temporalio import activity
 
 from app.database import async_session
+from app.services import inat_budget
 from app.services.inaturalist import enrich_plants_inat, INAT_BASE, _HEADERS
 from app.services.llm import chat_completion_json
 from app.services.data_quality.taxonomy import _resolve_one, GBIF_MATCH_URL
@@ -38,8 +39,8 @@ async def run_enrichment_activity() -> dict:
     resolved = names = photos = batches = 0
 
     def _hb(done, total, name):
-        activity.heartbeat({"batch": batches + 1, "plant": done, "of": total,
-                            "name": name, "resolved": resolved, "names": names})
+        inat_budget.heartbeat({"batch": batches + 1, "plant": done, "of": total,
+                               "name": name, "resolved": resolved, "names": names})
 
     while True:
         async with async_session() as db:
@@ -49,8 +50,8 @@ async def run_enrichment_activity() -> dict:
         resolved += r.get("taxa_resolved", 0)
         names += r.get("names_set", 0)
         photos += r.get("photos_set", 0)
-        activity.heartbeat({"batch": batches, "remaining": r.get("remaining"),
-                            "resolved": resolved, "names": names, "photos": photos})
+        inat_budget.heartbeat({"batch": batches, "remaining": r.get("remaining"),
+                               "resolved": resolved, "names": names, "photos": photos})
         if not r.get("processed"):
             break
         # iNat pushing back (whole batch throttled, nothing resolved/no-matched) →
@@ -111,8 +112,6 @@ async def _inat_by_ru(client, name, cache):
     w = _ruwords(name)
     if len(w) >= 2:
         qs.append(" ".join(w[:2]))
-    from app.services import inat_budget
-
     for q in qs:
         await inat_budget.acquire_background()   # пакетная чистка: общий фоновый бюджет iNaturalist
         try:
@@ -178,8 +177,8 @@ async def run_backfill_activity() -> dict:
                     llm = {}
                 # Heartbeat per plant (after the slow LLM call) so a batch of slow
                 # LLM/iNat calls can't exceed the 15-min heartbeat-timeout.
-                activity.heartbeat({"processed": processed, "auto": auto,
-                                    "review": review, "nonplant": nonplant})
+                inat_budget.heartbeat({"processed": processed, "auto": auto,
+                                       "review": review, "nonplant": nonplant})
                 is_plant = llm.get("is_plant", True)
                 llm_sci = (llm.get("latin") or "").strip()
                 if llm_sci.upper() == "UNKNOWN":
@@ -211,7 +210,7 @@ async def run_backfill_activity() -> dict:
                                  "set_latin", {"name": name, "inat": inat_sci, "inat_ru": inat_ru, "llm": llm_sci}, _BF_CHECK)
                     review += 1
                 processed += 1
-            activity.heartbeat({"processed": processed, "auto": auto, "review": review, "nonplant": nonplant})
+            inat_budget.heartbeat({"processed": processed, "auto": auto, "review": review, "nonplant": nonplant})
     return {"phase": "backfill", "processed": processed, "auto": auto, "review": review, "nonplant": nonplant}
 
 
@@ -514,8 +513,9 @@ async def conflict_check_activity() -> dict:
                         else:
                             await _stage(pid, name, f"«{name}»: {latin} ? {proposed}", "review", ev, _CONFLICT_CHECK)
                             review += 1
-                activity.heartbeat({"last_id": last_id, "fixed": fixed, "review": review,
-                                    "agree": agree, "nomatch": nomatch, "synonym": synonym})
+                # Через бюджет: ожидание жетона iNaturalist повторит last_id, а не сотрёт его.
+                inat_budget.heartbeat({"last_id": last_id, "fixed": fixed, "review": review,
+                                       "agree": agree, "nomatch": nomatch, "synonym": synonym})
     return {"phase": "conflict", "fixed": fixed, "review": review,
             "agree": agree, "nomatch": nomatch, "synonym": synonym}
 

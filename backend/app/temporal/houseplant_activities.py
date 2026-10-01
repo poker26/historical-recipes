@@ -10,6 +10,7 @@ import logging
 
 from temporalio import activity
 
+from app.services import inat_budget
 from app.services.houseplant_ingest import ingest_book
 from app.services.houseplant_toxicity import ingest_toxicity_book
 
@@ -61,8 +62,9 @@ async def houseplant_toxicity_activity(source: str, book: str, limit: int = 0) -
         logger.info(f"houseplant toxicity {source}: продолжаем со статьи {start_at}")
 
     async def report(progress: dict) -> None:
-        activity.heartbeat(progress.get("done", 0) if progress.get("stage") == "разбор" else 0,
-                           progress)
+        # Через бюджет: ожидание жетона iNaturalist повторит номер статьи, а не сотрёт его.
+        inat_budget.heartbeat(progress.get("done", 0) if progress.get("stage") == "разбор" else 0,
+                              progress)
 
     return await ingest_toxicity_book(source, book, limit=limit, start_at=start_at,
                                       apply=True, on_piece=report)

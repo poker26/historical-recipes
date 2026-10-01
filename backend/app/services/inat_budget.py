@@ -90,12 +90,36 @@ async def note_429(retry_after: str | None, source: str) -> None:
         logger.warning("inat budget: state write failed: %s", type(e).__name__)
 
 
+# Последний heartbeat каждой задачи Temporal. Temporal хранит только последний heartbeat,
+# а по нему задачи продолжают работу после перезапуска (номер статьи, last_id, счётчики).
+# Ожидание жетона поэтому повторяет последний heartbeat задачи, а не затирает его.
+_last_details: dict[tuple[str, str], tuple] = {}
+
+
+def heartbeat(*details) -> None:
+    """Heartbeat фоновой задачи, которая ходит в iNaturalist: то же, что
+    activity.heartbeat, но ожидание жетона потом повторит эти детали."""
+    from temporalio import activity
+    info = activity.info()
+    if len(_last_details) > 200:
+        _last_details.clear()
+    _last_details[(info.workflow_id or "", info.activity_id)] = details
+    activity.heartbeat(*details)
+
+
 def _heartbeat() -> None:
     """Фоновая задача ждёт жетон долго: Temporal не должен счесть её зависшей."""
     try:
         from temporalio import activity
         if activity.in_activity():
-            activity.heartbeat({"waiting": "inat budget"})
+            info = activity.info()
+            last = _last_details.get((info.workflow_id or "", info.activity_id))
+            if not last:
+                activity.heartbeat({"waiting": "inat budget"})
+            elif len(last) == 1 and isinstance(last[0], dict):
+                activity.heartbeat({**last[0], "waiting": "inat budget"})
+            else:
+                activity.heartbeat(*last)
     except Exception:  # noqa: BLE001
         pass
 
