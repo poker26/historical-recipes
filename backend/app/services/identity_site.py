@@ -46,6 +46,7 @@ from collections import defaultdict
 from typing import Callable
 
 import httpx
+from rapidfuzz import fuzz
 from rapidfuzz.distance import Levenshtein
 from sqlalchemy import literal_column, select, text
 
@@ -729,14 +730,15 @@ async def _refresh_taxon_data(client: httpx.AsyncClient, pid, new_latin: str, ki
     return "у нового вида нет фото со свободной лицензией"
 
 
-async def _close_finding(pid, status: str, note: str, extra: dict) -> None:
+async def _close_finding(pid, status: str, note: str, extra: dict,
+                         check: str = CHECK_MISMATCH, key: str = "mismatch") -> None:
     async with async_session() as db:
         await db.execute(text("""
             UPDATE data_quality_findings SET status = :st, resolved_by = 'identity-site', resolved_at = now(),
                    note = :note, evidence = COALESCE(evidence, '{}'::jsonb) || CAST(:ex AS jsonb)
             WHERE check_id = :c AND entity_id = :e"""),
-            {"st": status, "note": note[:300], "ex": json.dumps({"mismatch": extra}, ensure_ascii=False, default=str),
-             "c": CHECK_MISMATCH, "e": str(pid)})
+            {"st": status, "note": note[:300], "ex": json.dumps({key: extra}, ensure_ascii=False, default=str),
+             "c": check, "e": str(pid)})
         await db.commit()
 
 
@@ -1181,12 +1183,203 @@ async def run_drift(apply: bool, limit: int = 0, progress: Progress | None = Non
     return c
 
 
+# ------------------------------------------------------------------ driftreview
+
+# Русское видовое слово → начала латинских эпитетов, которые оно переводит. Берётся самая
+# длинная подходящая основа: «голубой» не проверяется как «голый», «сердцевидный» как «серый».
+_EPI_STEMS = {
+    # цвет
+    "бел": ["alb", "candid", "leuc", "nive"], "беловат": ["albid", "albesc"], "черн": ["nigr", "melan", "atr"],
+    "красн": ["rubr", "rubens", "erythr", "sanguin", "coccin"], "краснеющ": ["rubesc", "erubesc"],
+    "желт": ["lute", "flav", "xanth", "citrin", "ochr"], "зелен": ["virid", "chlor"],
+    "син": ["cyan", "caerul", "coerul", "azur"], "голуб": ["caerul", "coerul", "glauc", "cyan"],
+    "сиз": ["glauc", "caes"], "сер": ["canesc", "cinere", "gris", "incan"], "сед": ["incan", "canesc"],
+    "серебрист": ["argent"], "пурпур": ["purpur"], "розов": ["rose", "rhod"], "фиолетов": ["violac"],
+    "золотист": ["aure", "chrys"], "оранжев": ["aurant"], "бур": ["fusc", "brunn"], "рыж": ["ruf"],
+    "темн": ["obscur", "atrat"], "бледн": ["pallid"], "телесн": ["incarnat"], "пестр": ["varieg", "versicol"],
+    "двуцветн": ["bicolor"], "трехцветн": ["tricolor"], "разноцветн": ["versicolor", "discolor"],
+    # польза и свойства
+    "лекарствен": ["officinal", "medicinal"], "аптеч": ["officinal"], "врачебн": ["officinal"],
+    "обыкновен": ["vulgar", "commun"], "настоящ": ["ver", "genuin"], "съедобн": ["edul", "esculent"],
+    "ядовит": ["viros", "toxic", "venen"], "красильн": ["tinctor"], "масличн": ["oleifer"], "мыльн": ["saponar"],
+    "посевн": ["sativ"], "культурн": ["sativ", "cultivat", "cultus"], "огородн": ["hortens", "olerace"],
+    "садов": ["hortens"], "сорн": ["ruderal"], "благородн": ["nobil"], "царск": ["regi", "regal"],
+    "душист": ["odorat", "fragran", "suaveol"], "пахуч": ["graveol", "odor"], "ароматн": ["aromatic"],
+    "вонюч": ["foetid", "fetid"], "горьк": ["amar"], "сладк": ["dulc"], "кисл": ["acid", "acetos"],
+    "жгуч": ["uren", "acri"], "едк": ["acri"], "перечн": ["piperit"], "колюч": ["spinos", "acanth"],
+    "клейк": ["glutinos", "viscos"], "липк": ["viscos", "glutinos"], "смолист": ["resinos"], "железист": ["glandulos"],
+    # место
+    "полев": ["arvens", "campestr"], "лесн": ["sylvat", "silvat", "sylvestr", "silvestr", "nemoral", "nemoros"],
+    "дубравн": ["nemoros", "nemoral"], "лугов": ["pratens"], "болотн": ["palustr", "uliginos", "paludos"],
+    "водн": ["aquatic"], "водян": ["aquatic"], "речн": ["fluviat", "ripar"], "приречн": ["ripar"],
+    "ручейков": ["rivular"], "прибрежн": ["ripar", "littoral", "litoral"], "горн": ["montan", "alpin", "orophil"],
+    "альпийск": ["alpin"], "песчан": ["arenar", "sabulos"], "степн": ["stepp"], "приморск": ["maritim", "littoral"],
+    "морск": ["marin", "maritim"], "каменист": ["saxatil", "rupestr", "petrae"], "скальн": ["rupestr", "saxatil"],
+    "солончаков": ["salin", "halophil"],
+    # облик
+    "ползуч": ["repen", "reptan"], "стелющ": ["prostrat", "procumb", "humifus"], "лежач": ["procumb", "prostrat", "decumb"],
+    "прям": ["erect", "strict"], "прямостояч": ["erect", "strict"], "вьющ": ["volubil", "scanden"],
+    "плакуч": ["pendul"], "повисл": ["pendul"], "поникающ": ["nutan", "cernu"], "поникш": ["nutan", "cernu"],
+    "высок": ["elat", "excels", "procer", "altissim"], "низк": ["humil", "pumil"], "карликов": ["nan", "pumil", "pygmae"],
+    "больш": ["major", "magn", "maxim", "grand"], "мал": ["minor", "minim", "parv"], "средн": ["medi", "intermedi"],
+    "гигантск": ["gigant"], "кустарников": ["frutic"], "древовидн": ["arbore", "arboresc"],
+    "волосист": ["hirsut", "pilos", "villos", "crinit"], "опушен": ["pubesc"], "пушист": ["pubesc", "tomentos"],
+    "мохнат": ["hirsut", "villos"], "шерстист": ["lanat", "lanug"], "войлоч": ["tomentos"], "шелковист": ["serice"],
+    "бархатист": ["velutin"], "гол": ["glabr", "nud"], "щетинист": ["setos", "hispid"], "шершав": ["scabr", "asper"],
+    "шероховат": ["scabr", "asper"], "жестк": ["rigid"], "мягк": ["moll"], "нежн": ["tenell"], "тонк": ["tenu", "gracil"],
+    "изящн": ["elegan", "gracil"], "красив": ["pulchr", "pulchell", "specios", "formos"], "великолепн": ["magnific", "splendid"],
+    "блестящ": ["lucid", "nitid", "splenden"], "крылат": ["alat"], "рогат": ["cornut"], "бородат": ["barbat"],
+    "колосист": ["spicat"], "метельчат": ["paniculat"], "зонтичн": ["umbellat"], "головчат": ["capitat"],
+    "щитков": ["corymbos"], "кистист": ["racemos"], "мутовчат": ["verticillat"], "ветвист": ["ramos"],
+    "раскидист": ["diffus", "patul"], "пальчат": ["digitat", "palmat"], "перист": ["pinnat"], "рассечен": ["dissect", "laciniat"],
+    "лопаст": ["lobat", "laciniat"], "сердцевидн": ["cordat"], "округл": ["rotund"], "яйцевидн": ["ovat"],
+    "копьевидн": ["hastat"], "стреловидн": ["sagittat"], "ланцетн": ["lanceolat"], "туп": ["obtus"],
+    "остр": ["acut"], "пятнист": ["maculat"], "полосат": ["striat"], "луковичн": ["bulbos", "bulbifer"],
+    "клубнев": ["tuberos"], "клубненосн": ["tuberos"], "узколист": ["angustifol"], "широколист": ["latifol", "platyphyll"],
+    "мелколист": ["microphyll", "parvifol"], "крупнолист": ["macrophyll", "grandifol"], "тонколист": ["tenuifol"],
+    "длиннолист": ["longifol"], "округлолист": ["rotundifol"], "мелкоцвет": ["parviflor", "micranth"],
+    "крупноцвет": ["grandiflor", "macranth"], "многоцвет": ["multiflor", "polyanth"], "малоцвет": ["pauciflor"],
+    "одноцветков": ["uniflor"], "крупноплодн": ["macrocarp"], "мелкоплодн": ["microcarp"], "трехлист": ["trifol", "triphyll"],
+    "пятилист": ["quinquefol"], "двулист": ["bifol"], "двудомн": ["dioic"], "однодомн": ["monoic"],
+    "однобок": ["secund"], "ложн": ["pseud"], "сомнительн": ["dubi"], "изменчив": ["variabil", "mutabil"],
+    # время
+    "ранн": ["praecox"], "поздн": ["serotin"], "весенн": ["vern"], "летн": ["aestiv"], "осенн": ["autumn"],
+    "зимн": ["hyemal", "hiemal"], "однолетн": ["annu"], "многолетн": ["perenn"], "двулетн": ["bienn"], "ночн": ["noct"],
+    # география
+    "восточн": ["oriental"], "западн": ["occidental"], "северн": ["boreal", "septentrional"], "южн": ["austral", "meridional"],
+    "китайск": ["chinens", "sinens"], "японск": ["japonic"], "корейск": ["corean", "koraiens"], "кавказск": ["caucas"],
+    "сибирск": ["sibiric"], "даурск": ["dahuric", "davuric", "dauric"], "алтайск": ["altaic"], "уральск": ["uralens"],
+    "крымск": ["tauric"], "амурск": ["amurens"], "уссурийск": ["ussuriens"], "камчатск": ["kamtschat", "camtschat"],
+    "туркестанск": ["turkestan"], "джунгарск": ["songar", "soongar", "dzhungar"], "персидск": ["persic"],
+    "армянск": ["armen"], "грузинск": ["georgic", "iberic"], "европейск": ["europae"], "американск": ["americ"],
+    "виргинск": ["virgin"], "канадск": ["canadens"], "индийск": ["indic"], "египетск": ["aegypt"], "понтийск": ["pontic"],
+    "венгерск": ["hungaric"], "австрийск": ["austriac"], "испанск": ["hispanic"], "итальянск": ["italic"],
+    "французск": ["gallic"], "английск": ["anglic"], "лапландск": ["lappon"], "татарск": ["tatar", "tartar"],
+    "монгольск": ["mongolic"], "маньчжурск": ["mandshur", "manshur"], "сахалинск": ["sachalin"], "байкальск": ["baicalens"],
+    "азиатск": ["asiatic"], "африканск": ["african"], "аравийск": ["arabic"], "греческ": ["graec"], "турецк": ["turcic"],
+    "русск": ["rossic", "ruthenic"], "волжск": ["wolgens", "volgens"], "мексиканск": ["mexican"], "перуанск": ["peruvian"],
+    "бразильск": ["brasiliens"], "чилийск": ["chilens"], "капск": ["capens"], "критск": ["cretic"], "сирийск": ["syriac"],
+}
+_EPI_KEYS = sorted(_EPI_STEMS, key=len, reverse=True)
+_TRANSLIT = str.maketrans({
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "zh", "з": "z", "и": "i", "й": "i", "к": "k",
+    "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh",
+    "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch", "ы": "y", "э": "e", "ю": "yu", "я": "ya", "ь": "", "ъ": ""})
+
+
+def _norm_translit(s: str) -> str:
+    return (s.replace("w", "v").replace("ii", "i").replace("y", "i").replace("tsch", "ch").replace("sch", "sh")
+            .replace("ch", "kh").replace("c", "k").replace("ph", "f").replace("th", "t"))
+
+
+def species_word(name: str | None) -> str | None:
+    """Видовое слово имени: последнее слово до запятой, скобки или «или», если слов не меньше двух."""
+    head = re.split(r",|\(|\sили\s|;", name or "")[0]
+    w = re.findall(r"[а-яё-]+", head.lower().replace("ё", "е"))
+    return w[-1] if len(w) >= 2 else None
+
+
+def epithet_match(ru: str | None, epi: str | None) -> str | None:
+    """«словарь» или «транслитерация», если русское видовое слово переводит латинский эпитет."""
+    if not ru or not epi:
+        return None
+    for stem in _EPI_KEYS:
+        if ru.startswith(stem):
+            if any(epi.startswith(lat) for lat in _EPI_STEMS[stem]):
+                return "словарь"
+            break
+    # Имена людей и мест пишутся в обоих языках одинаково: «Шренка» и schrenkii, «Бунге» и bungeana.
+    core_ru = re.sub(r"(ский|ская|ское|ские|цкий|цкая|ный|ная|ное|ий|ая|ое|ые|ого|а|я|ы|и)$", "", ru)
+    core_la = re.sub(r"(ensis|ense|iana|ianus|ianum|icus|ica|icum|ii|i|us|a|um|is|e)$", "", epi)
+    if len(core_ru) < 5 or len(core_la) < 5:
+        return None
+    tr, la = _norm_translit(core_ru.translate(_TRANSLIT)), _norm_translit(core_la)
+    if fuzz.ratio(tr, la) >= 80 or (len(la) >= 6 and (tr.startswith(la[:6]) or la.startswith(tr[:6]))):
+        return "транслитерация"
+    return None
+
+
+def _genus_word_match(card_name: str | None, names: set[str]) -> bool:
+    """Первое слово имени совпадает с первым словом народного названия рода. В длинном слове
+    допускается одна буква разницы: старое написание и ошибка распознавания («Клядония»)."""
+    a = _ru_words(card_name)
+    if not a or len(a[0]) < 3:
+        return False
+    sa = _stem(a[0])
+    for v in names:
+        w = _ru_words(v)
+        if not w:
+            continue
+        sb = _stem(w[0])
+        if sa == sb or (min(len(sa), len(sb)) >= 6 and Levenshtein.distance(sa, sb) <= 1):
+            return True
+    return False
+
+
+async def _epithet_confirms(client: httpx.AsyncClient, vern: Vernacular, r, latin: str | None) -> str | None:
+    """Латынь переводит русское имя: видовое слово переводит эпитет, первое слово называет
+    род, а GBIF знает бином как вид. Возвращает, чем подтвердился эпитет, или None."""
+    if latin_shape(latin) != "вид":
+        return None
+    genus, epi, _cap = latin_core(latin)
+    how = epithet_match(species_word(r.name), epi)
+    if not how or not await _gbif_species(client, f"{genus} {epi}", r.kingdom):
+        return None
+    return how if _genus_word_match(r.name, await vern.names(genus)) else None
+
+
+async def run_driftreview(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
+    """Карточки, которые шаг drift оставил на разбор (identity.site_drift): ни прежняя латынь
+    страницы, ни новая латынь карточки не подтвердились народными названиями и цитатами.
+    Здесь проверяется, не переводит ли одна из них само русское имя: видовое слово
+    («лекарственный», «амурский», «Воробьёва») переводит эпитет (officinalis, amurensis,
+    vorobievii), первое слово имени совпадает с народным названием рода, и GBIF знает бином.
+    Подтвердилась одна новая латынь — она переносится на страницу; одна прежняя —
+    возвращается в карточку. Подтвердились обе или ни одна — находка остаётся на разбор."""
+    async with async_session() as db:
+        rows = (await db.execute(text("""
+            SELECT p.id, p.name, p.name_latin, p.kingdom, p.rank,
+                   m.monograph->>'name' AS m_name, m.monograph->>'name_latin' AS m_latin
+            FROM data_quality_findings f
+            JOIN plants p ON p.id::text = f.entity_id
+            JOIN plant_reader_monograph m ON m.plant_id = p.id
+            WHERE f.check_id = :chk AND f.status = 'open'
+              AND m.monograph->>'name_latin' IS DISTINCT FROM p.name_latin
+            ORDER BY p.name"""), {"chk": CHECK_DRIFT})).all()
+    if limit:
+        rows = rows[:limit]
+    c = {"step": "driftreview", "apply": apply, "cards": len(rows), "sync": 0, "revert": 0, "both": 0,
+         "none": 0, "items": []}
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
+        vern = Vernacular(client)
+        for n, r in enumerate(rows, 1):
+            how_old = await _epithet_confirms(client, vern, r, r.m_latin)
+            how_new = await _epithet_confirms(client, vern, r, r.name_latin)
+            if how_new and not how_old:
+                decision, latin, why = "sync", r.name_latin, f"имя карточки переводит новую латынь ({how_new})"
+            elif how_old and not how_new:
+                decision, latin, why = "revert", r.m_latin, f"имя карточки переводит прежнюю латынь ({how_old})"
+            else:
+                decision, latin, why = ("both" if how_old else "none"), None, ""
+            c[decision] += 1
+            if decision in ("sync", "revert"):
+                c["items"].append({"n": r.name, "o": r.m_latin, "c": r.name_latin, "d": decision, "w": why})
+                if apply:
+                    photo = await _drift_apply(client, r, decision, latin, why)
+                    await _close_finding(r.id, "resolved", why, {"decision": decision, "latin": latin, "photo": photo},
+                                         check=CHECK_DRIFT, key="driftreview")
+            if progress and n % 10 == 0:
+                progress({k: v for k, v in c.items() if k != "items"} | {"done": n})
+    return c
+
+
 STEPS = {"stale": run_stale, "oldspell": run_oldspell, "genuslatin": run_genuslatin,
-         "sametaxon": run_sametaxon, "junkname": run_junkname, "mismatch": run_mismatch, "drift": run_drift}
+         "sametaxon": run_sametaxon, "junkname": run_junkname, "mismatch": run_mismatch, "drift": run_drift,
+         "driftreview": run_driftreview}
 
 
 async def run_site_step(step: str, apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
     fn = STEPS[step]
-    if step in ("genuslatin", "sametaxon", "mismatch", "drift"):
+    if step in ("genuslatin", "sametaxon", "mismatch", "drift", "driftreview"):
         return await fn(apply=apply, limit=limit, progress=progress)
     return await fn(apply=apply, progress=progress)
