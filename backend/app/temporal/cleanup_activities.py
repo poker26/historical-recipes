@@ -111,12 +111,16 @@ async def _inat_by_ru(client, name, cache):
     w = _ruwords(name)
     if len(w) >= 2:
         qs.append(" ".join(w[:2]))
+    from app.services import inat_budget
+
     for q in qs:
+        await inat_budget.acquire_background()   # пакетная чистка: общий фоновый бюджет iNaturalist
         try:
             resp = await client.get(f"{INAT_BASE}/taxa",
                                     params={"q": q, "locale": "ru", "per_page": 5, "is_active": "true"},
                                     headers=_HEADERS)
             if resp.status_code == 429:
+                await inat_budget.note_429(resp.headers.get("Retry-After"), "cleanup")
                 continue
             if resp.status_code != 200:
                 break

@@ -219,7 +219,7 @@ async def _species_counts(client, lat, lng, radius_km, month=None, timeout=12.0)
     if hit and hit[1] < 3 * 86400:
         return hit[0].get("items", [])
     stale = hit[0].get("items", []) if hit else []
-    if _paused():
+    if await _paused():
         return stale
     params = {"lat": lat, "lng": lng, "radius": radius_km, "iconic_taxa": "Plantae",
               "quality_grade": "research", "per_page": 50, "locale": "ru"}
@@ -228,7 +228,7 @@ async def _species_counts(client, lat, lng, radius_km, month=None, timeout=12.0)
     try:
         r = await client.get(f"{INAT_BASE}/observations/species_counts", params=params, headers=_HEADERS,
                              timeout=timeout)
-        if _note_throttle(r) or r.status_code != 200:
+        if await _note_throttle(r, "nearby") or r.status_code != 200:
             return stale
         results = r.json().get("results", [])
     except (httpx.HTTPError, ValueError) as e:

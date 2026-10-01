@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 from app.models.plant import Plant, PlantBookMention
+from app.services import inat_budget
 from app.services.data_quality.validators.name_junk import clean_display_name
 from app.models.inat_cache import InatTaxonCache
 from app.services.plant_matching import _latin_key
@@ -137,25 +138,25 @@ async def resolve_taxon_photo(client: httpx.AsyncClient, name_latin: str, iconic
     query = _clean_binomial(name_latin)
     if not query:
         return {"taxon_id": None}  # unusable Latin (abbrev/genus-only) — never resolvable
-    if fast and _paused():
+    if fast and await _paused():
         return None
     params = {"q": query, "rank": "species", "is_active": "true", "per_page": 5, "locale": "ru"}
     if iconic:
         params["iconic_taxa"] = iconic
     results = None
     for attempt in range(1 if fast else 4):
+        if not fast:
+            # Фоновый вызов (добор фото, смена латыни): жетон общего ведра и паузы после
+            # отказов ждёт здесь, а не повторяет запрос сам.
+            await inat_budget.acquire_background()
         try:
             resp = await client.get(f"{INAT_BASE}/taxa", params=params, headers=_HEADERS)
         except (httpx.HTTPError, ValueError) as e:
             logger.warning(f"iNat taxa error for {query!r}: {type(e).__name__}: {e}")
             return None
-        if fast and _note_throttle(resp):
-            return None
-        if resp.status_code == 429:
-            retry_after = resp.headers.get("Retry-After")
-            delay = float(retry_after) if (retry_after or "").isdigit() else (5 * (attempt + 1))
-            logger.warning(f"iNat 429 for {query!r}; backing off {delay}s (attempt {attempt+1}/4)")
-            await asyncio.sleep(delay)
+        if await _note_throttle(resp, "identify" if fast else "photo"):
+            if fast:
+                return None
             continue
         if resp.status_code != 200:
             logger.warning(f"iNat taxa HTTP {resp.status_code} for {query!r}")
@@ -369,28 +370,26 @@ def _place_query_variants(query: str) -> list[str]:
 # 429. Наблюдения в регионе за неделю почти не меняются, место не меняется вовсе.
 _OBS_TTL = 7 * 86400
 _PLACE_TTL = 90 * 86400
-# После отказа 429 живые запросы к iNaturalist из этого процесса не делаются до этого
-# момента (time.monotonic): отдаётся кэш, даже устаревший, иначе ответ без наблюдений.
-_pause_until = 0.0
+# После отказа 429 живые запросы к iNaturalist не делаются, пока идёт общая пауза
+# (inat_budget, видна всем процессам): отдаётся кэш, даже устаревший, иначе пустой ответ.
 # «Где встречается» для страниц карточек: не чаще одного живого запроса за столько секунд
 # на процесс (2 воркера × 2 запроса к iNaturalist = до 12 в минуту со всего сайта).
 _OBS_LIVE_GAP = 20.0
 _obs_live_at = 0.0
 
 
-def _note_throttle(resp: httpx.Response) -> bool:
-    """True и пауза, если iNaturalist ответил 429."""
-    global _pause_until
+async def _note_throttle(resp: httpx.Response, source: str) -> bool:
+    """True, если iNaturalist ответил 429: общая пауза для всех процессов сервера
+    (inat_budget) и запись в журнал отказов."""
     if resp.status_code != 429:
         return False
-    ra = resp.headers.get("Retry-After")
-    _pause_until = time.monotonic() + (float(ra) if (ra or "").isdigit() else 60.0)
-    logger.warning("iNat 429 on %s; live calls paused", resp.request.url.path)
+    await inat_budget.note_429(resp.headers.get("Retry-After"), source)
     return True
 
 
-def _paused() -> bool:
-    return time.monotonic() < _pause_until
+async def _paused() -> bool:
+    """Идёт общая пауза после отказа iNaturalist (в любом процессе сервера)."""
+    return await inat_budget.paused()
 
 
 async def _cache_get(key: str) -> tuple[dict, float] | None:
@@ -470,13 +469,13 @@ async def resolve_place(client: httpx.AsyncClient, query: str) -> dict | None:
     hit = await _cache_get(key)
     if hit and hit[1] < _PLACE_TTL:
         return hit[0]
-    if _paused():
+    if await _paused():
         return hit[0] if hit else None
     for variant in _place_query_variants(query):
         try:
             resp = await client.get(f"{INAT_BASE}/places/autocomplete",
                                     params={"q": variant}, headers=_HEADERS)
-            if _note_throttle(resp):
+            if await _note_throttle(resp, "site"):
                 return hit[0] if hit else None
             if resp.status_code != 200:
                 logger.warning(f"iNat places HTTP {resp.status_code} for {variant!r}")
@@ -508,7 +507,7 @@ async def _obs_seasonality(client: httpx.AsyncClient, scope: dict) -> dict | Non
         resp = await client.get(f"{INAT_BASE}/observations/histogram", headers=_HEADERS,
                                 params={**scope, "date_field": "observed",
                                         "interval": "month_of_year"})
-        if _note_throttle(resp) or resp.status_code != 200:
+        if await _note_throttle(resp, "site") or resp.status_code != 200:
             return None
         hist = resp.json().get("results", {}).get("month_of_year", {})
         return {int(k): v for k, v in hist.items()}
@@ -552,7 +551,7 @@ async def find_observations(
         return hit[0]
     throttled = {"taxon_id": taxon_id, "scope": None, "total_count": None, "seasonality": None,
                  "count": 0, "observations": [], "error": "iNaturalist asks to slow down (429)"}
-    if _paused():
+    if await _paused():
         return hit[0] if hit else throttled
     # Потолок живых запросов: страницы карточек обходят роботы, и без потолка они съедали
     # суточный лимит iNaturalist, общий с определением и «Растениями рядом» в приложении.
@@ -567,7 +566,7 @@ async def find_observations(
         if place_id is None and place:
             place_info = await resolve_place(client, place)
             if place_info is None:
-                if _paused():
+                if await _paused():
                     return hit[0] if hit else throttled
                 return {"taxon_id": taxon_id, "scope": None, "total_count": None,
                         "seasonality": None, "count": 0, "observations": [],
@@ -597,7 +596,7 @@ async def find_observations(
             return hit[0] if hit else {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
                                        "total_count": None, "seasonality": None,
                                        "count": 0, "observations": [], "error": str(e)}
-        if _note_throttle(resp) or resp.status_code != 200:
+        if await _note_throttle(resp, "site") or resp.status_code != 200:
             return hit[0] if hit else {"taxon_id": taxon_id, "scope": scope_label, "place_id": place_id,
                                        "total_count": None, "seasonality": None,
                                        "count": 0, "observations": [], "error": f"iNat HTTP {resp.status_code}"}

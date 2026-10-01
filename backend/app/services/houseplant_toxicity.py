@@ -305,13 +305,19 @@ async def latin_by_russian_name(name_ru: str) -> str:
     query = (name_ru or "").strip()
     if len(query) < 4:
         return ""
+    from app.services import inat_budget
+
     try:
+        await inat_budget.acquire_background()   # пакетная сборка: общий фоновый бюджет iNaturalist
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
                 f"{INAT_BASE}/taxa",
                 params={"q": query, "is_active": "true", "per_page": 5, "locale": "ru"},
                 headers=_HEADERS,
             )
+            if response.status_code == 429:
+                await inat_budget.note_429(response.headers.get("Retry-After"), "houseplant")
+                return ""
             results = (response.json() or {}).get("results") or []
     except Exception:
         return ""

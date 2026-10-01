@@ -96,7 +96,11 @@ def pick_licensed_photo(taxon_photos: list[dict]) -> dict | None:
 async def fetch_taxon_photos(client: httpx.AsyncClient, taxon_id: int) -> list[dict] | None:
     """Список фото таксона. ``None`` означает временный отказ API (повторим в
     другой раз), пустой список означает, что фото у таксона нет."""
+    from app.services import inat_budget
+
     for attempt in range(4):
+        # Добор фото фоновый: жетон общего ведра и паузы после отказов ждёт здесь.
+        await inat_budget.acquire_background()
         try:
             resp = await client.get(f"{INAT_BASE}/taxa/{int(taxon_id)}", headers=_HEADERS)
         except (httpx.HTTPError, ValueError) as e:
@@ -108,10 +112,7 @@ async def fetch_taxon_photos(client: httpx.AsyncClient, taxon_id: int) -> list[d
                 continue
             return None
         if resp.status_code == 429:
-            retry_after = resp.headers.get("Retry-After")
-            delay = float(retry_after) if (retry_after or "").isdigit() else (5 * (attempt + 1))
-            logger.warning(f"iNat 429 for taxa/{taxon_id}; backing off {delay}s (attempt {attempt+1}/4)")
-            await asyncio.sleep(delay)
+            await inat_budget.note_429(resp.headers.get("Retry-After"), "photo")
             continue
         if resp.status_code == 404:
             return []

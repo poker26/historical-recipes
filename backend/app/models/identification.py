@@ -64,3 +64,7 @@ class Identification(Base):
     #   no_candidates — движок ответил, но список пуст
     failure_reason: Mapped[str | None] = mapped_column(String(32), index=True)
     failure_detail: Mapped[str | None] = mapped_column(Text)
+    # Время ответа сервера, мс (миграция 038). 29.09.2026 ответ ждал iNaturalist, и
+    # приложение бросило треть определений: запись при этом выглядела успешной. По этому
+    # полю Grafana видит медленные определения.
+    elapsed_ms: Mapped[int | None] = mapped_column(Integer)

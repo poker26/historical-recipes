@@ -122,15 +122,22 @@ async def inat_taxa(client: httpx.AsyncClient, params: dict, tries: int = 5) -> 
     None, если ответа так и не было. Пустой список вместо None значил бы «такого вида нет»,
     и прогон решал бы по отказу сервиса: 29.09 из-за этого две проверенные замены латыни не
     прошли в применённом прогоне, хотя прошли в пробном."""
+    from app.services import inat_budget
+
     for attempt in range(tries):
+        # Чистка карточек фоновая: жетон общего ведра и паузы после отказов ждёт здесь,
+        # чтобы запросам пользователей к iNaturalist всегда оставался запас.
+        await inat_budget.acquire_background()
         try:
             r = await client.get(f"{INAT_BASE}/taxa", params=params, headers=_INAT_HEADERS)
         except httpx.HTTPError:
             await asyncio.sleep(3 * (attempt + 1))
             continue
-        if r.status_code == 429 or r.status_code >= 500:
-            ra = r.headers.get("Retry-After")
-            await asyncio.sleep(float(ra) if (ra or "").isdigit() else 5 * (attempt + 1))
+        if r.status_code == 429:
+            await inat_budget.note_429(r.headers.get("Retry-After"), "identity")
+            continue
+        if r.status_code >= 500:
+            await asyncio.sleep(5 * (attempt + 1))
             continue
         if r.status_code != 200:
             return None

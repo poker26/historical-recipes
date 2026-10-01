@@ -16,6 +16,7 @@ engine-neutral.
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -297,7 +298,7 @@ async def _personal_place_bg(device_key: str, lat: float, lng: float) -> None:
 async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
                    organs: list[str] | None, lat, lng, geo_accuracy, captured_at,
                    exif_json, device_model, device_manufacturer, os_version,
-                   os_sdk, app_version, device_key=None) -> str | None:
+                   os_sdk, app_version, device_key=None, elapsed_ms: int | None = None) -> str | None:
     """Archive the photo (→ field-uploads bucket) + its metadata + the engine
     outcome to the ``identifications`` table. Best-effort: any failure is logged
     and swallowed so archival never breaks the user's identification.
@@ -360,6 +361,7 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
             candidates=candidates or None,
             failure_reason=failure_reason,
             failure_detail=failure_detail,
+            elapsed_ms=elapsed_ms,
         )
         db.add(row)
         # Touch quest_devices.last_seen: register is called once per install, so
@@ -421,6 +423,7 @@ async def identify_plant(
     Returns ``{engine, candidates:[{latin, score, common_names, gbif_id, …,
     plant: card|null}], matched_count, remaining_requests}``. Each matched
     ``plant.id`` is the key for GET /api/plants/{id}."""
+    t0 = time.monotonic()
     blobs = [await f.read() for f in images]
     mode = (kingdom or "auto").strip().lower()
     if mode in _MUSHROOM_KINGDOMS:                  # forced fungi
@@ -440,6 +443,7 @@ async def identify_plant(
         exif_json=exif_json, device_model=device_model,
         device_manufacturer=device_manufacturer, os_version=os_version,
         os_sdk=os_sdk, app_version=app_version, device_key=device_key,
+        elapsed_ms=int((time.monotonic() - t0) * 1000),
     )
     if ident_id:
         # Адрес архивной записи — по нему клиент удаляет снимок из архива вместе с
