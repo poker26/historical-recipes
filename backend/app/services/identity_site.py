@@ -1261,6 +1261,21 @@ _EPI_STEMS = {
     "бразильск": ["brasiliens"], "чилийск": ["chilens"], "капск": ["capens"], "критск": ["cretic"], "сирийск": ["syriac"],
 }
 _EPI_KEYS = sorted(_EPI_STEMS, key=len, reverse=True)
+# Вторая часть составного видового слова («черно|краевой», «тонко|рассечённый») → корни, которые
+# должны стоять в эпитете после первой части: atromarginatus, tenuisectum. Без второй части
+# «Плютей чернокраевой» совпал бы с Pluteus atricapillus (это олений плютей) по одному «черн».
+_COMPOUND_TAILS = {
+    "цвет": ["flor", "anth"], "лист": ["fol", "phyll"], "плод": ["carp"], "колос": ["stach", "spic"],
+    "кра": ["margin"], "рассечен": ["sect", "fid", "partit"], "раздельн": ["partit", "fid", "sect"],
+    "надрезан": ["fid", "incis"], "стебел": ["caul"], "стебл": ["caul"], "корн": ["rhiz", "radic"],
+    "корен": ["rhiz", "radic"], "голов": ["ceph", "capit"], "шляпк": ["pile", "capit"], "ножк": ["pod", "pes"],
+    "пластинч": ["lamell", "phyll"], "чешуй": ["squam", "lepid"], "волос": ["pil", "trich", "crin", "chaet"],
+    "шип": ["spin", "acanth"], "колюч": ["spin", "acanth"], "зубчат": ["dent", "odont", "serrat"],
+    "кольц": ["annul"], "крыл": ["pter", "alat"], "семян": ["sperm"], "семен": ["sperm"], "ягод": ["bacc", "carp"],
+    "чашечн": ["calyc", "sepal"], "лепестн": ["petal"], "сок": ["lact", "chyl", "succ"], "жилк": ["nerv", "ven"],
+    "ветв": ["clad", "ram"], "трубчат": ["tubul", "siphon"], "звезд": ["stell", "aster"],
+}
+_TAIL_KEYS = sorted(set(_COMPOUND_TAILS) | set(_EPI_STEMS), key=len, reverse=True)
 _TRANSLIT = str.maketrans({
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "zh", "з": "z", "и": "i", "й": "i", "к": "k",
     "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh",
@@ -1285,9 +1300,18 @@ def epithet_match(ru: str | None, epi: str | None) -> str | None:
         return None
     for stem in _EPI_KEYS:
         if ru.startswith(stem):
-            if any(epi.startswith(lat) for lat in _EPI_STEMS[stem]):
-                return "словарь"
-            break
+            heads = [lat for lat in _EPI_STEMS[stem] if epi.startswith(lat)]
+            rest = ru[len(stem):]
+            # Составное слово: за основой соединительная «о» или «е» и ещё один корень
+            # («черно|краевой»). «Красноватый» и «синеватый» составными не считаются.
+            if rest[:1] in ("о", "е") and len(rest) >= 5 and not rest[1:].startswith("ват"):
+                tail = rest[1:].lstrip("-")
+                key = next((k for k in _TAIL_KEYS if tail.startswith(k)), None)
+                roots = (_COMPOUND_TAILS.get(key) or _EPI_STEMS.get(key) or []) if key else []
+                if any(r in epi[len(h):] for h in heads for r in roots):
+                    return "словарь"
+                return None
+            return "словарь" if heads else None
     # Имена людей и мест пишутся в обоих языках одинаково: «Шренка» и schrenkii, «Бунге» и bungeana.
     core_ru = re.sub(r"(ский|ская|ское|ские|цкий|цкая|ный|ная|ное|ий|ая|ое|ые|ого|а|я|ы|и)$", "", ru)
     core_la = re.sub(r"(ensis|ense|iana|ianus|ianum|icus|ica|icum|ii|i|us|a|um|is|e)$", "", epi)
@@ -1316,16 +1340,36 @@ def _genus_word_match(card_name: str | None, names: set[str]) -> bool:
     return False
 
 
-async def _epithet_confirms(client: httpx.AsyncClient, vern: Vernacular, r, latin: str | None) -> str | None:
+def _same_epithet(a: str | None, b: str | None) -> bool:
+    """Один эпитет в разных родах грамматики: tenuisectum и tenuisecta, sibirica и sibiricum."""
+    if not a or not b:
+        return False
+    strip = re.compile(r"(us|um|a|is|e|ii|i|ae)$")
+    return strip.sub("", a.lower()) == strip.sub("", b.lower())
+
+
+async def _epithet_confirms(client: httpx.AsyncClient, vern: Vernacular, r,
+                            latin: str | None) -> tuple[str, str] | None:
     """Латынь переводит русское имя: видовое слово переводит эпитет, первое слово называет
-    род, а GBIF знает бином как вид. Возвращает, чем подтвердился эпитет, или None."""
+    род, а GBIF знает бином точно. Возвращает (чем подтвердился эпитет, принятое имя GBIF)
+    или None. Синоним, у которого принятое имя сменило и род, и эпитет, не годится: имя
+    переводит чужой бином («Frangula americana» это Endotropis alnifolia, а крушиной
+    американской в аптечных книгах звали каскару, Frangula purshiana)."""
     if latin_shape(latin) != "вид":
         return None
     genus, epi, _cap = latin_core(latin)
     how = epithet_match(species_word(r.name), epi)
-    if not how or not await _gbif_species(client, f"{genus} {epi}", r.kingdom):
+    if not how:
         return None
-    return how if _genus_word_match(r.name, await vern.names(genus)) else None
+    acc = await _gbif_species(client, f"{genus} {epi}", r.kingdom, exact_only=True)
+    if not acc:
+        return None
+    a_genus, a_epi, _cap = latin_core(acc)
+    if (a_genus or "").lower() != genus.lower() and not _same_epithet(a_epi, epi):
+        return None
+    if not _genus_word_match(r.name, await vern.names(genus)):
+        return None
+    return how, acc
 
 
 async def run_driftreview(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
@@ -1353,14 +1397,23 @@ async def run_driftreview(apply: bool, limit: int = 0, progress: Progress | None
     async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
         vern = Vernacular(client)
         for n, r in enumerate(rows, 1):
-            how_old = await _epithet_confirms(client, vern, r, r.m_latin)
-            how_new = await _epithet_confirms(client, vern, r, r.name_latin)
-            if how_new and not how_old:
-                decision, latin, why = "sync", r.name_latin, f"имя карточки переводит новую латынь ({how_new})"
-            elif how_old and not how_new:
-                decision, latin, why = "revert", r.m_latin, f"имя карточки переводит прежнюю латынь ({how_old})"
+            ok_old = await _epithet_confirms(client, vern, r, r.m_latin)
+            ok_new = await _epithet_confirms(client, vern, r, r.name_latin)
+            # Прежняя подтверждена, а новая с ней один вид по GBIF (Peucedanum tenuisectum и
+            # Galagania tenuisecta): возвращать нечего, на страницу идёт принятое имя из базы.
+            same = None
+            if ok_old and not ok_new and latin_shape(r.name_latin) == "вид":
+                g, e, _cap = latin_core(r.name_latin)
+                same = await _gbif_species(client, f"{g} {e}", r.kingdom, exact_only=True)
+            if ok_new and (not ok_old or ok_old[1] == ok_new[1]):
+                decision, latin, why = "sync", r.name_latin, f"имя карточки переводит новую латынь ({ok_new[0]})"
+            elif ok_old and same and same == ok_old[1]:
+                decision, latin, why = ("sync", r.name_latin,
+                                        f"имя переводит прежнюю латынь ({ok_old[0]}), а по GBIF это тот же вид, что новая")
+            elif ok_old and not ok_new:
+                decision, latin, why = "revert", r.m_latin, f"имя карточки переводит прежнюю латынь ({ok_old[0]})"
             else:
-                decision, latin, why = ("both" if how_old else "none"), None, ""
+                decision, latin, why = ("both" if ok_old else "none"), None, ""
             c[decision] += 1
             if decision in ("sync", "revert"):
                 c["items"].append({"n": r.name, "o": r.m_latin, "c": r.name_latin, "d": decision, "w": why})
