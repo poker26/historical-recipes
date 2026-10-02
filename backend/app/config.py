@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     # curated corpus bucket.
     minio_field_bucket: str = "field-uploads"
     minio_secure: bool = False
+    # Buckets that live outside the default MinIO. Beget's S3 storage issues a
+    # separate key pair per bucket and forces an account prefix onto its name, so
+    # a logical bucket is mapped here to where it really is. Set as JSON, e.g.
+    # MINIO_BUCKET_OVERRIDES='{"historical-recipes": {"endpoint":
+    #   "s3.ru1.storage.beget.cloud", "access_key": "…", "secret_key": "…",
+    #   "bucket": "3cd97dd1a0bc-historical-recipes"}}'
+    # Empty means every bucket is in the default MinIO.
+    minio_bucket_overrides: dict[str, dict] = {}
 
     # Qdrant (self-hosted)
     qdrant_url: str = "http://qdrant:6333"

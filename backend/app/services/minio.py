@@ -10,16 +10,76 @@ from app.config import settings
 _client: Minio | None = None
 
 
+# Methods whose first argument is a bucket name. Routing happens in the client
+# itself, not in the helpers below, because several callers go to the client
+# directly (books router, klex, houseplant ingest, scripts).
+_BUCKET_FIRST = (
+    "bucket_exists", "make_bucket", "remove_bucket", "list_objects",
+    "get_object", "fget_object", "put_object", "fput_object", "stat_object",
+    "remove_object", "remove_objects", "presigned_get_object",
+    "presigned_put_object",
+)
+
+
+class _RoutingMinio(Minio):
+    """The default MinIO client, except that buckets listed in
+    ``settings.minio_bucket_overrides`` are served by their own client under
+    their real name. Callers keep using logical bucket names."""
+
+    _overrides: dict[str, tuple[Minio, str]] = {}
+
+
+def _routed(method_name: str):
+    original = getattr(Minio, method_name)
+
+    def method(self, *args, **kwargs):
+        logical = args[0] if args else kwargs.get("bucket_name")
+        target = self._overrides.get(logical)
+        if target is None:
+            return original(self, *args, **kwargs)
+        client, real = target
+        if args:
+            args = (real,) + args[1:]
+        else:
+            kwargs["bucket_name"] = real
+        return original(client, *args, **kwargs)
+
+    method.__name__ = method_name
+    method.__doc__ = original.__doc__
+    return method
+
+
+for _name in _BUCKET_FIRST:
+    setattr(_RoutingMinio, _name, _routed(_name))
+
+
+def _override_clients() -> dict[str, tuple[Minio, str]]:
+    return {
+        logical: (
+            Minio(
+                cfg["endpoint"],
+                access_key=cfg["access_key"],
+                secret_key=cfg["secret_key"],
+                secure=cfg.get("secure", True),
+                region=cfg.get("region", "us-east-1"),
+            ),
+            cfg.get("bucket", logical),
+        )
+        for logical, cfg in settings.minio_bucket_overrides.items()
+    }
+
+
 def get_client() -> Minio:
     global _client
     if _client is None:
-        _client = Minio(
+        _client = _RoutingMinio(
             settings.minio_endpoint,
             access_key=settings.minio_access_key,
             secret_key=settings.minio_secret_key,
             secure=settings.minio_secure,
             region="us-east-1",
         )
+        _client._overrides = _override_clients()
         # Ensure bucket exists
         try:
             if not _client.bucket_exists(settings.minio_bucket):
