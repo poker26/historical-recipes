@@ -51,7 +51,7 @@ from app.database import async_session
 from app.models.ingredient import Ingredient
 from app.models.plant import PlantCompatibility
 from app.models.recipe import RecipeIngredient
-from app.services import qdrant
+from app.services import qdrant, site_cache
 from app.services.llm import chat_completion_json
 from app.services.plant_matching import _PLANT_CHILD_MODELS, _latin_key
 
@@ -166,6 +166,7 @@ async def merge_card(db, source_id, target_id, step: str, reason: str) -> None:
         "FROM plants WHERE id = :id"), {"id": target_id})).first()
     if src is None or tgt is None:
         return
+    site_cache.mark(source_id, target_id)   # страница источника станет перенаправлением на цель
     await _audit(db, step, "merge", source_id, src.name, src.name_latin,
                  target={"id": target_id, "name": tgt.name}, extra={"reason": reason})
 
@@ -516,6 +517,7 @@ def _fuzzy_ok(old_core: str, new_core: str) -> bool:
 
 async def _relatin(db, pid, name, old_latin: str, new_latin: str, step: str, action: str, evidence: dict) -> None:
     await _audit(db, step, action, pid, name, old_latin, extra={"new_latin": new_latin, **evidence})
+    site_cache.mark(pid)
     await db.execute(text("""
         UPDATE plants SET
             names_historical = CASE WHEN :old = '' OR :old = ANY(COALESCE(names_historical, ARRAY[]::text[])) THEN names_historical

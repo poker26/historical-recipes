@@ -55,6 +55,9 @@ services:
       - INDEXNOW_KEY=${INDEXNOW_KEY:-}
       - YANDEX_VERIFICATION=${YANDEX_VERIFICATION:-}
       - GOOGLE_SITE_VERIFICATION=${GOOGLE_SITE_VERIFICATION:-}
+      # Секрет адреса /api/revalidate: бэкенд и диспетчер сбрасывают им кэш карточки сразу
+      # после правки данных (backend/app/services/site_cache.py). Пусто — сброс выключен.
+      - REVALIDATE_SECRET=${REVALIDATE_SECRET:-}
     volumes:
       # Кэш данных Next переживает пересборку контейнера: после выкладки страницы остаются
       # тёплыми. Сбросить кэш: docker compose stop site, docker volume rm <проект>_site-next-cache.

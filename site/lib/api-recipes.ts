@@ -139,7 +139,8 @@ export function getSimilarByPlant(plantId: string, limit = 7) {
 
 /** Имя растения для плашки «Рецепты с растением …». Родовой хаб тоже отдаёт name и name_latin. */
 export type PlantName = { id?: string; name?: string | null; name_latin?: string | null };
-export const getPlantName = cache((id: string) => getJson<PlantName>(`/plants/${id}?view=field`, 3600, 15000));
+export const getPlantName = cache((id: string) =>
+  getJson<PlantName>(`/plants/${id}?view=field`, 3600, 15000, [`plant:${id.toLowerCase()}`]));
 
 /** «101. Ликёр из роз» → «Ликёр из роз»: номер статьи в книге заголовку не нужен.
  *  «10% настойка имбиря» остаётся как есть: после цифр нет точки со скобкой. */

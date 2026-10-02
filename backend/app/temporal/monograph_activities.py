@@ -20,6 +20,7 @@ from app.config import settings
 from app.database import async_session
 from app.models.reader_monograph import PlantReaderMonograph
 from app.services import reader_monograph as rm
+from app.services import site_cache
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,8 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
                         "monograph": mono, "generated_from_hash": h, "model": rm.MODEL_TAG,
                         "reviewed": pub, "gate_findings": findings, "updated_at": text("now()")}))
                     await db.commit()
+                # Новый очерк сразу на странице сайта, а не через шесть часов кэша.
+                await site_cache.revalidate_plants([pid])
                 generated += 1
             except Exception as ex:
                 errors += 1

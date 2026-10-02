@@ -14,10 +14,11 @@ export class ApiError extends Error {
   }
 }
 
-/** GET → JSON или null при любой ошибке и таймауте. revalidate в секундах. */
-export async function getJson<T>(path: string, revalidate = 300, timeoutMs = 10000): Promise<T | null> {
+/** GET → JSON или null при любой ошибке и таймауте. revalidate в секундах. Метки (tags)
+ *  позволяют сбросить кэш ответа раньше срока: так /api/revalidate сбрасывает карточку. */
+export async function getJson<T>(path: string, revalidate = 300, timeoutMs = 10000, tags?: string[]): Promise<T | null> {
   try {
-    const res = await fetch(API + path, { next: { revalidate }, signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(API + path, { next: { revalidate, tags }, signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
@@ -26,8 +27,8 @@ export async function getJson<T>(path: string, revalidate = 300, timeoutMs = 100
 }
 
 /** Как getJson, но различает «нет такой сущности» (404) и сбой: бросает ApiError на 4xx/5xx. */
-export async function getJsonStrict<T>(path: string, revalidate = 300, timeoutMs = 10000): Promise<T> {
-  const res = await fetch(API + path, { next: { revalidate }, signal: AbortSignal.timeout(timeoutMs) });
+export async function getJsonStrict<T>(path: string, revalidate = 300, timeoutMs = 10000, tags?: string[]): Promise<T> {
+  const res = await fetch(API + path, { next: { revalidate, tags }, signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new ApiError(res.status, path);
   return (await res.json()) as T;
 }

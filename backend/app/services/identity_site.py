@@ -56,6 +56,7 @@ from app.services.identity_cleanup import (
     FACTS_SCORE, GBIF_PACE, GBIF_SPECIES, _audit, _kingdom_ok, _purge_qdrant, gbif_accepted, gbif_match,
     merge_card,
 )
+from app.services import site_cache
 from app.services.identity_resolve import Vernacular, inat_taxa
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,7 @@ async def _sync_monograph(db, pid, fields: dict) -> None:
     await db.execute(text("UPDATE plant_reader_monograph SET monograph = monograph || CAST(:p AS jsonb), "
                           "updated_at = now() WHERE plant_id = :id"),
                      {"p": json.dumps(fields, ensure_ascii=False), "id": pid})
+    site_cache.mark(pid)   # кэш страницы сбросится после коммита, в конце шага
 
 
 async def _published(db, *cols):

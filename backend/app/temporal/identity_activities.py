@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from temporalio import activity
 
-from app.services import inat_budget
+from app.services import inat_budget, site_cache
 from app.services.identity_cleanup import run_dedup, run_gbif, run_reid, run_shells, run_twins
 from app.services.identity_resolve import run_resolve
 from app.services.identity_amirdovlat import run_amirdovlat
@@ -22,42 +22,50 @@ def _report(progress: dict) -> None:
     inat_budget.heartbeat(progress)   # ожидание жетона iNaturalist повторит этот ход, а не затрёт его
 
 
+async def _flushing(coro):
+    """Шаг закоммитил свои правки: сбросить кэш изменённых карточек на сайте."""
+    try:
+        return await coro
+    finally:
+        await site_cache.flush()
+
+
 @activity.defn
 async def identity_dedup_activity(apply: bool = False) -> dict:
-    return await run_dedup(apply=apply, progress=_report)
+    return await _flushing(run_dedup(apply=apply, progress=_report))
 
 
 @activity.defn
 async def identity_shells_activity(apply: bool = False, limit: int = 0) -> dict:
-    return await run_shells(apply=apply, limit=limit, progress=_report)
+    return await _flushing(run_shells(apply=apply, limit=limit, progress=_report))
 
 
 @activity.defn
 async def identity_gbif_activity(limit: int = 0) -> dict:
-    return await run_gbif(limit=limit, progress=_report)
+    return await _flushing(run_gbif(limit=limit, progress=_report))
 
 
 @activity.defn
 async def identity_reid_activity(limit: int = 0) -> dict:
-    return await run_reid(limit=limit, progress=_report)
+    return await _flushing(run_reid(limit=limit, progress=_report))
 
 
 @activity.defn
 async def identity_resolve_activity(apply: bool = False, limit: int = 0) -> dict:
-    return await run_resolve(apply=apply, limit=limit, progress=_report)
+    return await _flushing(run_resolve(apply=apply, limit=limit, progress=_report))
 
 
 @activity.defn
 async def identity_site_activity(step: str, apply: bool = False, limit: int = 0) -> dict:
     """Ошибки карточек, которые видит поисковик: stale, oldspell, genuslatin, sametaxon, junkname."""
-    return await run_site_step(step, apply=apply, limit=limit, progress=_report)
+    return await _flushing(run_site_step(step, apply=apply, limit=limit, progress=_report))
 
 
 @activity.defn
 async def identity_twins_activity(apply: bool = False) -> dict:
-    return await run_twins(apply=apply, progress=_report)
+    return await _flushing(run_twins(apply=apply, progress=_report))
 
 
 @activity.defn
 async def identity_amirdovlat_activity(apply: bool = False, limit: int = 0) -> dict:
-    return await run_amirdovlat(apply=apply, limit=limit, progress=_report)
+    return await _flushing(run_amirdovlat(apply=apply, limit=limit, progress=_report))

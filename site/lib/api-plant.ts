@@ -751,6 +751,9 @@ function buildGenus(raw: RawGenusHub): GenusCard {
 const CARD_VERSION = "card-v7";
 /** Срок кэша данных карточки и её блоков, секунды. */
 const CARD_TTL = 21600;
+/** Метка кэша карточки: по ней /api/revalidate сбрасывает все ответы бэкенда об этой
+ *  карточке сразу после правки данных, а не через CARD_TTL. */
+export const plantTag = (id: string) => `plant:${id.toLowerCase()}`;
 
 class PlantMissing extends Error {}
 class BackendDown extends Error {}
@@ -783,7 +786,7 @@ export const getPlantCard = cache(async (id: string): Promise<CardResult> => {
   try {
     let card: PlantCard;
     try {
-      card = await unstable_cache(load, [CARD_VERSION, id], { revalidate: CARD_TTL, tags: [`plant:${id}`] })();
+      card = await unstable_cache(load, [CARD_VERSION, id], { revalidate: CARD_TTL, tags: [plantTag(id)] })();
     } catch (e) {
       if (e instanceof PlantMissing || e instanceof BackendDown) throw e;
       card = await load(); // кэш недоступен: собираем без него
@@ -821,12 +824,13 @@ export const resolveMerged = cache(async (id: string): Promise<string | null> =>
   return r?.merged ? r.id : null;
 });
 
-export const getFieldView = cache((id: string) => getJson<FieldView>(`/plants/${encodeURIComponent(id)}?view=field`, CARD_TTL));
+export const getFieldView = cache((id: string) =>
+  getJson<FieldView>(`/plants/${encodeURIComponent(id)}?view=field`, CARD_TTL, 10000, [plantTag(id)]));
 
 /** Очерк со статусом: для страницы-перенаправления нужно отличать «нет вида» от сбоя. */
 export const getFieldViewStrict = cache(async (id: string): Promise<{ state: "ok"; field: FieldView } | { state: "missing" } | { state: "error" }> => {
   try {
-    const field = await getJsonStrict<FieldView>(`/plants/${encodeURIComponent(id)}?view=field`, CARD_TTL);
+    const field = await getJsonStrict<FieldView>(`/plants/${encodeURIComponent(id)}?view=field`, CARD_TTL, 10000, [plantTag(id)]);
     return { state: "ok", field };
   } catch (e) {
     return e instanceof ApiError && (e.status === 404 || e.status === 422) ? { state: "missing" } : { state: "error" };
@@ -841,11 +845,12 @@ export const normKind = (k?: string | string[] | null): RecipeKind | null => {
 };
 
 export const getPlantRecipes = cache((id: string, kind: RecipeKind | null) =>
-  getJson<PlantRecipes>(`/plants/${encodeURIComponent(id)}/recipes${qs({ kind, limit: 12 })}`, CARD_TTL),
+  getJson<PlantRecipes>(`/plants/${encodeURIComponent(id)}/recipes${qs({ kind, limit: 12 })}`, CARD_TTL, 10000, [plantTag(id)]),
 );
-export const getPairings = cache((id: string) => getJson<Pairings>(`/plants/${encodeURIComponent(id)}/pairings?limit=8`, CARD_TTL));
+export const getPairings = cache((id: string) =>
+  getJson<Pairings>(`/plants/${encodeURIComponent(id)}/pairings?limit=8`, CARD_TTL, 10000, [plantTag(id)]));
 export const getCompoundInsights = cache((id: string) =>
-  getJson<CompoundInsights>(`/plants/${encodeURIComponent(id)}/compound_insights?limit=6`, CARD_TTL),
+  getJson<CompoundInsights>(`/plants/${encodeURIComponent(id)}/compound_insights?limit=6`, CARD_TTL, 10000, [plantTag(id)]),
 );
 
 /** Наблюдения iNaturalist в Москве. Название места передаём по-английски: бэкенд ищет
