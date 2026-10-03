@@ -24,7 +24,7 @@ async def main() -> int:
     parser.add_argument("--step", required=True,
                         choices=["dedup", "shells", "gbif", "reid", "resolve", "amirdovlat", "twins",
                                  "stale", "oldspell", "genuslatin", "sametaxon", "junkname", "mismatch", "drift",
-                                 "driftreview", "driftmanual"])
+                                 "driftreview", "driftmanual", "aliasjunk"])
     parser.add_argument("--apply", action="store_true", help="для dedup и shells: применять, а не считать")
     parser.add_argument("--limit", type=int, default=0, help="сколько карточек обработать (0 — все)")
     args = parser.parse_args()
@@ -33,7 +33,7 @@ async def main() -> int:
 
     wid = f"identity-{args.step}"
     if args.step in ("dedup", "shells", "resolve", "amirdovlat", "twins", "stale", "oldspell", "genuslatin",
-                     "sametaxon", "junkname", "mismatch", "drift", "driftreview", "driftmanual") and not args.apply:
+                     "sametaxon", "junkname", "mismatch", "drift", "driftreview", "driftmanual", "aliasjunk") and not args.apply:
         wid += "-dry"
     if args.limit:
         wid += f"-{args.limit}"

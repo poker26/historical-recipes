@@ -1494,13 +1494,134 @@ async def run_driftmanual(apply: bool, limit: int = 0, progress: Progress | None
     return c
 
 
+# ------------------------------------------------------------------ aliasjunk
+
+_AJ_CYR, _AJ_LAT = re.compile(r"[А-Яа-яЁё]"), re.compile(r"[A-Za-z]")
+_AJ_SPECIAL = re.compile(r"[0-9$#@{}|\[\]<>%=+*\\^~№§]")
+_AJ_CAMEL = re.compile(r"[а-яё][А-ЯЁ]")
+_AJ_ABBR = re.compile(r"^[А-ЯЁA-Z][а-яёa-z]?\.\s*\S")
+# Окончание прилагательного после его суффикса («-ный», «-ский», «-овый», «-истый», «-чий»).
+# Голое «-ой» и «-ий» бывает у существительных («зверобой», «цикорий», «алой» = алоэ).
+_AJ_ADJ = re.compile(r"^[а-я-]*((н|ск|цк|ов|ев|ист|ват|чат|ат|ит|ин|ш|ч|щ|ж|к|г|х)"
+                     r"(ый|ий|ой|ая|яя|ое|ее|ые|ие)|л(ый|ая|ое|ые))$")
+_AJ_TAXON = re.compile(r"^([A-Z][a-z]{2,})(?:\s+(?:×\s*)?([a-z][a-z-]{2,}))?")
+
+
+def _aj_norm(s: str | None) -> str:
+    return re.sub(r"[^а-яa-z0-9 ]", "", (s or "").lower().replace("ё", "е")).strip()
+
+
+def _aj_gen_epi(latin: str | None) -> tuple[str | None, str | None]:
+    m = _AJ_TAXON.match(latin or "")
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def alias_junk_reason(alias: str | None, card_id: str, card_name: str | None, card_latin: str | None,
+                      primary: dict[str, list[tuple]]) -> str | None:
+    """Почему историческое название карточки мусор, или None. Классы проверены на выборке
+    03.10.2026 (80 290 названий): обрывки распознавания, сокращения, голые прилагательные,
+    основное имя карточки другого вида, повтор основного имени. Иноязычные названия латиницей
+    («Die Spanische Wicke», «Garden Turnep») это данные, их шаг не трогает."""
+    s = (alias or "").strip()
+    if len(s) <= 2:
+        return "обрывок короче трёх знаков"
+    if _aj_norm(s) == _aj_norm(card_name):
+        return "повтор основного имени"
+    words = s.split()
+    if any(_AJ_CYR.search(w) and _AJ_LAT.search(w) for w in words):
+        return "смесь кириллицы и латиницы в слове"
+    if _AJ_SPECIAL.search(s):
+        return "цифры или знаки: обрывок распознавания или библиографии"
+    if _AJ_CAMEL.search(s):
+        return "заглавная внутри слова: обрывок распознавания"
+    if _AJ_ABBR.match(s):
+        return "сокращение («Т. Маршалла»)"
+    if s == s.lower() and all(_AJ_ADJ.match(_aj_norm(w) or "-") for w in words):
+        return "одни прилагательные без названия растения"
+    g, e = _aj_gen_epi(card_latin)
+    for oid, og, oe in primary.get(_aj_norm(s), []):
+        if oid == card_id or not og or not g:
+            continue
+        if og != g or (oe and e and oe != e):
+            return "основное имя карточки другого вида"
+    return None
+
+
+async def run_aliasjunk(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
+    """Мусор в исторических названиях (names_historical) растений и грибов. Эти названия
+    ищет поиск сайта и приложения, и по ним сопоставитель ведёт ингредиенты рецептов к
+    карточкам: обрывок или имя чужого вида уводит туда поиск и рецепты. Шаг убирает
+    названия по alias_junk_reason, журнал card_identity_audit (step site-aliasjunk) хранит
+    снимок карточки до правки. Сухой прогон считает и связи рецептов, которые держатся
+    только на убираемых названиях."""
+    async with async_session() as db:
+        allp = (await db.execute(text("SELECT id::text, name, name_latin FROM plants"))).all()
+        rows = (await db.execute(text("""
+            SELECT id::text AS id, name, name_latin, names_historical FROM plants
+            WHERE kingdom IN ('растение', 'гриб') AND cardinality(names_historical) > 0
+            ORDER BY id"""))).all()
+    primary: dict[str, list[tuple]] = defaultdict(list)
+    for pid, name, latin in allp:
+        g, e = _aj_gen_epi(latin)
+        primary[_aj_norm(name)].append((pid, g, e))
+    if limit:
+        rows = rows[:limit]
+    c = {"step": "aliasjunk", "apply": apply, "cards": len(rows), "cards_changed": 0, "removed": 0,
+         "by_reason": defaultdict(int), "recipe_links_on_removed": 0, "sample": []}
+    plan: list[tuple] = []
+    for r in rows:
+        hist = list(r.names_historical or [])
+        drop = [(h, alias_junk_reason(h, r.id, r.name, r.name_latin, primary)) for h in hist]
+        drop = [(h, why) for h, why in drop if why]
+        if not drop:
+            continue
+        removed = {h for h, _ in drop}
+        keep, seen = [], set()
+        for h in hist:
+            k = _aj_norm(h)
+            if h in removed or k in seen:
+                continue
+            seen.add(k)
+            keep.append(h)
+        plan.append((r, keep, drop))
+        c["cards_changed"] += 1
+        c["removed"] += len(hist) - len(keep)
+        for _h, why in drop:
+            c["by_reason"][why] += 1
+        if len(c["sample"]) < 60:
+            c["sample"].append({"n": r.name, "drop": [f"{h} — {why}" for h, why in drop[:4]]})
+    # Связи рецептов, совпадающие с убираемым названием: сопоставитель вёл их по нему.
+    ids = [p[0].id for p in plan]
+    async with async_session() as db:
+        for i in range(0, len(ids), 2000):
+            links = (await db.execute(text("""
+                SELECT plant_id::text, name, original_name FROM recipe_ingredients
+                WHERE plant_id = ANY(CAST(:ids AS uuid[]))"""), {"ids": ids[i:i + 2000]})).all()
+            dropped = {(p[0].id, _aj_norm(h)) for p in plan if p[0].id in set(ids[i:i + 2000]) for h, _ in p[2]}
+            c["recipe_links_on_removed"] += sum(
+                1 for pid, nm, on in links if (pid, _aj_norm(nm)) in dropped or (pid, _aj_norm(on)) in dropped)
+    if apply:
+        for n, (r, keep, drop) in enumerate(plan, 1):
+            async with async_session() as db:
+                await _audit(db, "site-aliasjunk", "names", r.id, r.name, r.name_latin,
+                             extra={"removed": [{"alias": h, "why": why} for h, why in drop]})
+                await db.execute(text("UPDATE plants SET names_historical = CAST(:h AS text[]) WHERE id = CAST(:id AS uuid)"),
+                                 {"h": keep or None, "id": r.id})
+                await db.commit()
+            site_cache.mark(r.id)
+            if progress and n % 200 == 0:
+                progress({"step": "aliasjunk", "done": n, "of": len(plan)})
+    c["by_reason"] = dict(c["by_reason"])
+    return c
+
+
 STEPS = {"stale": run_stale, "oldspell": run_oldspell, "genuslatin": run_genuslatin,
          "sametaxon": run_sametaxon, "junkname": run_junkname, "mismatch": run_mismatch, "drift": run_drift,
-         "driftreview": run_driftreview, "driftmanual": run_driftmanual}
+         "driftreview": run_driftreview, "driftmanual": run_driftmanual, "aliasjunk": run_aliasjunk}
 
 
 async def run_site_step(step: str, apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
     fn = STEPS[step]
-    if step in ("genuslatin", "sametaxon", "mismatch", "drift", "driftreview", "driftmanual"):
+    if step in ("genuslatin", "sametaxon", "mismatch", "drift", "driftreview", "driftmanual", "aliasjunk"):
         return await fn(apply=apply, limit=limit, progress=progress)
     return await fn(apply=apply, progress=progress)
