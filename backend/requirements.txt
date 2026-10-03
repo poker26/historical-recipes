@@ -33,7 +33,7 @@ python-docx>=1.1.0
 temporalio>=1.7.0
 
 # MCP server (remote Streamable HTTP consumer-facing retrieval surface)
-mcp>=1.9.0
+mcp>=1.9.0,<2  # 2.x переименовал FastMCP → MCPServer; сервер написан под 1.x
 
 # Quests geo: OSM named-place ingest → PostGIS (osm2geojson assembles multipolygon
 # relation rings; shapely ships GEOS in its manylinux wheel — no system libgeos).
