@@ -15,6 +15,8 @@ import hashlib
 import json
 import re
 
+from rapidfuzz.distance import Levenshtein
+
 from app.services.llm import chat_completion_json
 
 N_USES = 12
@@ -148,9 +150,32 @@ async def polish(distilled: dict) -> dict:
     return out
 
 
+def _canon_source(src, sources: list[str]):
+    """Название книги, как его написала модель → точное название из входа. Модель иногда
+    ошибается в одной букве («Чёрный орек» вместо книги «Чёрный орех», «Кедр сибирский»
+    30.09–03.10), и проверка не пропускала очерк. Подставляется только название, отличное
+    на одну букву от названия из входа длиной от восьми знаков; выдуманный источник
+    остаётся как есть, и проверка его задержит."""
+    s = (src or "").strip() if isinstance(src, str) else src
+    if not s or not isinstance(s, str):
+        return src
+    low = s.lower()
+    for x in sources:
+        if x and x.strip().lower() == low:
+            return x
+    near = [x for x in sources if x and len(low) >= 8 and Levenshtein.distance(x.strip().lower(), low) <= 1]
+    return near[0] if len(near) == 1 else s
+
+
 def assemble(distilled: dict, polished: dict, gen_hash: str, reviewed: bool = False) -> dict:
     """Merge the LLM text fields with the deterministic skeleton into the §4 contract.
     Drops empty blocks (no stubs). Recipe refs / photo / sources are carried verbatim."""
+    sources = [x for x in (distilled.get("sources") or []) if isinstance(x, str)]
+    for u in polished.get("uses") or []:
+        if isinstance(u, dict) and isinstance(u.get("quote"), dict):
+            u["quote"]["source"] = _canon_source(u["quote"].get("source"), sources)
+    if isinstance(polished.get("lead_fact"), dict):
+        polished["lead_fact"]["source"] = _canon_source(polished["lead_fact"].get("source"), sources)
     out: dict = {
         "id": distilled["id"], "name": distilled.get("name"),
         "name_latin": distilled.get("name_latin"), "family": distilled.get("family"),

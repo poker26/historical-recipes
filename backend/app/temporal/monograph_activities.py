@@ -85,7 +85,9 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
                 generated += 1
             except Exception as ex:
                 errors += 1
-                logger.warning("monograph gen %s failed: %s", pid, str(ex)[:80])
+                # Полная трассировка: обрыв соединения у «Кедра» и «Алычи» 03.10 по первым 80 знакам
+                # не понять, на каком этапе он случился.
+                logger.warning("monograph gen %s failed: %s", pid, str(ex)[:200], exc_info=True)
 
     while True:
         async with async_session() as db:
