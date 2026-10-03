@@ -1428,13 +1428,52 @@ async def run_driftreview(apply: bool, limit: int = 0, progress: Progress | None
     return c
 
 
+async def run_driftmanual(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
+    """Ручные решения по карточкам на разборе (identity.site_drift). Решение записано в
+    suggested_fix находки: {"action": "manual", "decision": "sync" | "relatin", "latin": …,
+    "why": …}. sync переносит латынь из базы на страницу. relatin ставит в карточку указанную
+    латынь вместе с фото, семейством и современным именем нового вида. Находка закрывается с
+    причиной; решения без такой записи шаг не трогает."""
+    async with async_session() as db:
+        rows = (await db.execute(text("""
+            SELECT p.id, p.name, p.name_latin, p.kingdom, p.rank,
+                   m.monograph->>'name' AS m_name, m.monograph->>'name_latin' AS m_latin, f.suggested_fix AS fix
+            FROM data_quality_findings f
+            JOIN plants p ON p.id::text = f.entity_id
+            JOIN plant_reader_monograph m ON m.plant_id = p.id
+            WHERE f.check_id = :chk AND f.status = 'open' AND f.suggested_fix->>'action' = 'manual'
+            ORDER BY p.name"""), {"chk": CHECK_DRIFT})).all()
+    if limit:
+        rows = rows[:limit]
+    c = {"step": "driftmanual", "apply": apply, "cards": len(rows), "sync": 0, "relatin": 0, "bad": 0, "items": []}
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
+        for n, r in enumerate(rows, 1):
+            fix = r.fix or {}
+            decision, why = fix.get("decision"), fix.get("why") or "ручной разбор"
+            latin = r.name_latin if decision == "sync" else fix.get("latin")
+            if decision not in ("sync", "relatin") or not latin:
+                c["bad"] += 1
+                continue
+            c[decision] += 1
+            item = {"n": r.name, "o": r.m_latin, "c": r.name_latin, "d": decision, "l": latin, "w": why}
+            if apply:
+                photo = await _drift_apply(client, r, decision, latin, why)
+                await _close_finding(r.id, "resolved", why, {"decision": decision, "latin": latin, "photo": photo},
+                                     check=CHECK_DRIFT, key="manual")
+                item["photo"] = photo
+            c["items"].append(item)
+            if progress and n % 10 == 0:
+                progress({k: v for k, v in c.items() if k != "items"} | {"done": n})
+    return c
+
+
 STEPS = {"stale": run_stale, "oldspell": run_oldspell, "genuslatin": run_genuslatin,
          "sametaxon": run_sametaxon, "junkname": run_junkname, "mismatch": run_mismatch, "drift": run_drift,
-         "driftreview": run_driftreview}
+         "driftreview": run_driftreview, "driftmanual": run_driftmanual}
 
 
 async def run_site_step(step: str, apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
     fn = STEPS[step]
-    if step in ("genuslatin", "sametaxon", "mismatch", "drift", "driftreview"):
+    if step in ("genuslatin", "sametaxon", "mismatch", "drift", "driftreview", "driftmanual"):
         return await fn(apply=apply, limit=limit, progress=progress)
     return await fn(apply=apply, progress=progress)
