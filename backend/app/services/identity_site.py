@@ -194,13 +194,20 @@ async def _sync_monograph(db, pid, fields: dict) -> None:
     site_cache.mark(pid)   # кэш страницы сбросится после коммита, в конце шага
 
 
-async def _published(db, *cols):
+async def _published(db, *cols, photo: bool = True):
+    """Карточки индекса сайта. photo=False берёт и карточки без фото, которые прошли бы в
+    индекс, будь у них фото: у видовой карточки с латынью рода фото как раз и нет."""
     score = literal_column(FACTS_SCORE.replace("p.id", "plants.id")).label("score")
     kids = literal_column("(SELECT count(*) FROM plants c WHERE c.parent_id = plants.id)").label("kids")
     from app.routers.plants import PUBLISHED_PRED
+    pred = PUBLISHED_PRED if photo else (
+        Plant.kingdom.in_(["растение", "гриб"])
+        & Plant.name.op("~")(r"^[А-ЯЁ][а-яё]{2,}")
+        & ~Plant.name.op("~")(r"[A-Za-z0-9!?*#|]")
+        & Plant.name_latin.op("~")(r"^[A-Z][a-z]{2,}( [a-z][a-z-]{2,})?"))
     return (await db.execute(select(
         Plant.id, Plant.name, Plant.name_latin, Plant.kingdom, Plant.rank, Plant.names_historical,
-        score, kids, *cols).where(PUBLISHED_PRED))).all()
+        score, kids, *cols).where(pred))).all()
 
 
 async def _finding(db, check_id: str, pid, title: str, evidence: dict) -> None:
@@ -404,7 +411,9 @@ async def _gbif_species(client: httpx.AsyncClient, binomial: str, card_kingdom: 
 
 async def run_genuslatin(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
     async with async_session() as db:
-        rows = await _published(db)
+        # С фото и без: смена латыни на род снимает фото чужого вида (шаг drift, 30 карточек
+        # 01.10), и такая карточка выпадает из атласа, пока у неё нет вида.
+        rows = await _published(db, photo=False)
     cands = []
     for r in rows:
         genus, epi, capital = latin_core(r.name_latin)
@@ -462,6 +471,13 @@ async def run_genuslatin(apply: bool, limit: int = 0, progress: Progress | None 
                                               "WHERE id = :id AND name_latin IS NOT DISTINCT FROM :old"),
                                          {"new": new, "id": r.id, "old": r.name_latin})
                         await _sync_monograph(db, r.id, {"name_latin": new})
+                        # Карточка могла ждать ручного разбора латыни (identity.site_drift): вид найден,
+                        # очерк получил ту же латынь, что и карточка, разбирать больше нечего.
+                        await db.execute(text("""
+                            UPDATE data_quality_findings SET status = 'resolved', resolved_by = 'identity-site',
+                                   resolved_at = now(), note = :note
+                            WHERE check_id = :c AND entity_id = :e AND status = 'open'"""),
+                            {"c": CHECK_DRIFT, "e": str(r.id), "note": f"genuslatin: {why}"[:300]})
                         await db.commit()
             else:
                 c["review"] += 1
