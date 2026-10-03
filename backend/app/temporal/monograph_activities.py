@@ -36,6 +36,11 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
     generated = skipped = blocked = errors = seen = 0
     cursor = "00000000-0000-0000-0000-000000000000"
     sem = asyncio.Semaphore(6)   # concurrent 235b polish calls (was strictly sequential)
+    # Сбор очерка из базы держит соединение секунды (у «Кедра сибирского» 187 веществ), а пул
+    # диспетчера всего 3 + 2 (DB_POOL_SIZE, DB_MAX_OVERFLOW). Шесть сборов разом не дождались
+    # соединения: каждый прогон 03.10 терял одни и те же три карточки. Сбор идёт по три, модель
+    # по-прежнему по шесть.
+    db_sem = asyncio.Semaphore(3)
 
     async def _one(pid: str) -> None:
         nonlocal generated, skipped, blocked, errors
@@ -47,15 +52,16 @@ async def generate_monographs_activity(batch: int = 100) -> dict:
                 # uses the dispatcher's own DB pool, so generation never competes with the
                 # live app's serving pool.
                 from app.routers.plants import get_plant
-                async with async_session() as db:
-                    fv = await get_plant(uuid.UUID(pid), view="field", fresh=True, db=db)
-                distilled = rm.distill(fv)
-                h = rm.input_hash(distilled)
-                async with async_session() as db:
-                    existing = await db.get(PlantReaderMonograph, pid)
-                    if existing and existing.generated_from_hash == h:
-                        skipped += 1
-                        return
+                async with db_sem:
+                    async with async_session() as db:
+                        fv = await get_plant(uuid.UUID(pid), view="field", fresh=True, db=db)
+                    distilled = rm.distill(fv)
+                    h = rm.input_hash(distilled)
+                    async with async_session() as db:
+                        existing = await db.get(PlantReaderMonograph, pid)
+                        if existing and existing.generated_from_hash == h:
+                            skipped += 1
+                            return
                 polished = await rm.polish(distilled)
                 mono = rm.assemble(distilled, polished, h, reviewed=False)
                 findings = rm.publish_gate(mono, distilled)
