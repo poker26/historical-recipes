@@ -1505,6 +1505,8 @@ _AJ_ABBR = re.compile(r"^[А-ЯЁA-Z][а-яёa-z]?\.\s*\S")
 _AJ_ADJ = re.compile(r"^[а-я-]*((н|ск|цк|ов|ев|ист|ват|чат|ат|ит|ин|ш|ч|щ|ж|к|г|х)"
                      r"(ый|ий|ой|ая|яя|ое|ее|ые|ие)|л(ый|ая|ое|ые))$")
 _AJ_TAXON = re.compile(r"^([A-Z][a-z]{2,})(?:\s+(?:×\s*)?([a-z][a-z-]{2,}))?")
+# Короткие названия, которые на деле слова: «ир» это аир в старых травниках и рецептах.
+_AJ_SHORT_OK = {"ир"}
 
 
 def _aj_norm(s: str | None) -> str:
@@ -1523,7 +1525,7 @@ def alias_junk_reason(alias: str | None, card_id: str, card_name: str | None, ca
     основное имя карточки другого вида, повтор основного имени. Иноязычные названия латиницей
     («Die Spanische Wicke», «Garden Turnep») это данные, их шаг не трогает."""
     s = (alias or "").strip()
-    if len(s) <= 2:
+    if len(s) <= 2 and _aj_norm(s) not in _AJ_SHORT_OK:
         return "обрывок короче трёх знаков"
     if _aj_norm(s) == _aj_norm(card_name):
         return "повтор основного имени"
