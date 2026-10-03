@@ -450,6 +450,17 @@ async def run_genuslatin(apply: bool, limit: int = 0, progress: Progress | None 
                         break
                     new = await _gbif_species(client, tname, r.kingdom)
                     why = f"iNaturalist: {inat_hint}" if new else f"GBIF не подтвердил {tname}"
+                    # GBIF сводит вид iNaturalist в другой («Подосиновик белый»: Leccinum percandidum →
+                    # L. versipelle), а iNaturalist держит оба отдельными видами: остаётся вид iNaturalist.
+                    if new and new.split()[:2] != tname.split()[:2]:
+                        g2, e2, _cap = latin_core(new)
+                        try:
+                            split = await _inat_split(client, (tname, t.get("id")), g2, e2)
+                        except InatUnavailable:
+                            split = None
+                        if split:
+                            why += f"; GBIF сводит в {new}, iNaturalist держит отдельно"
+                            new = split
                     break
             if not new and not (why or "").startswith("iNaturalist даёт другой род"):
                 for sci, vru in await _gbif_by_vernacular(client, ru):
