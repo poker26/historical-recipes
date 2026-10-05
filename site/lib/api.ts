@@ -14,11 +14,19 @@ export class ApiError extends Error {
   }
 }
 
-/** GET → JSON или null при любой ошибке и таймауте. revalidate в секундах. Метки (tags)
- *  позволяют сбросить кэш ответа раньше срока: так /api/revalidate сбрасывает карточку. */
+/** Как кэшировать ответ бэкенда. revalidate > 0: в кэше данных Next на этот срок, с метками
+ *  (по ним /api/revalidate сбрасывает карточку раньше срока). revalidate 0: не кэшировать вовсе.
+ *  Ноль нужен спискам с фильтрами и страницами и любому поиску: роботы порождают бесконечно
+ *  новые адреса, а Next 14 записи кэша данных обновляет, но не удаляет. 05.10.2026 том кэша
+ *  сайта вырос так до 55 ГБ за четыре дня. Бэкенд отвечает на такие списки за 0,2 с. */
+export function fetchCache(revalidate: number, tags?: string[]): RequestInit {
+  return revalidate > 0 ? { next: { revalidate, tags } } : { cache: "no-store" };
+}
+
+/** GET → JSON или null при любой ошибке и таймауте. revalidate в секундах, 0 значит без кэша. */
 export async function getJson<T>(path: string, revalidate = 300, timeoutMs = 10000, tags?: string[]): Promise<T | null> {
   try {
-    const res = await fetch(API + path, { next: { revalidate, tags }, signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(API + path, { ...fetchCache(revalidate, tags), signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
@@ -28,7 +36,7 @@ export async function getJson<T>(path: string, revalidate = 300, timeoutMs = 100
 
 /** Как getJson, но различает «нет такой сущности» (404) и сбой: бросает ApiError на 4xx/5xx. */
 export async function getJsonStrict<T>(path: string, revalidate = 300, timeoutMs = 10000, tags?: string[]): Promise<T> {
-  const res = await fetch(API + path, { next: { revalidate, tags }, signal: AbortSignal.timeout(timeoutMs) });
+  const res = await fetch(API + path, { ...fetchCache(revalidate, tags), signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new ApiError(res.status, path);
   return (await res.json()) as T;
 }

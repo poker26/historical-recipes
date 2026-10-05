@@ -3,7 +3,7 @@
 // не видит, поэтому здесь свой fetch с тем же кэшем данных Next. Рядом лежат словари, которые
 // чистят грязные поля корпуса для показа (семейства, биотопы, подписи фото), и помощники
 // русского текста для заголовков вида «Растения при кашле».
-import { API, getJson, qs, excerpt } from "./api";
+import { API, fetchCache, getJson, qs, excerpt } from "./api";
 
 // ─── типы ответов ─────────────────────────────────────────────────────────────
 
@@ -134,7 +134,7 @@ export type SectionHit = {
 /** GET списка и общего числа совпадений из X-Total-Count. Таймаут 15 с; при сбое пусто и 0. */
 async function getList<T>(path: string, revalidate: number, timeoutMs = 15000): Promise<ListPage<T>> {
   try {
-    const res = await fetch(API + path, { next: { revalidate }, signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(API + path, { ...fetchCache(revalidate), signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return { items: [], total: 0, ok: false };
     const data: unknown = await res.json();
     const items = Array.isArray(data) ? (data as T[]) : [];
@@ -146,7 +146,8 @@ async function getList<T>(path: string, revalidate: number, timeoutMs = 15000): 
   }
 }
 
-export const listPlants = (query: PlantQuery, revalidate = 600) =>
+/** Список растений с фильтрами и страницами: без кэша данных (см. fetchCache). */
+export const listPlants = (query: PlantQuery, revalidate = 0) =>
   getList<PlantSummary>(`/plants/${qs(query)}`, revalidate);
 
 const byUses = (a: PlantSummary, b: PlantSummary) =>
@@ -166,7 +167,7 @@ export async function listPlantsAnySpelling(
   query: PlantQuery,
   key: "indication" | "action" | "q",
   value: string,
-  revalidate = 600,
+  revalidate = 0,
 ): Promise<ListPage<PlantSummary> & { value: string }> {
   const plain = value.replace(/ё/g, "е").replace(/Ё/g, "Е");
   if (plain === value) return { ...(await listPlants({ ...query, [key]: value }, revalidate)), value };
@@ -188,17 +189,17 @@ export const getBiotopes = () => getJson<{ biotopes: BiotopeFacet[] }>(`/plants/
 export function getSuggest(q: string, limit = 12): Promise<Suggest | null> {
   const s = q.trim().slice(0, 80);
   if (s.length < 2) return Promise.resolve(null);
-  return getJson<Suggest>(`/plants/suggest${qs({ q: s, limit })}`, 600);
+  return getJson<Suggest>(`/plants/suggest${qs({ q: s, limit })}`, 0);
 }
 
 export const getIndication = (id: string) =>
   getJson<IndicationDetail>(`/medical/indications/${encodeURIComponent(id)}`, 3600);
 
 export const searchRecipes = (q: string, limit = 12) =>
-  getList<RecipeBrief>(`/recipes/${qs({ q, home_doable: true, brief: true, limit, sort: "quality" })}`, 600);
+  getList<RecipeBrief>(`/recipes/${qs({ q, home_doable: true, brief: true, limit, sort: "quality" })}`, 0);
 
 export const searchBooks = (q: string, limit = 8) =>
-  getJson<{ total: number; items: BookHit[] }>(`/library/books${qs({ q, limit })}`, 600);
+  getJson<{ total: number; items: BookHit[] }>(`/library/books${qs({ q, limit })}`, 0);
 
 /** Смысловой поиск по фрагментам книг (POST, без кэша, таймаут 12 с). null при любой ошибке. */
 export async function searchSections(query: string, limit = 6): Promise<SectionHit[] | null> {

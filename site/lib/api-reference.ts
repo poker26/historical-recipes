@@ -30,7 +30,7 @@ type PlantFilter = { action?: string; indication?: string; compound?: string; bi
 
 /** Плитки атласа по фильтру: только карточки, прошедшие гейт публикации. */
 export function getPublishedPlants(f: PlantFilter, sort: "uses" | "photo", limit = 48) {
-  return getJsonTotal<PlantSummary[]>(`/plants/${qs({ ...f, published: true, sort, limit })}`, 3600, 15000);
+  return getJsonTotal<PlantSummary[]>(`/plants/${qs({ ...f, published: true, sort, limit })}`, 0, 15000);
 }
 
 // ---------- фасеты и биотопы ----------
@@ -205,7 +205,7 @@ export type OilItem = {
 export const OILS_PAGE = 200;
 /** Масла по алфавиту; q ищет по имени, латыни и растению-источнику. */
 export const getOils = (limit: number, offset = 0, q?: string) =>
-  getJson<{ items: OilItem[]; total: number }>(`/oils${qs({ q, limit, offset })}`, q ? 3600 : 21600, 15000);
+  getJson<{ items: OilItem[]; total: number }>(`/oils${qs({ q, limit, offset })}`, q ? 0 : 21600, 15000);
 
 /** Масла с самым большим числом записей о применении: для витрины на хабе.
  *  Список отдаётся по алфавиту, поэтому берём его целиком (до 2 тыс.) страницами по 500. */

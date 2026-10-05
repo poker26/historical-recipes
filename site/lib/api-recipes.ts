@@ -2,12 +2,12 @@
 // Список отдаёт общее число совпадений в заголовке X-Total-Count, поэтому здесь свой
 // fetch поверх базового API, а не getJson: пейджеру нужно знать, сколько всего страниц.
 import { cache } from "react";
-import { API, ApiError, RECIPE_KIND_ONE, getJson, getJsonStrict, qs, realAuthor } from "./api";
+import { API, ApiError, RECIPE_KIND_ONE, fetchCache, getJson, getJsonStrict, qs, realAuthor } from "./api";
 
 /** GET → { data, total } или null при ошибке. total берётся из X-Total-Count. */
 export async function getJsonTotal<T>(path: string, revalidate = 600, timeoutMs = 15000): Promise<{ data: T; total: number | null } | null> {
   try {
-    const res = await fetch(API + path, { next: { revalidate }, signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(API + path, { ...fetchCache(revalidate), signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return null;
     const raw = res.headers.get("x-total-count");
     const n = raw == null || raw === "" ? NaN : Number(raw);
@@ -86,7 +86,7 @@ export function getRecipeList(f: RecipeFilters, limit = PAGE_SIZE, offset = 0) {
     kind: f.kind, category: f.category, domain: f.domain,
     step_by_step: f.step_by_step || undefined, plant_id: f.plant_id, book_id: f.book_id, q: f.q,
   })}`;
-  return getJsonTotal<RecipeBrief[]>(path, 600, 15000);
+  return getJsonTotal<RecipeBrief[]>(path, 0, 15000);   // фильтры и страницы: без кэша данных
 }
 
 export type Facet = { value: string; count: number };

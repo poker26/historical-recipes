@@ -10,7 +10,9 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   let photo: string | null = null;
   if (p?.photo_url) {
     try {
-      const r = await fetch(p.photo_url, { signal: AbortSignal.timeout(6000) });
+      // Без кэша: в Next 14 fetch по умолчанию кладёт ответ в кэш данных навсегда, и каждое
+      // фото растения целиком оседало бы на диске.
+      const r = await fetch(p.photo_url, { cache: "no-store", signal: AbortSignal.timeout(6000) });
       if (r.ok) photo = "data:image/jpeg;base64," + Buffer.from(await r.arrayBuffer()).toString("base64");
     } catch {
       /* leaf placeholder */

@@ -168,7 +168,7 @@ const cleanCitation = (c: string | null | undefined): string => (c ?? "").replac
 export async function getBooks(f: ShelfQuery, offset = 0, limit = SHELF_LIMIT) {
   const r = await getJson<{ total: number; items: BookItem[] }>(
     `/library/books${qs({ q: f.q, domain: f.domain, era: f.era, access: f.access, scans: f.scans ? "true" : undefined, sort: f.sort, limit, offset })}`,
-    1800,
+    0,   // поиск, фильтры и страницы: без кэша данных
     15000,
   );
   return r ? { ...r, items: (r.items ?? []).map(withAuthor) } : r;
@@ -196,7 +196,7 @@ export async function getBookPage(id: string, n: number): Promise<Fetched<BookPa
 }
 
 export const searchBook = (id: string, q: string, limit = 20) =>
-  getJson<BookSearch>(`/library/books/${id}/search${qs({ q, limit })}`, 600, 15000);
+  getJson<BookSearch>(`/library/books/${id}/search${qs({ q, limit })}`, 0, 15000);
 
 // ---------------------------------------------------------------- прокси картинок
 
