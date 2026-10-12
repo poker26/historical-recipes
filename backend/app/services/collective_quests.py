@@ -277,7 +277,8 @@ async def credit_shot(db: AsyncSession, device_key: str | None, identification_i
     """Засчитать снимок в общий квест. Возвращает описание для экрана результата, когда
     снимок закрыл позицию, иначе None. Никогда не бросает: квест не должен ломать определение."""
     from app.config import settings
-    if not settings.collective_quests_enabled:
+    testers = {t.strip().lower() for t in settings.collective_quests_test_devices.split(",") if t.strip()}
+    if not settings.collective_quests_enabled and str(device_key or "").lower() not in testers:
         return None
     try:
         dk = uuid.UUID(str(device_key)) if device_key else None

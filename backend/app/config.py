@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Выключено, пока нет клиентов с экраном квеста: иначе люди со старой версией получили бы
     # push о квесте, которого не видят. Запрос состояния работает и при выключенном зачёте.
     collective_quests_enabled: bool = False
+    # Устройства (device_key через запятую), у которых зачёт работает и при выключенном флаге:
+    # так новые экраны проверяются на своём телефоне, пока у остальных зачёт выключен.
+    collective_quests_test_devices: str = ""
     minio_secure: bool = False
     # Buckets that live outside the default MinIO. Beget's S3 storage issues a
     # separate key pair per bucket and forces an account prefix onto its name, so
