@@ -1253,6 +1253,13 @@ _META_LADDERS = {
         "unit": "комнатных видов",
         "rungs": [3, 7, 15],
     },
+    # Совместные квесты (docs/RFC-collective-quests.md): сколько собранных квестов, в которых
+    # устройство нашло хотя бы одно растение. Видна только тем, у кого зачёт включён (_collective_on).
+    "collective": {
+        "title": "Соратник",
+        "unit": "совместных квестов",
+        "rungs": [1, 5, 15],
+    },
 }
 
 # Приглашённый засчитывается, только если он пользуется приложением сам.
@@ -1445,6 +1452,22 @@ async def accept_invite(db: AsyncSession, device_key: str, code: str) -> dict:
             "host_nick": host.nickname or auto_nick(host.device_key)}
 
 
+async def _collective_count(db, device_key) -> int:
+    """Сколько собранных совместных квестов, где устройство нашло хотя бы одно растение."""
+    return (await db.execute(text(
+        "SELECT count(*) FROM collective_awards WHERE device_key = CAST(:dk AS uuid)"),
+        {"dk": str(device_key)})).scalar() or 0
+
+
+def _collective_on(device_key) -> bool:
+    """Лестница «Соратник» видна, только когда совместные квесты включены для устройства:
+    старые версии приложения рисуют лестницы по описанию с сервера и показали бы её
+    раньше, чем у людей появится сам экран квестов."""
+    from app.config import settings
+    testers = {t.strip().lower() for t in settings.collective_quests_test_devices.split(",") if t.strip()}
+    return settings.collective_quests_enabled or str(device_key).lower() in testers
+
+
 async def meta_progress(db: AsyncSession, device_key: str) -> dict:
     """Прогресс по наградам без географии. Форма ответа повторяет badge_progress,
     чтобы клиент рисовал их той же лестницей."""
@@ -1458,8 +1481,11 @@ async def meta_progress(db: AsyncSession, device_key: str) -> dict:
         "invites": _invited_count,
         "friends": _friends_count,
         "windowsill": _windowsill_count,
+        "collective": _collective_count,
     }
     for kind in _META_LADDERS:
+        if kind == "collective" and not _collective_on(dk):
+            continue
         matched = await counters[kind](db, dk)
         badge_id = f"meta:{kind}"
         tiers = _meta_tiers(kind)
@@ -1485,7 +1511,9 @@ async def claim_meta_badge(db: AsyncSession, device_key: str, kind: str) -> dict
     dk = _try_uuid(device_key)
     if dk is None:
         return {"error": "device not registered"}
-    prog = next(i for i in (await meta_progress(db, str(dk)))["items"] if i["kind"] == kind)
+    prog = next((i for i in (await meta_progress(db, str(dk)))["items"] if i["kind"] == kind), None)
+    if prog is None:
+        return {"error": "unknown badge kind"}
     badge_id = prog["badge_id"]
     issued = await _issued_tiers(db, badge_id, dk)
     unissued = [t for t in prog["tiers"] if t["need"] <= prog["matched"] and t["tier"] not in issued]
@@ -1881,13 +1909,27 @@ async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20,
         where = "WHERE issued_at >= :start AND issued_at < :end"
         params = {"start": datetime.combine(start, dtime.min, msk),
                   "end": datetime.combine(end + timedelta(days=1), dtime.min, msk)}
+    # Баллы совместных квестов (collective_awards) идут в счёт, но значками не считаются.
+    # К месту они не привязаны, поэтому в рейтинг места не входят; за месяц берутся по
+    # дате, когда квест собран.
+    if scope == "place" and place_id:
+        cwhere = "WHERE false"
+    elif "start" in params:
+        cwhere = "WHERE created_at >= :start AND created_at < :end"
+    else:
+        cwhere = ""
     rows = (await db.execute(text(f"""
-        SELECT device_key, SUM(maxpts) AS score, COUNT(*) AS badges, MIN(first_at) AS first_at
+        SELECT device_key, SUM(maxpts) AS score, COUNT(*) FILTER (WHERE src = 'b') AS badges,
+               MIN(first_at) AS first_at
         FROM (SELECT device_key, badge_id,
-                     MAX(COALESCE(points, 0)) AS maxpts, MIN(issued_at) AS first_at
+                     MAX(COALESCE(points, 0)) AS maxpts, MIN(issued_at) AS first_at, 'b' AS src
               FROM quest_issued_badges
               {where}
-              GROUP BY device_key, badge_id) z
+              GROUP BY device_key, badge_id
+              UNION ALL
+              SELECT device_key, quest_id::text, points, created_at, 'c'
+              FROM collective_awards
+              {cwhere}) z
         GROUP BY device_key
     """), params)).all()
     ranked = sorted(rows, key=lambda r: (-r.score, r.first_at))
