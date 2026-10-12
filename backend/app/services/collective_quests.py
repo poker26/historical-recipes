@@ -35,8 +35,8 @@ LAST_POINTS = 5           # цена предпоследней; цена рас
 FINAL_BONUS = 10          # последняя позиция стоит LAST_POINTS + FINAL_BONUS
 
 KINDS = ("home", "nature")
-# Не «Подоконник»: так уже называется личный значок за число комнатных видов (meta:windowsill).
-TITLES = {"home": "Общий подоконник", "nature": "Общий лес"}
+# Названия выбрал владелец 12.10.2026. Просто «Подоконник» занят личным значком (meta:windowsill).
+TITLES = {"home": "Наш подоконник", "nature": "Наш лес"}
 # Фото участника показываем только на улице: снимок с подоконника раскрывает квартиру.
 SHOWS_USER_PHOTO = {"home": False, "nature": True}
 
@@ -187,7 +187,9 @@ async def genus_pool(db: AsyncSession, kind: str) -> list[dict]:
         name = (care_names.get(g) if kind == "home" else None) or             display_name([(s["name"], s["shots"]) for s in e["species"]])
         if not name:
             continue
-        with_photo = [s for s in e["species"] if s["photo"]] or e["species"]
+        with_photo = [s for s in e["species"] if s["photo"]]
+        if not with_photo:
+            continue        # без фото растение искать неудобно, такой род в квест не идёт
         top = max(with_photo, key=lambda s: s["shots"])
         pool.append({"genus": g, "name_ru": name, "plant_id": top["id"], "photo_url": top["photo"],
                      "devices": e["devices"]})
@@ -237,7 +239,7 @@ async def _replace_stale(db: AsyncSession, quest_id, kind: str) -> int:
     stale = (await db.execute(text("""
         SELECT id, position FROM collective_slots
         WHERE quest_id = :q AND status = 'open'
-          AND opened_at < now() - make_interval(days => :d)
+          AND (opened_at < now() - make_interval(days => :d) OR photo_url IS NULL)
         ORDER BY position"""), {"q": quest_id, "d": REPLACE_DAYS})).all()
     if not stale:
         return 0
