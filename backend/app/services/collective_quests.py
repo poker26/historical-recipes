@@ -17,6 +17,7 @@ import re
 import time
 import uuid
 from collections import Counter
+from datetime import datetime, timezone
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -427,10 +428,14 @@ async def state(db: AsyncSession, device_key: str | None, photo_base: str) -> di
             slots.append(item)
         # Сколько стоит позиция, если закрыть её прямо сейчас: следующая по счёту.
         now_pts = slot_points(closed + 1, size)
-        for item in slots:
+        now = datetime.now(timezone.utc)
+        for item, row in zip(slots, rows):
             if item["status"] == "open":
                 item["points_now"] = now_pts
                 item["replaced_after_days"] = REPLACE_DAYS
+                # Сколько часов осталось до замены: клиенту не нужно разбирать даты.
+                left = REPLACE_DAYS * 24 - (now - row[7]).total_seconds() / 3600
+                item["replaces_in_hours"] = max(0, int(left + 0.999))
         out.append({"id": str(qid), "kind": kind, "title": TITLES[kind], "number": number,
                     "size": size, "closed": closed, "created_at": created_at.isoformat(),
                     "my_points": mine, "shows_user_photo": SHOWS_USER_PHOTO[kind], "slots": slots})
