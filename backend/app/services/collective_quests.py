@@ -372,10 +372,14 @@ async def _notify_completed(quest_id: str) -> None:
 
 # ---- состояние для клиента ---------------------------------------------------------
 
-def _person(nick, avatar, handle, public) -> dict:
-    if not public:
+def _person(device_key, nick, avatar, handle, public) -> dict:
+    """Кто закрыл позицию. Без своего ника показывается автоматический, как в рейтинге
+    («Полевой Можжевельник #5787»). Кто скрыл активность, показывается как «участник»."""
+    from app.services.quests import auto_handle, auto_nick
+    if public is False or device_key is None:
         return {"nickname": "участник", "avatar": None, "handle": None}
-    return {"nickname": nick or "участник", "avatar": avatar, "handle": handle}
+    return {"nickname": nick or auto_nick(device_key), "avatar": avatar,
+            "handle": handle or auto_handle(device_key)}
 
 
 async def state(db: AsyncSession, device_key: str | None, photo_base: str) -> dict:
@@ -394,7 +398,7 @@ async def state(db: AsyncSession, device_key: str | None, photo_base: str) -> di
         rows = (await db.execute(text("""
             SELECT s.id, s.position, s.genus, s.name_ru, s.plant_id, s.photo_url, s.status,
                    s.opened_at, s.closed_at, s.close_order, s.points, s.photo_hidden,
-                   s.closed_by, d.nickname, d.avatar, d.handle, COALESCE(d.activity_public, true),
+                   s.closed_by, d.nickname, d.avatar, d.handle, d.activity_public,
                    (i.photo_key IS NOT NULL) AS has_photo,
                    (SELECT count(*) FROM collective_finds f WHERE f.slot_id = s.id) AS finders
             FROM collective_slots s
@@ -415,7 +419,7 @@ async def state(db: AsyncSession, device_key: str | None, photo_base: str) -> di
                     mine += pts or 0
                 item.update({
                     "closed_at": closed_at.isoformat(), "order": order, "points": pts,
-                    "closed_by": _person(nick, avatar, handle, public), "is_me": is_me,
+                    "closed_by": _person(closed_by, nick, avatar, handle, public), "is_me": is_me,
                     "more_finders": max(int(finders) - 1, 0),
                     "user_photo_url": (f"{photo_base}/{sid}.jpg"
                                        if SHOWS_USER_PHOTO[kind] and has_photo and not hidden else None),
@@ -437,7 +441,7 @@ async def state(db: AsyncSession, device_key: str | None, photo_base: str) -> di
             WHERE status = 'closed' ORDER BY closed_at DESC LIMIT 6"""))).all():
         aw = (await db.execute(text("""
             SELECT a.device_key, a.points, a.finisher, d.nickname, d.avatar, d.handle,
-                   COALESCE(d.activity_public, true)
+                   d.activity_public
             FROM collective_awards a LEFT JOIN quest_devices d ON d.device_key = a.device_key
             WHERE a.quest_id = :q ORDER BY a.points DESC"""), {"q": qid})).all()
         fin = next((a for a in aw if a[2]), None)
@@ -445,7 +449,7 @@ async def state(db: AsyncSession, device_key: str | None, photo_base: str) -> di
             "kind": kind, "title": TITLES[kind], "number": number, "size": size,
             "closed_at": closed_at.isoformat() if closed_at else None,
             "participants": len(aw),
-            "finisher": _person(*fin[3:7]) if fin else None,
+            "finisher": _person(fin[0], *fin[3:7]) if fin else None,
             "my_points": next((a[1] for a in aw if dk is not None and a[0] == dk), 0),
         })
     total = 0
