@@ -35,6 +35,7 @@ from app.services.houseplant_care import care_for_latins
 from app.services.houseplant_cards import cards_for_latins
 from app.services import mushroom_id
 from app.services import quests as quests_svc
+from app.services import collective_quests
 
 # Hard, non-negotiable warning surfaced on EVERY mushroom identification (HANDOFF-
 # identify-improvements Q3): photo-ID has deadly lookalikes (бледная поганка ↔
@@ -295,6 +296,21 @@ async def _personal_place_bg(device_key: str, lat: float, lng: float) -> None:
         logger.warning(f"personal place skipped: {type(e).__name__}: {e}")
 
 
+def _matched_plant_id(candidates: list[dict]) -> str | None:
+    """Карточка снимка: карточка лучшего кандидата или почти равного ему (≥ 85% очков) —
+    НИКОГДА не дальнего кандидата с ничтожным счётом. Раньше кандидат с 0.002 перехватывал
+    matched_plant_id: снимок буквицы (лучший Stachys officinalis без карточки) уходил в
+    карточку «Вероника колосистая» ниже по списку. Общее правило для архива и общих квестов."""
+    if not candidates:
+        return None
+    top_score = candidates[0].get("score") or 0
+    return next(
+        (c["plant"]["id"] for c in candidates
+         if c.get("plant") and (c.get("score") or 0) >= top_score * 0.85),
+        None,
+    )
+
+
 async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
                    organs: list[str] | None, lat, lng, geo_accuracy, captured_at,
                    exif_json, device_model, device_manufacturer, os_version,
@@ -323,16 +339,7 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
             failure_reason, failure_detail = "engine_error", str(result["error"])[:400]
         elif not candidates:
             failure_reason = "no_candidates"
-        top_score = top.get("score") or 0
-        # matched_plant_id = the card of the TOP candidate, or a NEAR-TIE (score ≥ 85% of
-        # top) — NEVER a low-score also-ran. A 0.002 sibling once hijacked matched_plant_id:
-        # a Буквица shot (top = Stachys officinalis, no card) got mislinked to the carded
-        # «Вероника колосистая» further down the list.
-        matched_plant_id = next(
-            (c["plant"]["id"] for c in candidates
-             if c.get("plant") and (c.get("score") or 0) >= top_score * 0.85),
-            None,
-        )
+        matched_plant_id = _matched_plant_id(candidates)
         exif = None
         if exif_json:
             try:
@@ -449,6 +456,12 @@ async def identify_plant(
         # Адрес архивной записи — по нему клиент удаляет снимок из архива вместе с
         # находкой (DELETE /api/identify/{id}). Старые клиенты поле игнорируют.
         result["identification_id"] = ident_id
+        # Общий квест (docs/RFC-collective-quests.md): снимок сам закрывает открытую позицию
+        # своего рода, без геолокации и без вступления в квест. Старые клиенты поле не видят.
+        cc = await collective_quests.credit_shot(
+            db, device_key, ident_id, _matched_plant_id(result.get("candidates") or []))
+        if cc:
+            result["collective_credit"] = cc
     # Quest credit for THIS shot (place quest containing the point, current window):
     # ties the shooting moment to the game — most identifying devices never open the
     # quests tab, so progress made in-place must be visible right on the result

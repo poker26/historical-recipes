@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     # archived here for debugging and future training data, kept apart from the
     # curated corpus bucket.
     minio_field_bucket: str = "field-uploads"
+    # Общие квесты (docs/RFC-collective-quests.md): зачёт снимков и push о собранном квесте.
+    # Выключено, пока нет клиентов с экраном квеста: иначе люди со старой версией получили бы
+    # push о квесте, которого не видят. Запрос состояния работает и при выключенном зачёте.
+    collective_quests_enabled: bool = False
     minio_secure: bool = False
     # Buckets that live outside the default MinIO. Beget's S3 storage issues a
     # separate key pair per bucket and forces an account prefix onto its name, so
