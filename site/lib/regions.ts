@@ -40,9 +40,8 @@ export function regionBySlug(slug?: string | null): Region {
   return REGIONS.find((r) => r.slug === slug) ?? REGIONS[0];
 }
 
-/** Текущее полумесячное окно сезона, как его считают приложение и сервер. */
+/** Текущее месячное окно сезона ("month-10"), как его считают приложение и сервер с июля 2026. */
 export function currentWindow(d = new Date()): { window: string; year: number; month: number } {
-  const half = d.getDate() <= 15 ? "first" : "second";
   const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return { window: `${half}-half-${mm}`, year: d.getFullYear(), month: d.getMonth() + 1 };
+  return { window: `month-${mm}`, year: d.getFullYear(), month: d.getMonth() + 1 };
 }

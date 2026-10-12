@@ -1860,19 +1860,27 @@ async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20,
     (client never sends a score). Dense rank by score desc, tie-break earliest badge.
     `me` returned even when outside the top.
 
-    `scope` narrows the board (badge_id is `{place_id}:{window}:{year}`):
+    `scope` narrows the board:
       • global — all badges (default, back-compatible)
-      • place  — only badges at `place_id`   (all its windows/years)
-      • season — only badges in `window`×`year` (across all places)."""
-    pat = None
+      • place  — only badges at `place_id` (badge_id starts with `{place_id}:`)
+      • season — badges ISSUED within `window`×`year` (all kinds, all places).
+    Сезон отбирается по дате выдачи, а не по badge_id: значки мест с лета
+    накопительные (`{place_id}:all`), окна в их имени нет, и шаблон
+    `%:{window}:{year}` не находил ничего — месячный рейтинг был всегда пуст."""
+    where, params = "", {}
     if scope == "place" and place_id:
-        pat = f"{place_id}:%"
+        where, params = "WHERE badge_id LIKE :pat", {"pat": f"{place_id}:%"}
     elif scope == "season" and window:
-        pat = f"%:{window}:{year or date.today().year}"
-    # Build the filter conditionally — never bind a NULL param (asyncpg can't infer
-    # the type of `:pat` in `:pat IS NULL` → "could not determine data type"). The
-    # global path stays byte-identical to the original query (no WHERE, no params).
-    where = "WHERE badge_id LIKE :pat" if pat is not None else ""
+        try:
+            start, end = window_dates(window, year or date.today().year)
+        except (ValueError, IndexError):
+            return {"me": None, "top": []}
+        from datetime import time as dtime, timedelta
+        from zoneinfo import ZoneInfo
+        msk = ZoneInfo("Europe/Moscow")     # месяц считается по московскому времени
+        where = "WHERE issued_at >= :start AND issued_at < :end"
+        params = {"start": datetime.combine(start, dtime.min, msk),
+                  "end": datetime.combine(end + timedelta(days=1), dtime.min, msk)}
     rows = (await db.execute(text(f"""
         SELECT device_key, SUM(maxpts) AS score, COUNT(*) AS badges, MIN(first_at) AS first_at
         FROM (SELECT device_key, badge_id,
@@ -1881,7 +1889,7 @@ async def leaderboard(db: AsyncSession, device_key=None, limit: int = 20,
               {where}
               GROUP BY device_key, badge_id) z
         GROUP BY device_key
-    """), ({"pat": pat} if pat is not None else {}))).all()
+    """), params)).all()
     ranked = sorted(rows, key=lambda r: (-r.score, r.first_at))
 
     nicks: dict = {}

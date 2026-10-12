@@ -162,10 +162,21 @@ const MONTHS_GEN = [
   "июля", "августа", "сентября", "октября", "ноября", "декабря",
 ];
 
-/** "second-half-06" + 2026 → "вторая половина июня 2026". */
+const MONTHS_NOM = [
+  "январь", "февраль", "март", "апрель", "май", "июнь",
+  "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+];
+
+/** "month-10" + 2026 → "октябрь 2026"; старое полумесячное "second-half-06" + 2026 →
+ *  "вторая половина июня 2026". С июля 2026 квесты и значки считаются по месяцам. */
 export function windowLabelRu(window?: string | null, year?: number | null): string {
   if (!window) return "";
   const p = window.split("-");
+  if (p[0] === "month") {
+    const mi = parseInt(p[1] ?? "", 10);
+    const month = mi >= 1 && mi <= 12 ? MONTHS_NOM[mi - 1] : "";
+    return `${month}${year ? " " + year : ""}`.trim();
+  }
   const half = p[0] === "first" ? "первая половина" : "вторая половина";
   const mi = parseInt(p[2] ?? "", 10);
   const month = mi >= 1 && mi <= 12 ? MONTHS_GEN[mi - 1] : "";
@@ -173,7 +184,8 @@ export function windowLabelRu(window?: string | null, year?: number | null): str
 }
 
 function monthOf(window?: string | null): number | null {
-  const m = parseInt((window ?? "").split("-")[2] ?? "", 10);
+  const p = (window ?? "").split("-");
+  const m = parseInt((p[0] === "month" ? p[1] : p[2]) ?? "", 10);
   return Number.isNaN(m) ? null : m;
 }
 export function seasonEmoji(window?: string | null): string {

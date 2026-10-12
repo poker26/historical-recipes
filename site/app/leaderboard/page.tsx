@@ -4,12 +4,12 @@ import { Header, Footer, LeaderTable } from "../ui";
 
 export const metadata = { title: "Рейтинг натуралистов" };
 
-/** Current half-month window label + year (mirrors the app/backend canon). */
+/** Текущее окно и год. С июля 2026 окно месячное ("month-10"), как в приложении и на
+ *  сервере; полумесячная метка "first-half-10" давала пустую вкладку «за месяц». */
 function currentWindow(): { window: string; year: number } {
   const d = new Date();
-  const half = d.getDate() <= 15 ? "first" : "second";
   const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return { window: `${half}-half-${mm}`, year: d.getFullYear() };
+  return { window: `month-${mm}`, year: d.getFullYear() };
 }
 
 type Search = { searchParams: { scope?: string; place_id?: string; window?: string; year?: string } };
@@ -49,7 +49,7 @@ export default async function LeaderboardPage({ searchParams }: Search) {
           <LeaderTable rows={board?.top ?? []} />
         </div>
         <p style={{ color: "#9ca3af", fontSize: 13, marginTop: 12 }}>
-          Очки складываются из лучших значков по каждому месту и сезону. Бронзовый значок даёт 5 очков, серебряный 15, золотой 30.
+          Очки дают значки: бронзовый 5 очков, серебряный 15, золотой 30. За каждое место и каждую награду считается только лучший значок. Во вкладке за месяц считаются значки, полученные в этом месяце.
         </p>
       </section>
       <Footer />
