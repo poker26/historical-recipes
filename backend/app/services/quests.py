@@ -1459,13 +1459,12 @@ async def _collective_count(db, device_key) -> int:
         {"dk": str(device_key)})).scalar() or 0
 
 
-def _collective_on(device_key) -> bool:
-    """Лестница «Соратник» видна, только когда совместные квесты включены для устройства:
-    старые версии приложения рисуют лестницы по описанию с сервера и показали бы её
-    раньше, чем у людей появится сам экран квестов."""
-    from app.config import settings
-    testers = {t.strip().lower() for t in settings.collective_quests_test_devices.split(",") if t.strip()}
-    return settings.collective_quests_enabled or str(device_key).lower() in testers
+async def _collective_on(db, device_key) -> bool:
+    """Лестница «Соратник» видна только устройствам, у которых совместные квесты включены:
+    версия 2.3.0+ при включённом флаге или тестовое устройство. Старые версии приложения
+    рисуют лестницы по описанию с сервера и показали бы её без самого экрана квестов."""
+    from app.services.collective_quests import device_enabled
+    return await device_enabled(db, device_key)
 
 
 async def meta_progress(db: AsyncSession, device_key: str) -> dict:
@@ -1484,7 +1483,7 @@ async def meta_progress(db: AsyncSession, device_key: str) -> dict:
         "collective": _collective_count,
     }
     for kind in _META_LADDERS:
-        if kind == "collective" and not _collective_on(dk):
+        if kind == "collective" and not await _collective_on(db, dk):
             continue
         matched = await counters[kind](db, dk)
         badge_id = f"meta:{kind}"

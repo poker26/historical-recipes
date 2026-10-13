@@ -35,6 +35,40 @@ LAST_POINTS = 5           # цена предпоследней; цена рас
 FINAL_BONUS = 10          # последняя позиция стоит LAST_POINTS + FINAL_BONUS
 
 KINDS = ("home", "nature")
+# Совместные квесты видят и в них участвуют только версии приложения с экраном квестов.
+MIN_APP_VERSION = (2, 3, 0)
+
+
+def version_ok(v: str | None) -> bool:
+    """«2.3.0» и новее. Пустая или нечитаемая версия не проходит."""
+    try:
+        parts = tuple(int(x) for x in (v or "").strip().split(".")[:3])
+    except ValueError:
+        return False
+    return len(parts) >= 2 and parts + (0,) * (3 - len(parts)) >= MIN_APP_VERSION
+
+
+def _testers() -> set[str]:
+    from app.config import settings
+    return {t.strip().lower() for t in settings.collective_quests_test_devices.split(",") if t.strip()}
+
+
+def enabled_for(device_key, app_version: str | None) -> bool:
+    """Тестовым устройствам всегда; остальным при включённом флаге и версии 2.3.0+."""
+    from app.config import settings
+    if str(device_key or "").lower() in _testers():
+        return True
+    return settings.collective_quests_enabled and version_ok(app_version)
+
+
+async def device_enabled(db: AsyncSession, device_key) -> bool:
+    """То же по последней версии, с которой устройство определяло растения."""
+    if str(device_key or "").lower() in _testers():
+        return True
+    v = (await db.execute(text("""
+        SELECT app_version FROM identifications WHERE device_key = CAST(:dk AS uuid)
+        ORDER BY created_at DESC LIMIT 1"""), {"dk": str(device_key)})).scalar()
+    return enabled_for(device_key, v)
 # Названия выбрал владелец 12.10.2026. Просто «Подоконник» занят личным значком (meta:windowsill).
 TITLES = {"home": "Наш подоконник", "nature": "Наш лес"}
 # Фото участника показываем только на улице: снимок с подоконника раскрывает квартиру.
@@ -275,12 +309,10 @@ async def maintain(db: AsyncSession) -> None:
 # ---- зачёт снимка ----------------------------------------------------------------
 
 async def credit_shot(db: AsyncSession, device_key: str | None, identification_id: str | None,
-                      matched_plant_id: str | None) -> dict | None:
+                      matched_plant_id: str | None, app_version: str | None = None) -> dict | None:
     """Засчитать снимок в общий квест. Возвращает описание для экрана результата, когда
     снимок закрыл позицию, иначе None. Никогда не бросает: квест не должен ломать определение."""
-    from app.config import settings
-    testers = {t.strip().lower() for t in settings.collective_quests_test_devices.split(",") if t.strip()}
-    if not settings.collective_quests_enabled and str(device_key or "").lower() not in testers:
+    if not enabled_for(device_key, app_version):
         return None
     try:
         dk = uuid.UUID(str(device_key)) if device_key else None

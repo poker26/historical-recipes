@@ -459,7 +459,7 @@ async def identify_plant(
         # Общий квест (docs/RFC-collective-quests.md): снимок сам закрывает открытую позицию
         # своего рода, без геолокации и без вступления в квест. Старые клиенты поле не видят.
         cc = await collective_quests.credit_shot(
-            db, device_key, ident_id, _matched_plant_id(result.get("candidates") or []))
+            db, device_key, ident_id, _matched_plant_id(result.get("candidates") or []), app_version)
         if cc:
             result["collective_credit"] = cc
     # Quest credit for THIS shot (place quest containing the point, current window):
