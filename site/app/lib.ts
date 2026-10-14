@@ -221,9 +221,11 @@ export function pluralRu(n: number, one: string, few: string, many: string): str
   return many;
 }
 
-// Store links (env-overridable). App Store v1.0 is live (id 6778605472).
+// Ссылки на магазины (переопределяются переменными окружения). Google Play с 2.3.0 (октябрь 2026).
 export const RUSTORE_URL =
   process.env.NEXT_PUBLIC_RUSTORE_URL || "https://www.rustore.ru/catalog/app/ru.begemot.plantid";
+export const GOOGLE_PLAY_URL =
+  process.env.NEXT_PUBLIC_GOOGLE_PLAY_URL || "https://play.google.com/store/apps/details?id=ru.begemot.plantid";
 export const APPSTORE_URL =
   process.env.NEXT_PUBLIC_APPSTORE_URL || "https://apps.apple.com/ru/app/что-растёт/id6778605472";
 

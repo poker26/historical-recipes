@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Crumbs, LeafGlyph, PhotoCredit, Safety } from "../common";
-import { RUSTORE_URL } from "../../app/lib";
+import { AppStoreLink } from "../AppStoreLink";
 import { largePhoto, capFirst, type Photo, type SafetyInfo } from "../../lib/api-plant";
 import { safetyText, safetyView } from "./bits";
 
@@ -112,7 +112,7 @@ export function PlantHead(p: PlantHeadProps) {
           {p.safety}
           {p.stats ? <p className="pc-stats">{p.stats}</p> : null}
           <div className="pc-actions">
-            <a href={RUSTORE_URL} target="_blank" rel="noopener" className="btn btn-primary btn-sm">Определить в приложении</a>
+            <AppStoreLink className="btn btn-primary btn-sm">Определить в приложении</AppStoreLink>
             {p.showSources !== false ? <a href="#sources" className="btn btn-ghost btn-sm">К источникам</a> : null}
           </div>
         </div>

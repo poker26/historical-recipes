@@ -2,7 +2,7 @@
 import Link from "next/link";
 import {
   Badge, EtherEvent, LeaderRow, tierColors, cap, seasonEmoji, seasonAdj, badgeLabel,
-  windowLabelRu, agoRu, pluralRu, RUSTORE_URL, APPSTORE_URL,
+  windowLabelRu, agoRu, pluralRu, RUSTORE_URL, APPSTORE_URL, GOOGLE_PLAY_URL,
 } from "./lib";
 
 /** A collectible medallion — metal ring by tier + leaf + tier stars. Mirrors the
@@ -107,12 +107,15 @@ export function LeaderTable({ rows, highlight }: { rows: LeaderRow[]; highlight?
   );
 }
 
-/** Download buttons (RuStore live; App Store «скоро» until public release). */
+/** Кнопки скачивания: RuStore, Google Play и App Store. */
 export function DownloadButtons() {
   return (
     <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
       <a href={RUSTORE_URL} target="_blank" rel="noopener" className="btn btn-primary">
         Скачать в RuStore
+      </a>
+      <a href={GOOGLE_PLAY_URL} target="_blank" rel="noopener" className="btn btn-ghost">
+        Скачать в Google Play
       </a>
       {APPSTORE_URL ? (
         <a href={APPSTORE_URL} target="_blank" rel="noopener" className="btn btn-ghost">Скачать в App Store</a>
@@ -151,6 +154,10 @@ function AppMenu() {
       <div className="header-app-list">
         <a href={RUSTORE_URL} target="_blank" rel="noopener">
           Скачать в RuStore{" "}
+          <small>для Android</small>
+        </a>
+        <a href={GOOGLE_PLAY_URL} target="_blank" rel="noopener">
+          Скачать в Google Play{" "}
           <small>для Android</small>
         </a>
         {APPSTORE_URL ? (
@@ -240,6 +247,7 @@ export function Footer() {
         <div>
           <h4>Приложение</h4>
           <a href={RUSTORE_URL} target="_blank" rel="noopener">RuStore</a>
+          <a href={GOOGLE_PLAY_URL} target="_blank" rel="noopener">Google Play</a>
           {APPSTORE_URL ? <a href={APPSTORE_URL} target="_blank" rel="noopener">App Store</a> : null}
           <p className="fine" style={{ margin: "10px 0 0" }}>Фотографии видов взяты из iNaturalist и Викимедиа, автор и лицензия указаны у каждого снимка.</p>
         </div>
