@@ -149,10 +149,8 @@ export default async function LibraryShelf({ searchParams }: { searchParams: SP 
           <h1>Книги, из которых собран атлас</h1>
           <p className="lead">{statsLine(stats, open)}</p>
           <p className="lib-hero-note">
-            Срок авторских прав на книги, изданные до 1917 года, истёк. Их можно листать целиком по
-            сканам, и рядом с каждой страницей видно, что с неё вошло в атлас. Если год издания неизвестен или книга ещё
-            охраняется, открыты только номера страниц, библиографическая ссылка и цитаты, которые вошли в
-            атлас. У закрытых книг доступно только описание.
+            Книги, изданные до 1917 года, можно листать целиком по сканам страниц. У остальных открыты
+            номера страниц и цитаты, которые вошли в атлас.
           </p>
           <form className="lib-search" action="/library" method="get" role="search">
             {Object.entries(shelfParams(s)).map(([k, v]) => (k !== "q" && v ? <input key={k} type="hidden" name={k} value={v} /> : null))}

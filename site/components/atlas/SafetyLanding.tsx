@@ -133,7 +133,7 @@ export async function SafetyLandingPage({ l, pageRaw }: { l: SafetyLanding; page
       <section className="hero-grad atlas-hero atlas-hero-compact">
         <h1>{l.title}</h1>
         <p className="lead">
-          {list.total ? `В атласе ${fmtInt(list.total)} ${pluralRu(list.total, "вид", "вида", "видов")} с фотографией. ` : ""}
+          {list.total ? `В атласе ${fmtInt(list.total)} ${pluralRu(list.total, "вид", "вида", "видов")}. ` : ""}
           {l.lead}
         </p>
       </section>

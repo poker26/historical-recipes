@@ -45,8 +45,8 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
     const title = familyPageTitle(key);
     const n = (await listPlants({ family: key, published: true, limit: 1 })).total;
     const description = n
-      ? `${fmtInt(n)} ${pluralRu(n, "вид", "вида", "видов")} с фотографиями. ${FAMILY_LEAD}`
-      : "В атласе пока нет видов этого семейства с фотографией.";
+      ? `${fmtInt(n)} ${pluralRu(n, "вид", "вида", "видов")}. ${FAMILY_LEAD}`
+      : "В атласе пока нет видов этого семейства.";
     const canonical = `${SITE_URL}${atlasHref({}, { family: key })}`;
     return {
       title,
@@ -95,10 +95,8 @@ export default async function AtlasPage({ searchParams }: Props) {
   const withoutKingdom: Omit<PlantQuery, "limit"> = { ...filters, kingdom: undefined };
   const sort: PlantQuery["sort"] = s.sort === "name" ? "name" : s.sort === "uses" ? "uses" : "photo";
 
-  const [list, corpus, atlasAll, facets, families, biotopes, plantsN, fungiN] = await Promise.all([
+  const [list, atlasAll, facets, families, biotopes, plantsN, fungiN] = await Promise.all([
     listPlants({ ...filters, published: true, sort, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
-    // те же фильтры по всему корпусу, без гейта: сколько карточек ещё не дошло до атласа
-    listPlants({ ...filters, limit: 1 }),
     filtered ? listPlants({ published: true, limit: 1 }) : Promise.resolve(null),
     getPlantFacets(),
     getFamilies(200),
@@ -110,11 +108,6 @@ export default async function AtlasPage({ searchParams }: Props) {
   const total = list.total;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const atlasTotal = filtered ? atlasAll?.total ?? 0 : total;
-  // Для чистого атласа корпус считаем по растениям и грибам (без карточек веществ и животных).
-  const corpusPlantsFungi = (facets?.kingdom ?? [])
-    .filter((k) => k.value === "растение" || k.value === "гриб")
-    .reduce((sum, k) => sum + k.count, 0);
-  const corpusTotal = !filtered && corpusPlantsFungi ? corpusPlantsFungi : corpus.total;
 
   const from = (page - 1) * PAGE_SIZE + 1;
   const to = Math.min(page * PAGE_SIZE, total);
@@ -138,11 +131,11 @@ export default async function AtlasPage({ searchParams }: Props) {
   } else if (total === 0) {
     content = (
       <Empty>
-        {s.q ? <>В атласе пока нет видов с фотографией по запросу «{s.q}». </> : <>По этим фильтрам в атласе пока нет видов с фотографией. </>}
+        {s.q ? <>В атласе нет видов по запросу «{s.q}». </> : <>По этим фильтрам в атласе нет видов. </>}
         <Link href={atlasHref({ sort: s.sort, view: s.view })}>Сбрось фильтры</Link>
         {s.q ? (
           <>
-            {" "}или <Link href={searchHref}>поищи среди всех карточек</Link>, в том числе без фотографии.
+            {" "}или <Link href={searchHref}>поищи по всему сайту</Link>.
           </>
         ) : null}
       </Empty>
@@ -166,12 +159,12 @@ export default async function AtlasPage({ searchParams }: Props) {
         <h1>{fungiOnly ? "Атлас грибов" : familyOnly ? familyPageTitle(s.family!) : "Атлас растений и грибов"}</h1>
         {familyOnly && total ? (
           <p className="lead">
-            В атласе {fmtInt(total)} {pluralRu(total, "вид", "вида", "видов")} этого семейства с фотографией. {FAMILY_LEAD}
+            В атласе {fmtInt(total)} {pluralRu(total, "вид", "вида", "видов")} этого семейства. {FAMILY_LEAD}
           </p>
         ) : null}
         {landing && atlasTotal ? (
           <p className="lead">
-            В атласе {fmtInt(atlasTotal)} {pluralRu(atlasTotal, "вид", "вида", "видов")} с фотографией. У каждого
+            В атласе {fmtInt(atlasTotal)} {pluralRu(atlasTotal, "вид", "вида", "видов")}. У каждого
             собрано, что о нём писали травники и справочники с 1790 года, и у каждого факта указаны книга и год.
           </p>
         ) : null}
@@ -262,23 +255,7 @@ export default async function AtlasPage({ searchParams }: Props) {
 
           <Pager page={page} pages={pages} base="/atlas" params={pagerParams(s)} />
 
-          {list.ok && (filtered ? corpus.total > total : corpusTotal > atlasTotal) ? (
-            <p className="atlas-note">
-              {filtered ? (
-                <>
-                  По этим фильтрам в атлас вошли {fmtInt(total)} {pluralRu(total, "карточка", "карточки", "карточек")}, а всего
-                  таких карточек {fmtInt(corpus.total)}.{" "}
-                </>
-              ) : (
-                <>
-                  В атлас вошли {fmtInt(atlasTotal)} {pluralRu(atlasTotal, "карточка", "карточки", "карточек")} из{" "}
-                  {fmtInt(corpusTotal)}, собранных по книгам.{" "}
-                </>
-              )}
-              В атлас попадают виды с фотографией, у которых проверены русское и латинское имя. Остальные карточки
-              открываются через <Link href={searchHref}>поиск</Link>.
-            </p>
-          ) : null}
+          {/* Сколько карточек не вошло в атлас и почему, читателю не нужно (ui-canon, 15.10.2026). */}
           {s.view !== "table" && list.items.length ? <PhotoSourcesNote /> : null}
         </div>
       </div>

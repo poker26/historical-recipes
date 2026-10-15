@@ -145,8 +145,7 @@ export function Seg({ items, label }: { items: { href: string; label: string; on
 export function PhotoSourcesNote() {
   return (
     <p className="footnote atlas-photonote">
-      Фотографии взяты из iNaturalist и Викимедиа. Автор и лицензия подписаны под каждым снимком, а полную строку
-      прав видно, если навести на подпись.
+      Фотографии из iNaturalist и Викимедиа.
     </p>
   );
 }

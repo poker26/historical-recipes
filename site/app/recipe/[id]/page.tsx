@@ -182,11 +182,6 @@ export default async function RecipePage({ params }: Params) {
         {r.ingredients.length ? (
           <>
             <IngredientsTable items={r.ingredients} />
-            {!linked.length ? (
-              <p className="small muted rc-note">
-                Растения этого рецепта ещё не связаны с карточками атласа, поэтому ссылок на них пока нет.
-              </p>
-            ) : null}
           </>
         ) : (
           <p className="muted">Ингредиенты этого рецепта отдельно пока не выписаны, их можно прочитать в тексте рецепта.</p>

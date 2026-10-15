@@ -108,7 +108,7 @@ export function safetyText(s: SafetyInfo | null | undefined): string | null {
   const unknown = !s || s.level == null || s.level === 0;
   if (!r || r.startsWith("[auto]")) {
     if (unknown) return UNKNOWN_TEXT;
-    return r ? "Уровень посчитан автоматически по записям книг, человек его ещё не проверял." : null;
+    return null;
   }
   return r;
 }

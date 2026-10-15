@@ -74,17 +74,14 @@ export default async function BiotopePage({ params }: Params) {
 
       <section className="section">
         <SectionHead title={plants ? `${fmtInt(total)} ${pluralRu(total, "вид", "вида", "видов")} в атласе` : "Виды в атласе"} />
-        <p className="section-lead">
-          Первыми идут виды с фотографией и самыми подробными карточками. Метки на плитках
-          предупреждают о ядовитых видах, поэтому прежде чем что-то собирать, открой карточку.
-        </p>
+        <p className="section-lead">Прежде чем что-то собирать, открой карточку вида.</p>
         {!plants ? (
           <Empty>Список растений сейчас не загрузился. Обнови страницу через минуту.</Empty>
         ) : tiles.length ? (
           <PlantGrid plants={tiles} />
         ) : (
           <Empty>
-            В атласе пока нет видов с фотографией для этого места. Загляни в <Link href="/reference#biotopes">другие биотопы</Link>.
+            В атласе нет видов для этого места. Загляни в <Link href="/reference#biotopes">другие биотопы</Link>.
           </Empty>
         )}
       </section>

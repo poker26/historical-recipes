@@ -55,9 +55,7 @@ export default async function OilsPage({ searchParams }: { searchParams: SP }) {
         <span className="chip">Эфирные масла</span>
         <h1>Эфирные масла и растения, из которых их получают</h1>
         <p className="lead">
-          {data && !q ? `В справочнике ${fmtInt(total)} ${pluralRu(total, "масло", "масла", "масел")}. ` : ""}
-          Для каждого видно, из какого растения и какой части его получают, каким способом и
-          сколько записей о применении нашлось в книгах. Открой масло, чтобы прочитать цитаты.
+          {data && !q ? `В справочнике ${fmtInt(total)} ${pluralRu(total, "масло", "масла", "масел")}: из какого растения и какой части их получают и как применяли.` : ""}
         </p>
         <form className="rf-search" action="/oils" method="get" role="search">
           <input type="search" name="q" defaultValue={q ?? ""} placeholder="Лаванда, бергамот или Mentha" aria-label="Поиск по эфирным маслам" />

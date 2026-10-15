@@ -119,8 +119,8 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
   const title = `Растения ${d.phrase}`;
   const description = d.total
     ? d.isAction
-      ? `${fmtInt(d.total)} ${speciesWord(d.total)} с фотографиями, у которых травники и справочники отмечают ${x.toLowerCase()} действие. Для каждого собраны цитаты из книг, сведения о безопасности и рецепты. Это история применения, а не медицинский совет.`
-      : `Какие растения применяли ${d.phrase} по травникам и справочникам с 1790 года. В атласе ${fmtInt(d.total)} ${speciesWord(d.total)} с фотографиями, цитатами из книг и сведениями о безопасности. Это история применения, а не медицинский совет.`
+      ? `${fmtInt(d.total)} ${speciesWord(d.total)}, у которых травники и справочники отмечают ${x.toLowerCase()} действие. Для каждого собраны цитаты из книг, сведения о безопасности и рецепты. Это история применения, а не медицинский совет.`
+      : `Какие растения применяли ${d.phrase} по травникам и справочникам с 1790 года. В атласе ${fmtInt(d.total)} ${speciesWord(d.total)} с цитатами из книг и сведениями о безопасности. Это история применения, а не медицинский совет.`
     : `В атласе пока нет видов, которые книги связывают с «${x}». Попробуй старое, современное или латинское название.`;
   const canonical = `${SITE_URL}/atlas/for/${encodeURIComponent(x.toLowerCase())}`;
   // Для действия («мочегонное») в индексе страница /actions/мочегонное с заголовком
@@ -173,7 +173,7 @@ export default async function AtlasForPage({ params, searchParams }: Props) {
   } else if (!d.items.length) {
     content = (
       <Empty>
-        В атласе пока нет видов с фотографией, которые книги связывают с «{x}». Попробуй другое название, старое или
+        В атласе нет видов, которые книги связывают с «{x}». Попробуй другое название, старое или
         современное, или <Link href={`/search?q=${encodeURIComponent(x)}`}>поищи по всему сайту</Link>: там есть и
         рецепты, и фрагменты книг.
       </Empty>
@@ -193,18 +193,15 @@ export default async function AtlasForPage({ params, searchParams }: Props) {
           <p className="lead">
             {d.isAction ? (
               <>
-                В атласе {fmtInt(d.total)} {speciesWord(d.total)} с фотографией, у которых книги отмечают{" "}
+                В атласе {fmtInt(d.total)} {speciesWord(d.total)}, у которых книги отмечают{" "}
                 {x.toLowerCase()} действие.
               </>
             ) : (
               <>
-                В атласе {fmtInt(d.total)} {speciesWord(d.total)} с фотографией, которые книги называют средством{" "}
+                В атласе {fmtInt(d.total)} {speciesWord(d.total)}, которые книги называют средством{" "}
                 {d.phrase}.
               </>
-            )}{" "}
-            {d.isAction
-              ? "Первыми идут виды, у которых книги чаще всего называют это действие."
-              : "Первыми идут виды, которые книги чаще всего советуют именно при этом."}
+            )}
           </p>
         ) : null}
 

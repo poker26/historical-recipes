@@ -46,10 +46,7 @@ export default async function PlacesPage({ searchParams }: { searchParams: { reg
         <span className="chip">Прогулки</span>
         <h1 style={{ margin: "12px 0 8px" }}>Что растёт рядом с {region.ins}</h1>
         <p className="lead" style={{ maxWidth: 640 }}>
-          Для каждого парка и леса приложение собирает набор видов, которые там можно встретить
-          в этом месяце. Набор строится по наблюдениям натуралистов iNaturalist. Открой место,
-          чтобы посмотреть, что искать в {monthPrep}. Находка засчитывается, когда ты
-          фотографируешь растение в приложении прямо на месте.
+          Парки и леса рядом с {region.ins} и растения, которые там можно встретить в {monthPrep}.
         </p>
         <div className="chips" style={{ marginTop: 16 }}>
           {REGIONS.map((r) => (
@@ -74,7 +71,7 @@ export default async function PlacesPage({ searchParams }: { searchParams: { reg
                 <div className="small muted">
                   {p.set_size
                     ? `В наборе месяца ${p.set_size} ${pluralRu(p.set_size, "вид", "вида", "видов")}.`
-                    : "Набор на этот месяц ещё собирается."}
+                    : ""}
                   {p.target ? ` Значок дают за ${p.target} ${pluralRu(p.target, "находку", "находки", "находок")}.` : ""}
                 </div>
               </Link>
@@ -82,8 +79,7 @@ export default async function PlacesPage({ searchParams }: { searchParams: { reg
           </div>
         ) : (
           <Empty>
-            Рядом с {region.ins} пока нет мест с наборами. Приложение заводит их там, где люди
-            гуляют. Выбери другой город или создай своё место в приложении.
+            Рядом с {region.ins} пока нет мест. Выбери другой город или создай своё место в приложении.
           </Empty>
         )}
       </section>

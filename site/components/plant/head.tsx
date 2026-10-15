@@ -36,7 +36,6 @@ export function PlantPhoto({ name, photo, plate }: { name: string; photo: Photo 
       <div className="photo pc-photo-empty" aria-hidden="true">
         <LeafGlyph />
       </div>
-      <div className="credit">Фотографии этого вида в атласе пока нет.</div>
     </div>
   );
 }

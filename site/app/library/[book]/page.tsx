@@ -207,15 +207,14 @@ export default async function BookPage({ params, searchParams }: Props) {
               <Empty>Поиск сейчас не отвечает. Попробуй ещё раз через минуту.</Empty>
             ) : !search.hits.length ? (
               <Empty>
-                На страницах этой книги «{q}» не нашлось. Поиск идёт по распознанному тексту, и старое
-                написание может мешать. Попробуй начало слова, например «ромашк» вместо «ромашка».
+                На страницах этой книги «{q}» не нашлось. Попробуй начало слова, например «ромашк» вместо «ромашка».
               </Empty>
             ) : (
               <>
                 <p className="section-lead">
                   {open
                     ? `Нашлось на ${fmtInt(search.hits.length)} ${pluralRu(search.hits.length, "странице", "страницах", "страницах")}${search.hits.length >= 20 ? ", показаны первые 20" : ""}.`
-                    : `Текст страниц этой книги закрыт, поэтому видны только номера страниц, где встречается «${q}»${search.hits.length >= 20 ? ", первые 20" : ""}.`}
+                    : `«${q}» встречается на этих страницах${search.hits.length >= 20 ? ", показаны первые 20" : ""}.`}
                 </p>
                 <ul className="lib-hits">
                   {search.hits.map((h) => (
@@ -272,8 +271,8 @@ export default async function BookPage({ params, searchParams }: Props) {
             <SectionHead title="Рецепты из книги" href={`/recipes?book_id=${b.id}`} more="все домашние рецепты книги" />
             <p className="section-lead">
               {b.recipes.length < recipes
-                ? `В книге ${fmtInt(recipes)} ${pluralRu(recipes, "рецепт", "рецепта", "рецептов")}. Здесь показаны ${fmtInt(b.recipes.length)}, первыми идут те, что можно повторить дома.`
-                : "Первыми идут рецепты, которые можно повторить дома."}
+                ? `В книге ${fmtInt(recipes)} ${pluralRu(recipes, "рецепт", "рецепта", "рецептов")}, здесь ${fmtInt(b.recipes.length)}.`
+                : ""}
             </p>
             <ul className="lib-list">
               {b.recipes.map((rc) => (

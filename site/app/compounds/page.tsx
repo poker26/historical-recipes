@@ -134,7 +134,6 @@ export default async function CompoundsPage({ searchParams }: { searchParams: SP
         <p className="lead">
           {terms ? `${termsWord(terms)} из состава растений, разбитые по классам. ` : "Вещества из состава растений, разбитые по классам. "}
           Число рядом с названием показывает, сколько записей о составе растений к нему привязано.
-          Словарь собран в основном из книг по фитохимии, поэтому в нём много научных названий.
         </p>
         {top.length ? (
           <nav className="toc" aria-label="Крупные классы веществ">
@@ -163,7 +162,6 @@ export default async function CompoundsPage({ searchParams }: { searchParams: SP
       {rest.length || other.list.length ? (
         <section className="rf-dict">
           <h2>Остальные классы</h2>
-          <div className="small muted">Открой класс, чтобы увидеть все его вещества.</div>
           <ul className="rf-dict-list">
             {rest.map((c) => (
               <li key={c.key}>

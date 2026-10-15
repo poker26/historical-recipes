@@ -76,8 +76,7 @@ export default async function WalkPage({ params }: Params) {
       <section className="section card" style={{ textAlign: "center" }}>
         <h2 style={{ margin: "4px 0 8px", fontSize: 22 }}>Присоединиться</h2>
         <p style={{ color: "#3f4a43", margin: "0 auto 16px", maxWidth: 480 }}>
-          Прогулка идёт в приложении. Там видно, кто что нашёл, и туда засчитываются находки.
-          {w.place?.id ? " Открой место в приложении, чтобы увидеть набор видов, который вы будете искать вместе." : ""}
+          Прогулка идёт в приложении. Там видно, кто что нашёл.
         </p>
         {/* Приложение разбирает chtorastet://quest/{место}/{окно}, а ссылки на прогулку пока нет. */}
         {w.place?.id ? (

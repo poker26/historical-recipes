@@ -226,7 +226,6 @@ export function Footer() {
           </p>
           <p className="fine" style={{ margin: 0 }}>
             Это справочник по истории применения растений, а не медицинский совет.
-            Места находок показаны обобщённо, точные координаты не публикуются.
           </p>
         </div>
         <div>
@@ -237,7 +236,7 @@ export function Footer() {
           <Link href="/reference">Справочники</Link>
           <Link href="/places">Прогулки и места</Link>
           <Link href="/season">Что собирать по месяцам</Link>
-          <Link href="/about">О проекте и методике</Link>
+          <Link href="/about">О проекте</Link>
         </div>
         <div>
           <h4>Сообщество</h4>

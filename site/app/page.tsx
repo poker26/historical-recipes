@@ -214,7 +214,6 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
                 В книге {fmtInt(bookOfWeek.pages)} {pluralRu(bookOfWeek.pages, "страница", "страницы", "страниц")}.
                 {" "}Из неё в атлас вошли {fmtInt(bookOfWeek.plants)} {pluralRu(bookOfWeek.plants, "растение", "растения", "растений")}
                 {" "}и {fmtInt(bookOfWeek.uses)} {pluralRu(bookOfWeek.uses, "цитата", "цитаты", "цитат")} о применении.
-                {" "}Срок авторских прав на книгу давно истёк, поэтому её можно листать страницу за страницей.
               </p>
             </div>
           </Link>

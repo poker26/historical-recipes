@@ -60,7 +60,7 @@ export default async function ProfilePage({ params }: Params) {
                 {p.badges.map((b, i) => <BadgeTile b={b} key={i} />)}
               </div>
             ) : (
-              <p style={{ color: "#6b7280" }}>Значков пока нет. Их выдают за найденные наборы видов в парках и лесах.</p>
+              <p style={{ color: "#6b7280" }}>Значков пока нет.</p>
             )}
           </section>
 

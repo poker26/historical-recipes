@@ -85,7 +85,7 @@ export function GenusView({ card, photos, plate }: { card: GenusCard; photos: Pl
       <Toc items={toc} />
 
       {members.length ? (
-        <Block id="members" title="Виды рода" lead="Открой вид, чтобы увидеть цитаты, состав и рецепты именно для него.">
+        <Block id="members" title="Виды рода">
           <div className="tiles tiles-sm">
             {members.map(({ m, s }) => (
               <Tile

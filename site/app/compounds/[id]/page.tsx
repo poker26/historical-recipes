@@ -122,17 +122,14 @@ export default async function CompoundPage({ params }: Params) {
 
       <section className="section">
         <SectionHead title={plants ? `${fmtInt(total)} ${pluralRu(total, "вид", "вида", "видов")} в атласе` : "Виды в атласе"} />
-        <p className="section-lead">
-          Виды, в составе которых книги находят это вещество. Сначала виды с фотографией и самыми
-          подробными карточками.
-        </p>
+        <p className="section-lead">Виды, в составе которых книги находят это вещество.</p>
         {!plants ? (
           <Empty>Список растений сейчас не загрузился. Обнови страницу через минуту.</Empty>
         ) : tiles.length ? (
           <PlantGrid plants={tiles} />
         ) : (
           <Empty>
-            В атласе пока нет видов с фотографией, в составе которых записано это вещество.
+            В атласе нет видов, в составе которых записано это вещество.
             Загляни в <Link href="/compounds">словарь веществ</Link>.
           </Empty>
         )}
@@ -141,30 +138,20 @@ export default async function CompoundPage({ params }: Params) {
       {tail.length ? (
         <section className="section">
           <SectionHead title="Ещё растения с этим веществом" />
-          <p className="section-lead">
-            В этих растениях вещество тоже записано, но у них пока нет фотографии или записей о них
-            меньше. Рядом с именем указано, в какой части растения его нашли.
-          </p>
           <PlantNameList items={tail} max={150} />
         </section>
       ) : null}
 
-      <section className="section">
-        <SectionHead title="С какими действиями совпадает" />
-        <p className="rf-caption">
-          Это совпадение по книгам, а не механизм действия. Растения, в составе которых есть это
-          вещество, книги чаще других называют так, как указано в таблице. В каждом растении десятки
-          веществ, поэтому строка остаётся гипотезой. Она подсказывает, что стоит проверить, но не
-          доказывает, что вещество действует само.
-        </p>
-        {!assoc ? (
-          <p className="muted">Расчёт совпадений сейчас не успел завершиться. Обнови страницу через минуту.</p>
-        ) : assoc.results?.length ? (
-          <AssocTable data={assoc} target="action" targetLabel="Действие" sourceLabel="с веществом" />
-        ) : (
-          <p className="muted">Для этого вещества растений пока слишком мало, чтобы искать совпадения.</p>
-        )}
-      </section>
+      {!assoc || assoc.results?.length ? (
+        <section className="section">
+          <SectionHead title="Какие действия книги чаще называют у растений с этим веществом" />
+          {!assoc ? (
+            <p className="muted">Таблица не загрузилась. Обнови страницу через минуту.</p>
+          ) : (
+            <AssocTable data={assoc} target="action" targetLabel="Действие" sourceLabel="с веществом" />
+          )}
+        </section>
+      ) : null}
 
       <p className="footnote rf-foot">Это история применения растений по книгам разных лет, а не медицинский совет.</p>
       <Footer />

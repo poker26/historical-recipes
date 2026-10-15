@@ -238,10 +238,8 @@ export default async function SearchPage({ searchParams }: Props) {
       <SectionHead title="Виды" href={atlasHref({}, { q })} more="искать в атласе" />
       <p className="section-lead">
         {plants.total > pool.length
-          ? `Первые ${fmtInt(pool.length)} из ${fmtInt(plants.total)} ${pluralRu(plants.total, "карточки", "карточек", "карточек")}, сначала с фотографией и самые полные. `
+          ? `Первые ${fmtInt(pool.length)} из ${fmtInt(plants.total)} ${pluralRu(plants.total, "карточки", "карточек", "карточек")}.`
           : ""}
-        Поиск идёт по всем карточкам, в том числе по тем, у которых ещё нет фотографии. В атлас попадают только виды
-        с фотографией и проверенным именем.
       </p>
       <PlantGrid items={species} noPhotoTag notes={notes} />
     </section>
