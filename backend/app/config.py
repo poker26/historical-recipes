@@ -119,6 +119,9 @@ class Settings(BaseSettings):
     apns_topic: str = "ru.begemot.whatgrows"
     rustore_push_project_id: str = ""
     rustore_push_token: str = ""
+    # FCM (Firebase Cloud Messaging, проект whatgrows-64c2a): push для телефонов без RuStore.
+    # base64 от JSON ключа сервисного аккаунта; пусто = канал выключен.
+    fcm_service_account_b64: str = ""
 
     # n8n
     n8n_base_url: str = "http://n8n:5678"
