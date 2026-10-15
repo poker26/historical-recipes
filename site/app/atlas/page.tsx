@@ -18,7 +18,7 @@ import {
 } from "../../lib/api-atlas";
 import { activeFilterKeys, atlasHref, pagerParams, parseAtlasParams, type AtlasState, type SearchParams } from "../../components/atlas/params";
 import { AtlasFacets, ActiveFilters } from "../../components/atlas/facets";
-import { PhotoSourcesNote, PlantGrid, PlantTable, Seg } from "../../components/atlas/plants";
+import { PlantGrid, PlantTable, Seg } from "../../components/atlas/plants";
 import "./atlas.css";
 
 // Каталог видов: только карточки, прошедшие гейт публикации (растение или гриб, чистое
@@ -256,7 +256,6 @@ export default async function AtlasPage({ searchParams }: Props) {
           <Pager page={page} pages={pages} base="/atlas" params={pagerParams(s)} />
 
           {/* Сколько карточек не вошло в атлас и почему, читателю не нужно (ui-canon, 15.10.2026). */}
-          {s.view !== "table" && list.items.length ? <PhotoSourcesNote /> : null}
         </div>
       </div>
 

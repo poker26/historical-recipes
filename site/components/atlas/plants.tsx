@@ -142,10 +142,3 @@ export function Seg({ items, label }: { items: { href: string; label: string; on
   );
 }
 
-export function PhotoSourcesNote() {
-  return (
-    <p className="footnote atlas-photonote">
-      Фотографии из iNaturalist и Викимедиа.
-    </p>
-  );
-}

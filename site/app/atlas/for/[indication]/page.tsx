@@ -18,7 +18,7 @@ import {
   type SuggestIndication,
 } from "../../../../lib/api-atlas";
 import { atlasHref, firstParam, type SearchParams } from "../../../../components/atlas/params";
-import { PhotoSourcesNote, PlantGrid, PlantTable, Seg } from "../../../../components/atlas/plants";
+import { PlantGrid, PlantTable, Seg } from "../../../../components/atlas/plants";
 import "../../atlas.css";
 
 // «Растения при кашле»: виды атласа, которые книги связывают с состоянием. Как инструмент
@@ -274,7 +274,6 @@ export default async function AtlasForPage({ params, searchParams }: Props) {
           </Link>
         </p>
       ) : null}
-      {!table && d.items.length ? <PhotoSourcesNote /> : null}
 
       <section className="section">
         <h2 className="section-title">Растения при других состояниях</h2>

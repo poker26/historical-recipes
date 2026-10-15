@@ -135,7 +135,7 @@ export default async function Home({ searchParams }: { searchParams: { region?: 
         <p className="section-lead">
           {harvest
             ? `В ${monthPrep} книги советуют собирать эти растения. В карточке каждого написано, какую часть брать и как её сушить.`
-            : `Эти виды натуралисты iNaturalist встречают под ${region.ins} в ${monthPrep}. В карточке каждого собрано, что о нём писали старые книги.`}
+            : `Эти виды встречают под ${region.ins} в ${monthPrep}. В карточке каждого собрано, что о нём писали старые книги.`}
         </p>
         {shelf.length ? (
           <div className="tiles">

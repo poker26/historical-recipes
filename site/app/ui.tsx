@@ -248,7 +248,6 @@ export function Footer() {
           <a href={RUSTORE_URL} target="_blank" rel="noopener">RuStore</a>
           <a href={GOOGLE_PLAY_URL} target="_blank" rel="noopener">Google Play</a>
           {APPSTORE_URL ? <a href={APPSTORE_URL} target="_blank" rel="noopener">App Store</a> : null}
-          <p className="fine" style={{ margin: "10px 0 0" }}>Фотографии видов взяты из iNaturalist и Викимедиа, автор и лицензия указаны у каждого снимка.</p>
         </div>
       </div>
     </footer>

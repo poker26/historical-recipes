@@ -3,7 +3,7 @@
 import { Chips, MONTHS_GEN_RU, MONTHS_RU, PhotoCredit } from "../common";
 import { fmtInt, pluralRu } from "../../lib/api";
 import { biotopeLabel } from "../../lib/api-atlas";
-import { OBS_PLACE_RU, canonParts, mediumPhoto, type FieldView, type Observations, type SpeciesCard } from "../../lib/api-plant";
+import { OBS_PLACE_RU, canonParts, capFirst, mediumPhoto, type FieldView, type Observations, type SpeciesCard } from "../../lib/api-plant";
 import { Block, FactList } from "./bits";
 
 const MONTHS_PREP = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле", "августе", "сентябре", "октябре", "ноябре", "декабре"];
@@ -75,7 +75,7 @@ function InatPanel({ obs }: { obs: Observations }) {
     <div className="card pc-inat">
       <h3>Наблюдения {OBS_PLACE_RU}</h3>
       <p className="pc-inat-lead">
-        На iNaturalist {OBS_PLACE_RU} отмечено {fmtInt(total)} {pluralRu(total, "наблюдение", "наблюдения", "наблюдений")} этого вида.
+        {capFirst(OBS_PLACE_RU)} отмечено {fmtInt(total)} {pluralRu(total, "наблюдение", "наблюдения", "наблюдений")} этого вида.
         {peak >= 0 ? ` Чаще всего его замечают в ${MONTHS_PREP[peak]}.` : ""}
       </p>
       {max > 0 ? (
@@ -107,10 +107,8 @@ function InatPanel({ obs }: { obs: Observations }) {
         </div>
       ) : null}
       <p className="credit">
-        Наблюдения и снимки взяты из iNaturalist.
         {obs.taxon_id ? (
           <>
-            {" "}
             <a href={`https://www.inaturalist.org/taxa/${obs.taxon_id}`} target="_blank" rel="noopener">Открыть страницу вида на iNaturalist</a>
           </>
         ) : null}

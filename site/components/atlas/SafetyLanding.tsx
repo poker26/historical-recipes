@@ -9,7 +9,7 @@ import { Header, Footer } from "../../app/ui";
 import { Crumbs, Empty, Pager, Safety } from "../common";
 import { DEFAULT_OG, SITE_URL, fmtInt, pluralRu } from "../../lib/api";
 import { listPlants } from "../../lib/api-atlas";
-import { PhotoSourcesNote, PlantGrid } from "./plants";
+import { PlantGrid } from "./plants";
 
 const PAGE_SIZE = 48;
 
@@ -169,7 +169,6 @@ export async function SafetyLandingPage({ l, pageRaw }: { l: SafetyLanding; page
         </div>
       </section>
 
-      <PhotoSourcesNote />
       <p className="footnote">
         Съедобность и ядовитость собраны по старым книгам и современным справочникам. Это справка, а не разрешение
         собирать и есть растение или гриб.
