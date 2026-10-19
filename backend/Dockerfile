@@ -12,6 +12,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Веса Indra OCR закреплённой ревизии; суммы сверяет сам скрипт.
+COPY scripts/fetch_indra_weights.py /tmp/fetch_indra_weights.py
+RUN python /tmp/fetch_indra_weights.py /opt/indra-ocr && rm /tmp/fetch_indra_weights.py
+
 COPY . .
 
 EXPOSE 8000

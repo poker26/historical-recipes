@@ -152,6 +152,15 @@ class Settings(BaseSettings):
     tesseract_lang: str = "rus"
     ocr_confidence_auto: float = 80.0
     ocr_confidence_review: float = 60.0
+    # Indra OCR (datalab-to/indra-ocr): быстрее Tesseract и читает латынь вперемешку с
+    # кириллицей. Букв ѣ, ѳ, ѵ в её словаре нет, поэтому дореформенные книги корпуса
+    # по-прежнему идут через Tesseract; Indra включается там, где её просят явно.
+    ocr_engine: str = "tesseract"
+    indra_model_dir: str = "/opt/indra-ocr"
+    indra_threads: int = 2
+    # Средняя уверенность строк Indra на чистых сканах около 98; ниже 90 страница
+    # уходит к зрячей модели так же, как страница Tesseract ниже ocr_confidence_auto.
+    indra_confidence_auto: float = 90.0
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

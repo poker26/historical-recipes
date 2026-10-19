@@ -70,7 +70,9 @@ async def page_text(doc: "fitz.Document", number: int) -> str:
     from app.services.ocr import ocr_page_with_fallback
 
     pixmap = page_pixmap(doc[number - 1])
-    recognized, _confidence, _engine = await ocr_page_with_fallback(pixmap.tobytes("png"))
+    # Книги о комнатных растениях напечатаны современной орфографией, а латынь в
+    # них на каждой странице. Indra читает её, Tesseract с русским словарём нет.
+    recognized, _confidence, _engine = await ocr_page_with_fallback(pixmap.tobytes("png"), engine="indra")
     return recognized
 
 
