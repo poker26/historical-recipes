@@ -118,7 +118,40 @@ def ocr_page_indra(image_bytes: bytes) -> tuple[str, float]:
     _, page = pages[0]
     confs = [line.conf for line in page.lines if line.text.strip()]
     confidence = 100 * sum(confs) / len(confs) if confs else 0.0
-    return fold_mixed_scripts(page.text or ""), confidence
+    return fold_mixed_scripts(body_text(page.blocks) or page.text or ""), confidence
+
+
+# Блоки Indra, которые не относятся к связному тексту страницы.
+_SKIP_BLOCKS = {"Page-Header", "Page-Footer", "Table", "Picture", "Figure", "Caption", "Formula"}
+_CAPTION_START_RE = re.compile(r"^\s*(Рис\.|Рисунок|Табл\.|Таблица|Fig\.)", re.I)
+# Пункт подписи к рисунку: «13 — стерильный цветок». В связном тексте числа
+# стоят по обе стороны тире («4—5 плодолистиков») и сюда не попадают.
+_LEGEND_ITEM_RE = re.compile(r"(?<![\d—–-])\d{1,2}\s+[—–-]\s+[а-яёa-z]")
+
+
+def is_caption(text: str) -> bool:
+    """Похож ли блок на подпись к рисунку или его кусок."""
+    if _CAPTION_START_RE.match(text):
+        return True
+    items = len(_LEGEND_ITEM_RE.findall(text))
+    return items >= 3 or (items >= 1 and len(text) < 300)
+
+
+def body_text(blocks: list) -> str:
+    """Связный текст страницы из блоков Indra: без колонтитулов, таблиц и подписей.
+
+    Подпись к рисунку на странице «Жизни растений» состоит из десятков пунктов
+    («1 — початок в мужской стадии…»), и модель, разбирающая факты, принимала
+    из-за неё всю страницу за подпись и возвращала пустой ответ (19.10.2026).
+    """
+    parts = []
+    for block in blocks or []:
+        if not isinstance(block, dict) or block.get("label") in _SKIP_BLOCKS:
+            continue
+        text = (block.get("text") or "").strip()
+        if text and not is_caption(text):
+            parts.append(text)
+    return "\n\n".join(parts)
 
 
 async def ocr_page_llm(image_bytes: bytes, task: str = "ocr_fallback") -> str:

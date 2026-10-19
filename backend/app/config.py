@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    # Qwen Cloud (DashScope, регион Singapore) напрямую. Если ключ задан, все задачи
+    # llm.py идут сюда, а не в OpenRouter; модели тогда называются по-дашскоуповски
+    # (qwen3.7-max, а не qwen/qwen3-…). Наш ключ принимает только адрес региона Singapore.
+    qwen_api_key: str = ""
+    qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
     # OpenAI — consumer agent on nastoiki.pro (direct API, not OpenRouter).
     # Prod routes via trusttunnel; see agent_llm_proxy / plantnet_proxy.
     openai_api_key: str = ""
