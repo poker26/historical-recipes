@@ -45,6 +45,33 @@ async def houseplant_ingest_activity(source: str, by_genus: bool = False,
 
 
 @activity.defn
+async def houseplant_story_activity(source: str, pages: list[int] | None = None,
+                                    limit: int = 0) -> dict:
+    """Разбирает книгу рассказа о растении: родина, история, название, биология.
+
+    Возобновляемая так же, как заливка ухода: номер разобранной страницы уходит
+    в heartbeat, после перезапуска работа продолжается со следующей.
+    """
+    from app.services.houseplant_story import ingest_story_book
+
+    start_at = 0
+    details = activity.info().heartbeat_details
+    if details:
+        try:
+            start_at = int(details[0])
+        except (TypeError, ValueError):
+            start_at = 0
+    if start_at:
+        logger.info(f"houseplant story {source}: продолжаем со страницы {start_at}")
+
+    async def report(progress: dict) -> None:
+        activity.heartbeat(progress.get("done", 0), progress)
+
+    return await ingest_story_book(source, pages=pages, limit=limit, start_at=start_at,
+                                   apply=True, on_piece=report)
+
+
+@activity.defn
 async def houseplant_toxicity_activity(source: str, book: str, limit: int = 0) -> dict:
     """Разбирает пособие по ядовитым комнатным: чем опасно, симптомы, первая помощь.
 

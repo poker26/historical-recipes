@@ -126,7 +126,7 @@ _SKIP_BLOCKS = {"Page-Header", "Page-Footer", "Table", "Picture", "Figure", "Cap
 _CAPTION_START_RE = re.compile(r"^\s*(Рис\.|Рисунок|Табл\.|Таблица|Fig\.)", re.I)
 # Пункт подписи к рисунку: «13 — стерильный цветок». В связном тексте числа
 # стоят по обе стороны тире («4—5 плодолистиков») и сюда не попадают.
-_LEGEND_ITEM_RE = re.compile(r"(?<![\d—–-])\d{1,2}\s+[—–-]\s+[а-яёa-z]")
+_LEGEND_ITEM_RE = re.compile(r"(?<![\d—–-])\d{1,2}\s+[—–-]\s+[а-яёa-z]")
 
 
 def is_caption(text: str) -> bool:

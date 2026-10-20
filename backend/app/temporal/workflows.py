@@ -69,6 +69,7 @@ with workflow.unsafe.imports_passed_through():
         card_photos_activity,
         houseplant_cards_activity,
         houseplant_ingest_activity,
+        houseplant_story_activity,
         houseplant_toxicity_activity,
     )
 
@@ -532,6 +533,26 @@ class HouseplantIngestWorkflow:
             start_to_close_timeout=timedelta(hours=12),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"HouseplantIngestWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class HouseplantStoryWorkflow:
+    """Разбор книги рассказа о растении: родина, история, название, биология.
+
+    Отдельно от заливки ухода: источники другие («Жизнь растений», Верзилин,
+    Головкин, Боун), и пишется другое — факты с цитатами в ``houseplant_story``.
+    Имя запуска — ``houseplant-story-<источник>``.
+    """
+
+    @workflow.run
+    async def run(self, source: str, pages: list[int] | None = None, limit: int = 0) -> dict:
+        out = await workflow.execute_activity(
+            houseplant_story_activity,
+            args=[source, pages, limit],
+            start_to_close_timeout=timedelta(hours=24),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"HouseplantStoryWorkflow done: {out}")
         return out
 
 

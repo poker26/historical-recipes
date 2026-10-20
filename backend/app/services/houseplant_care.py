@@ -65,6 +65,49 @@ HOUSEPLANT_BOOKS: dict[str, dict] = {
         "author": "Хессайон Д. Г.", "year": 2000, "audience": "room",
         "object": "hessayon-vse-o-komnatnykh-rasteniiakh.pdf",
     },
+    # Книги рассказа о растении (октябрь 2026): родина, история, название,
+    # биология, применение, поверья. Ухода в них почти нет, их разбирает
+    # houseplant_story, а не разбор ухода. Аудитория «story» это и отмечает.
+    "verzilin1958": {
+        "title": "Путешествие с домашними растениями",
+        "author": "Верзилин Н. М.", "year": 1958, "audience": "story",
+        "object": "verzilin-1958-puteshestvie-s-domashnimi-rasteniiami.pdf",
+    },
+    "zhr1980t5p1": {
+        "title": "Жизнь растений. Том 5, часть 1. Цветковые растения",
+        "author": "гл. ред. Фёдоров Ал. А.", "year": 1980, "audience": "story",
+        "object": "zhizn-rastenii-1980-t5-1.pdf",
+    },
+    "zhr1981t5p2": {
+        "title": "Жизнь растений. Том 5, часть 2. Цветковые растения",
+        "author": "гл. ред. Фёдоров Ал. А.", "year": 1981, "audience": "story",
+        "object": "zhizn-rastenii-1981-t5-2.pdf",
+    },
+    "zhr1982t6": {
+        "title": "Жизнь растений. Том 6. Цветковые растения",
+        "author": "гл. ред. Фёдоров Ал. А.", "year": 1982, "audience": "story",
+        "object": "zhizn-rastenii-1982-t6.pdf",
+    },
+    "golovkin1986": {
+        "title": "О чём говорят названия растений",
+        "author": "Головкин Б. Н.", "year": 1986, "audience": "story",
+        "object": "golovkin-names-o-chem-govoriat-nazvaniia-rastenii.pdf",
+    },
+    "tsinger1951": {
+        "title": "Занимательная ботаника",
+        "author": "Цингер А. В.", "year": 1951, "audience": "story",
+        "object": "tsinger-1951-zanimatelnaia-botanika.pdf",
+    },
+    "zolotnitskii1913": {
+        "title": "Цветы в легендах и преданиях",
+        "author": "Золотницкий Н. Ф.", "year": 1913, "audience": "story",
+        "object": "zolotnitskii-1913-tsvety-v-legendakh-i-predaniiakh.pdf",
+    },
+    "bown2000": {
+        "title": "Aroids: Plants of the Arum Family",
+        "author": "Bown D.", "year": 2000, "audience": "story",
+        "object": "bown-2000-aroids-plants-of-the-arum-family.pdf",
+    },
 }
 
 # Поля ухода. Ключ — имя в базе, значение — как поле называется для читателя.
