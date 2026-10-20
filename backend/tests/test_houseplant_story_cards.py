@@ -65,3 +65,10 @@ def test_apply_story_keeps_herbarium_lead():
     house = apply_story({"origin": "houseplant", "lead_fact": {"text": "Поливайте умеренно."}}, story)
     assert house["lead_fact"]["text"].startswith("Во время мужской фазы")
     assert house["verdict"].startswith("Род включает")
+
+
+def test_herbarium_card_of_houseplant_gets_story_lead():
+    story = build_story("Monstera deliciosa", "Монстера", ROWS)
+    herb = {"origin": "herbarium", "lead_fact": {"text": "обогащает помещение аэроионами"}}
+    out = apply_story(herb, story, houseplant=True)
+    assert out["lead_fact"]["text"].startswith("Во время мужской фазы")

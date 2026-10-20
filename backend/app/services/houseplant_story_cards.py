@@ -124,14 +124,20 @@ def clean_verdict(verdict: str | None, homeland: str | None) -> str | None:
     return v or None
 
 
-def apply_story(monograph: dict, story: dict) -> dict:
-    """Вписывает рассказ в монограф карточки. Чужие разделы не трогает."""
+def apply_story(monograph: dict, story: dict, houseplant: bool = False) -> dict:
+    """Вписывает рассказ в монограф карточки. Чужие разделы не трогает.
+
+    ``houseplant`` — растение описано книгами о комнатных, даже если карточка
+    гербарная (замиокулькас, монстера, фикус). Тогда «Интересное» берётся из
+    рассказа: в гербарных карточках этих растений там стояло «обогащает
+    помещение аэроионами» и «убивает стрептококковую инфекцию».
+    """
     m = dict(monograph)
-    houseplant = m.get("origin") == "houseplant"
+    houseplant = houseplant or m.get("origin") == "houseplant"
     if story["story"]:
         m["story"] = story["story"]
-    # «Интересное» у комнатных было советом по поливу; у гербарных карточек там
-    # уже стоит выверенный факт из травника, и его мы не заменяем.
+    # «Интересное» у комнатных было советом по поливу. У гербарной карточки
+    # дикорастущего растения там стоит факт из травника, его не заменяем.
     if story["lead"] and (houseplant or not m.get("lead_fact")):
         m["lead_fact"] = story["lead"]
     if houseplant or any(p in (m.get("verdict") or "") for p in _BOILERPLATE):
@@ -158,6 +164,12 @@ async def apply_story_all(db: AsyncSession,
     if not by_genus:
         return {"cards": 0, "updated": 0}
 
+    # Роды, которые описаны книгами о комнатных растениях.
+    house_genera = set((await db.execute(text("""
+        SELECT DISTINCT lower(split_part(taxon_latin, ' ', 1)) FROM houseplant_care
+        WHERE latin_verified
+    """))).scalars().all())
+
     cards = (await db.execute(text("""
         SELECT p.id, p.name, p.name_latin, m.monograph
         FROM plants p JOIN plant_reader_monograph m ON m.plant_id = p.id
@@ -172,7 +184,7 @@ async def apply_story_all(db: AsyncSession,
             continue
         with_story += 1
         stored = card.monograph if isinstance(card.monograph, dict) else json.loads(card.monograph)
-        new = apply_story(stored, story)
+        new = apply_story(stored, story, latin.split(" ")[0].lower() in house_genera)
         if new != stored:
             await db.execute(text(
                 "UPDATE plant_reader_monograph SET monograph = CAST(:m AS jsonb) WHERE plant_id = :id"),
