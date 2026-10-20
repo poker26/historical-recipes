@@ -9,12 +9,13 @@ import { Header, Footer } from "../../ui";
 import { Empty } from "../../../components/common";
 import { DEFAULT_OG, SITE_URL, excerpt, plantHref, plantSlug } from "../../../lib/api";
 import {
-  cardTitle, displayName, getCompoundInsights, getFieldView, getGenusPhotos, getObservations, getPairings, getPlantCard, getPlantRecipes,
+  cardTitle, displayName, genusAsSpecies, getCompoundInsights, getFieldView, getGenusPhotos, getObservations, getPairings, getPlantCard, getPlantRecipes,
   isSubstantive, jsonLd, largePhoto, normKind, passesGate, photoSourceOf, plateExists, plateKey, plateUrl, queryFrom, quoteOf,
   resolveMerged, resolvePlantParam, sameName, type FieldView, type GenusCard, type Photo, type PlantCard, type SpeciesCard,
 } from "../../../lib/api-plant";
 import { PlantHead, SafetyPanel, Toc } from "../../../components/plant/head";
 import { EssayBlock, SafetyBlock, UsesBlock } from "../../../components/plant/uses";
+import { StoryBlock } from "../../../components/plant/story";
 import { CompoundsBlock } from "../../../components/plant/composition";
 import { HabitatBlock, HarvestBlock } from "../../../components/plant/nature";
 import { KitchenBlock, PairingsBlock } from "../../../components/plant/kitchen";
@@ -49,6 +50,12 @@ async function genusPhoto(card: GenusCard): Promise<Photo | null> {
     : null;
 }
 
+/** У рода без видов есть своя карточка комнатного растения: уход и рассказ. */
+async function hasOwnMonograph(id: string): Promise<boolean> {
+  const f = await getFieldView(id);
+  return !!f && f.rank !== "genus" && (!!(f.story ?? []).length || !!(f.care ?? []).length);
+}
+
 async function loadCard(slug: string): Promise<{ state: "ok"; card: PlantCard } | { state: "missing" } | { state: "error" }> {
   const r = await resolvePlantParam(slug);
   if (r.state !== "ok") return r;
@@ -65,13 +72,21 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (res.state !== "ok") return { title: "Карточка вида", robots: { index: false, follow: true } };
   const card = res.card;
   const name = displayName(card.name);
-  const title = cardTitle(card, name);
+  const ownMono = card.kind === "genus" && card.memberCount === 0 && (await hasOwnMonograph(card.id));
+  const title = cardTitle(ownMono && card.kind === "genus" ? genusAsSpecies(card) : card, name);
   const canonical = SITE_URL + plantHref(card.id, card.latin);
   let description: string;
   let image: string | null = null;
   let photoOk = false;
   let field: FieldView | null = null;
-  if (card.kind === "genus") {
+  if (ownMono) {
+    field = await getFieldView(card.id);
+    const lead = quoteOf(field?.lead_fact);
+    description = field?.verdict?.trim() || lead?.text || `${name}. Откуда растение родом, как оно попало в дома и как за ним ухаживать.`;
+    const fp = field?.photo_url ? creditedPhoto({ url: field.photo_url, attribution: field.photo_attribution ?? null, license: null, source: null }) : null;
+    photoOk = !!fp;
+    image = fp ? largePhoto(fp.url) : null;
+  } else if (card.kind === "genus") {
     const photo = await genusPhoto(card);
     image = photo ? largePhoto(photo.url) : null;
     photoOk = !!photo;
@@ -91,7 +106,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     }
   }
   // В индекс идёт карточка, прошедшая гейт публикации и с собственным содержанием.
-  const index = passesGate({ kingdom: card.kingdom, name: card.name, latin: card.latin, photo: photoOk }) && isSubstantive(card, field);
+  const index = passesGate({ kingdom: card.kingdom, name: card.name, latin: card.latin, photo: photoOk }) &&
+    isSubstantive(card.kind === "genus" && field ? genusAsSpecies(card) : card, field);
   return {
     title,
     description: excerpt(description, 160),
@@ -125,6 +141,10 @@ export default async function AtlasPlantPage({ params, searchParams }: Props) {
   // Канонический адрес: permanentRedirect бросает исключение, поэтому вне try/catch.
   const href = plantHref(card.id, card.latin);
   if (decoded(params.slug) !== plantSlug(card.id, card.latin)) permanentRedirect(href + queryFrom(searchParams));
+
+  if (card.kind === "genus" && card.memberCount === 0 && (await hasOwnMonograph(card.id))) {
+    return renderSpecies(genusAsSpecies(card), href, searchParams);
+  }
 
   if (card.kind === "genus") {
     const photo = await genusPhoto(card);
@@ -180,6 +200,7 @@ async function renderSpecies(card: SpeciesCard, href: string, searchParams: Sear
   // Блоки собираем заранее: пустой блок возвращает null и не попадает в оглавление.
   const blocks = [
     { id: "essay", label: "Очерк", el: EssayBlock({ card, field }) },
+    { id: "story", label: "О растении", el: StoryBlock({ card, field }) },
     { id: "safety", label: "Безопасность", el: SafetyBlock({ card, field }) },
     { id: "uses", label: "Применение", el: UsesBlock({ card }) },
     { id: "compounds", label: "Состав", el: CompoundsBlock({ card, insights }) },

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Fragment } from "react";
 import { Quote, SourceRef } from "../common";
 import { fmtInt, pluralRu } from "../../lib/api";
-import { bookIdFor, capFirst, quoteOf, ruQuotes, type FieldView, type SpeciesCard, type UseGroup } from "../../lib/api-plant";
+import { bookIdFor, capFirst, quoteOf, ruQuotes, storyTexts, type FieldView, type SpeciesCard, type UseGroup } from "../../lib/api-plant";
 import { Block, CiteView, FactList, IndicationLink, More, moreQuotesLabel, nBooksDat, nBooksGen, nQuotes } from "./bits";
 
 function paragraphs(s: string): string[] {
@@ -11,10 +11,14 @@ function paragraphs(s: string): string[] {
 }
 
 export function EssayBlock({ card, field }: { card: SpeciesCard; field: FieldView | null }) {
-  const verdict = field?.verdict?.trim() || null;
+  // Первая фраза и «интересное» не повторяют то, что уже стоит в блоке «О растении»:
+  // сервер дописывает туда родину растения для старых версий приложения.
+  const told = storyTexts(field);
+  const verdict = told.reduce((v, t) => v.replace(t, ""), field?.verdict ?? "").trim() || null;
   // У комнатных описание склеено из разделов ухода: их показывает блок «Уход».
   const description = field?.origin === "houseplant" ? null : field?.description?.trim() || card.description;
-  const lead = quoteOf(field?.lead_fact) ?? quoteOf(field?.fun_fact);
+  const anyLead = quoteOf(field?.lead_fact) ?? quoteOf(field?.fun_fact);
+  const lead = anyLead && !told.includes(anyLead.text.trim()) ? anyLead : null;
   if (!verdict && !description && !lead) return null;
   return (
     <Block id="essay" title="Очерк">

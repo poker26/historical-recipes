@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Quote, SourceRef, type SafetyLevel } from "../common";
 import { fmtInt, pluralRu } from "../../lib/api";
-import { ruQuotes, type Cite, type Fact, type FactSet, type SafetyInfo } from "../../lib/api-plant";
+import { capFirst, ruQuotes, type Cite, type Fact, type FactSet, type SafetyInfo } from "../../lib/api-plant";
 
 export function Block({ id, title, lead, children }: { id: string; title: string; lead?: ReactNode; children: ReactNode }) {
   return (
@@ -86,12 +86,18 @@ export function FactList({ set, open = 3 }: { set: FactSet; open?: number }) {
   );
 }
 
+/** Общие подписи уровней, которые сервер ставит всем карточкам. */
+const LEVEL_LABELS = new Set(["нет данных", "съедобно", "условно съедобно", "опасно — лекарственное, дозозависимо", "смертельно ядовито"]);
+
 /** Уровень безопасности → плашка по правилу сайта. Молчание книг не превращаем в «безопасно». */
 export function safetyView(s: SafetyInfo | null | undefined, isToxic: boolean): { level: SafetyLevel; title: string } {
   const lvl = s?.level;
-  if (lvl === 4) return { level: "danger", title: "Смертельно ядовито" };
-  if (lvl === 3) return { level: "warn", title: "Лекарственное и ядовитое, опасно в больших дозах" };
-  if (lvl === 2) return { level: "warn", title: "Условно съедобно" };
+  // Своя подпись уровня от сервера (у ароидных «ядовито: сок обжигает рот и горло»)
+  // точнее общей подписи уровня, и плашка показывает её.
+  const own = s?.label && !LEVEL_LABELS.has(s.label.trim()) ? capFirst(s.label.trim()) : null;
+  if (lvl === 4) return { level: "danger", title: own ?? "Смертельно ядовито" };
+  if (lvl === 3) return { level: "warn", title: own ?? "Лекарственное и ядовитое, опасно в больших дозах" };
+  if (lvl === 2) return { level: "warn", title: own ?? "Условно съедобно" };
   if (lvl === 1) return { level: "ok", title: "Съедобно" };
   if ((lvl === null || lvl === undefined) && isToxic) return { level: "danger", title: "Ядовитое растение" };
   return { level: "unknown", title: "Съедобность не подтверждена" };

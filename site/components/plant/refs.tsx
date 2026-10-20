@@ -11,7 +11,7 @@ export function CareBlock({ card, field }: { card: SpeciesCard; field: FieldView
   const sections = (field?.care_sections ?? []).map((s) => (s ?? "").trim()).filter(Boolean);
   if (!care.length && !sections.length) return null;
   return (
-    <Block id="care" title="Уход" lead={field?.care_summary?.trim() || "Что книги по комнатному цветоводству пишут о свете, поливе, земле, пересадке и размножении."}>
+    <Block id="care" title="Уход" lead={field?.care_summary?.trim() || undefined}>
       {care.length
         ? care.map((sec, i) => {
             const voices = (sec.voices ?? []).filter((v) => v?.text);

@@ -134,7 +134,48 @@ export type FieldView = {
   care_summary?: string | null;
   origin?: string | null;
   rank?: string | null;
+  /** Рассказ о растении из научно-популярных книг: родина, история, название, биология. */
+  story?: StorySection[] | null;
 };
+
+export type StoryFact = {
+  text?: string | null;
+  source?: string | null;
+  year?: number | null;
+  page?: number | null;
+  /** Вид, о котором факт, если карточка заведена на род. */
+  about?: string | null;
+};
+export type StorySection = { kind?: string | null; title?: string | null; facts?: StoryFact[] | null };
+
+/** Факты рассказа с текстом, без пустых разделов. */
+export function storySections(field: FieldView | null | undefined): { title: string; facts: StoryFact[] }[] {
+  return (field?.story ?? [])
+    .map((s) => ({ title: (s?.title ?? "").trim(), facts: (s?.facts ?? []).filter((f) => (f?.text ?? "").trim()) }))
+    .filter((s) => s.title && s.facts.length);
+}
+
+/** Тексты фактов рассказа: по ним очерк убирает то, что рассказ уже сказал. */
+export function storyTexts(field: FieldView | null | undefined): string[] {
+  return storySections(field).flatMap((s) => s.facts.map((f) => (f.text ?? "").trim()));
+}
+
+/** Род без выделенных видов, но с карточкой комнатного растения («Alocasia»,
+ *  «Philodendron»): книги о комнатных описывают род целиком. Показываем его как
+ *  карточку вида, а не как пустой список видов рода. */
+export function genusAsSpecies(card: GenusCard): SpeciesCard {
+  const none: FactSet = { items: [], total: 0 };
+  return {
+    kind: "species", id: card.id, name: card.name, latin: card.latin, nameModern: null,
+    family: null, familyLatin: null, kingdom: card.kingdom, description: null, isToxic: false,
+    safety: card.safety, parent: null, photo: null, inatTaxonId: null, names: [], namesTotal: 0,
+    usesTotal: 0, useQuotesTotal: 0, useBooks: 0, useGroups: [], useGroupsTotal: 0,
+    toxicities: none, compoundGroups: [], compoundGroupsTotal: 0, compoundsTotal: 0,
+    harvests: none, habitats: none, culinary: none, mentions: [], mentionBooksTotal: 0,
+    sources: [], sourcesTotal: 0, bookCount: 0, yearMin: null, yearMax: null,
+    recipesRawTotal: 0, firstQuote: null, oils: [], bookIds: {},
+  };
+}
 
 export type PlantRecipeItem = {
   id: string; name: string; category?: string | null; kind?: string | null; n_ingredients?: number | null;
@@ -973,6 +1014,8 @@ export const sameName = (a?: string | null, b?: string | null) => keyOf(a) === k
 export function isSubstantive(card: PlantCard, field?: FieldView | null): boolean {
   if (card.kind === "genus") return card.memberCount >= 2;
   return (
+    storyTexts(field).length >= 2 ||
+    (field?.care ?? []).length >= 3 ||
     card.usesTotal > 0 ||
     card.culinary.total > 0 ||
     (card.description ?? "").length >= 200 ||
