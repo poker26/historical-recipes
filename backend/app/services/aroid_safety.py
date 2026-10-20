@@ -21,15 +21,21 @@ from app.services.edible_safety import AROID_VERDICT, aroid_rule
 
 # Фразы первой строки карточки, которые противоречат уровню ароидного растения.
 _CONTRADICTS = re.compile(
-    r"смертельн|безопасн|недостаточно данных|достоверных данных|нет данных|ядовит|опасно для жизни",
+    r"смертельн|безопасн|недостаточно данных|достоверных данных|нет данных|ядовит|опасно для жизни"
+    r"|токсичн|не рекомендуется",
     re.I)
+# Служебные фразы прежней сборки карточек комнатных: читателю не нужно объяснять,
+# откуда взят текст.
+_BOILERPLATE = re.compile(r"^Комнатное растение\.$|Здесь собрано то, что о нём пишут книги|"
+                          r"Книги описывают весь род")
 
 
 def fix_verdict(verdict: str | None, level: int) -> str:
     """Первая фраза: правило уровня, затем то, что ему не противоречит (например, родина)."""
     lead = AROID_VERDICT.get(level, "")
     sentences = re.split(r"(?<=[.!?])\s+", (verdict or "").strip())
-    keep = [s for s in sentences if s and not _CONTRADICTS.search(s) and s != lead]
+    keep = [s for s in sentences
+            if s and not _CONTRADICTS.search(s) and not _BOILERPLATE.search(s) and s != lead]
     return " ".join([lead] + keep).strip()
 
 

@@ -46,3 +46,10 @@ def test_monstera_fruit_verdict_kept():
     out = fix_monograph(mono, rule)
     assert out["verdict"] == mono["verdict"]
     assert out["is_toxic"] is False and "toxic" not in out["roles"]
+
+
+def test_boilerplate_removed_from_verdict():
+    v = ("Растение ядовито при попадании внутрь. Комнатное растение. Здесь собрано то, что о нём пишут "
+         "книги по комнатному цветоводству: свет, полив, земля, пересадка и размножение. Книги описывают "
+         "весь род, поэтому совет годится и для сортов.")
+    assert fix_verdict(v, 3) == AROID_VERDICT[3]

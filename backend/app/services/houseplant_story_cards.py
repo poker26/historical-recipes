@@ -194,6 +194,23 @@ async def apply_story_all(db: AsyncSession,
             updated += 1
         if on_piece and n % 50 == 0:
             await on_piece({"done": n, "total": len(cards), "updated": updated})
+
+    # Служебная фраза осталась и у карточек, о которых рассказа пока нет.
+    leftovers = (await db.execute(text("""
+        SELECT plant_id, monograph FROM plant_reader_monograph
+        WHERE monograph->>'verdict' LIKE '%Здесь собрано то, что о нём пишут книги%'
+    """))).all()
+    for plant_id, stored in leftovers:
+        mono = dict(stored if isinstance(stored, dict) else json.loads(stored))
+        verdict = clean_verdict(mono.get("verdict"), None)
+        if verdict:
+            mono["verdict"] = verdict
+        else:
+            mono.pop("verdict", None)
+        await db.execute(text(
+            "UPDATE plant_reader_monograph SET monograph = CAST(:m AS jsonb) WHERE plant_id = :id"),
+            {"id": plant_id, "m": json.dumps(mono, ensure_ascii=False)})
     await db.commit()
     return {"facts": len(rows), "cards_checked": len(cards),
-            "cards_with_story": with_story, "updated": updated}
+            "cards_with_story": with_story, "updated": updated,
+            "boilerplate_cleaned": len(leftovers)}
