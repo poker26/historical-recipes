@@ -80,3 +80,10 @@ def test_subgenus_facts_skipped():
     story = build_story("Philodendron", "Филодендрон", rows)
     texts = [f["text"] for b in story["story"] for f in b["facts"]]
     assert not any("подрода" in t for t in texts)
+
+
+def test_genus_fact_about_unnamed_cultivar_skipped():
+    rows = ROWS + [row("Monstera", "history", "Считается, что этот сорт возник как спонтанная мутация.")]
+    story = build_story("Monstera deliciosa", "Монстера", rows)
+    texts = [f["text"] for b in story["story"] for f in b["facts"]]
+    assert not any("этот сорт" in t for t in texts)

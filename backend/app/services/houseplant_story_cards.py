@@ -73,12 +73,22 @@ def _rank_label(row) -> bool:
     return bool(_RANK_LABEL.search(row.taxon_ru or "") or _RANK_LABEL.search(row.taxon_latin or ""))
 
 
+# «Считается, что этот сорт возник как мутация…» в карточке рода: модель приписала
+# роду факт о конкретном сорте, и без его названия фраза повисает (OnePlus, 20.10.2026).
+_ORPHAN_REF = re.compile(r"\bэт(от|а|у|им|ого) (сорт|гибрид|культивар|вид|форм)", re.I)
+
+
+def _orphan_ref(scope: int, row) -> bool:
+    return scope == 1 and bool(_ORPHAN_REF.search(row.fact or ""))
+
+
 def build_story(card_latin: str, card_name: str, rows) -> dict:
     """Разделы рассказа, лучший факт и фраза о родине для одной карточки."""
     picked: dict[str, list[tuple]] = {}
     seen: set[str] = set()
     scoped = [(s, r) for r in rows
-              if (s := _scope(card_latin, r.taxon_latin)) is not None and not _rank_label(r)]
+              if (s := _scope(card_latin, r.taxon_latin)) is not None and not _rank_label(r)
+              and not _orphan_ref(s, r)]
     for scope, row in sorted(scoped, key=lambda x: x[0]):
         key = row.fact.strip().lower()[:80]
         if key in seen:
