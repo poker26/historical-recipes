@@ -79,7 +79,10 @@ _ORPHAN_REF = re.compile(r"\bэт(от|а|у|им|ого) (сорт|гибрид
 
 
 def _orphan_ref(scope: int, row) -> bool:
-    return scope == 1 and bool(_ORPHAN_REF.search(row.fact or ""))
+    # Факт приписан роду целиком (в латыни одно слово): и в карточке вида, и в
+    # карточке самого рода «этот сорт» в нём ни к чему не привязан.
+    genus_level = " " not in (row.taxon_latin or "").strip()
+    return genus_level and bool(_ORPHAN_REF.search(row.fact or ""))
 
 
 def build_story(card_latin: str, card_name: str, rows) -> dict:

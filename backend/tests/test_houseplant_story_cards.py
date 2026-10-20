@@ -87,3 +87,10 @@ def test_genus_fact_about_unnamed_cultivar_skipped():
     story = build_story("Monstera deliciosa", "Монстера", rows)
     texts = [f["text"] for b in story["story"] for f in b["facts"]]
     assert not any("этот сорт" in t for t in texts)
+
+
+def test_genus_card_also_skips_unnamed_cultivar():
+    rows = ROWS + [row("Monstera", "history", "Считается, что этот сорт возник как спонтанная мутация.")]
+    story = build_story("Monstera", "Монстера", rows)
+    texts = [f["text"] for b in story["story"] for f in b["facts"]]
+    assert not any("этот сорт" in t for t in texts)
