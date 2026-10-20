@@ -1425,6 +1425,22 @@ async def get_plant(
     # facts — it aggregates its member species (with per-species attribution) and
     # owns the generic «вишня»-style recipe mentions. Same shape for default+field.
     if (plant.rank or "species") == "genus":
+        # Род без выделенных видов, но с готовым монографом — это карточка
+        # комнатного растения, заведённая на род («Alocasia», «Philodendron»):
+        # книги о комнатных описывают род целиком. Экран рода показал бы
+        # «Виды этого рода пока не выделены», а уход и рассказ остались бы
+        # невидимы. Так было у 20% снимков с карточкой (замер 20.10.2026).
+        if view == "field" and not fresh:
+            has_members = (await db.execute(
+                select(func.count()).select_from(Plant).where(Plant.parent_id == plant.id)
+            )).scalar() or 0
+            if not has_members:
+                stored = (await db.execute(
+                    select(PlantReaderMonograph).where(
+                        PlantReaderMonograph.plant_id == plant_id,
+                        PlantReaderMonograph.reviewed.is_(True)))).scalar_one_or_none()
+                if stored is not None:
+                    return tidy_deep(stored.monograph)
         gv = await _genus_view(db, plant)
         return _agent_slim(gv) if view == "agent" else gv
 
