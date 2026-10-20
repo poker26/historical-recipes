@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 
 from sqlalchemy import text
@@ -63,11 +64,21 @@ def _scope(card_latin: str, fact_latin: str | None) -> int | None:
     return None                       # соседний вид: не наш
 
 
+# Подрод, секция, триба: в карточке такой факт начинался бы словами «Филодендрон
+# подрод Меконостигма», а это служебная пометка систематика, не рассказ о растении.
+_RANK_LABEL = re.compile(r"подрод|секци|триб|подсемейств|\bsubg|\bsect\.", re.I)
+
+
+def _rank_label(row) -> bool:
+    return bool(_RANK_LABEL.search(row.taxon_ru or "") or _RANK_LABEL.search(row.taxon_latin or ""))
+
+
 def build_story(card_latin: str, card_name: str, rows) -> dict:
     """Разделы рассказа, лучший факт и фраза о родине для одной карточки."""
     picked: dict[str, list[tuple]] = {}
     seen: set[str] = set()
-    scoped = [(s, r) for r in rows if (s := _scope(card_latin, r.taxon_latin)) is not None]
+    scoped = [(s, r) for r in rows
+              if (s := _scope(card_latin, r.taxon_latin)) is not None and not _rank_label(r)]
     for scope, row in sorted(scoped, key=lambda x: x[0]):
         key = row.fact.strip().lower()[:80]
         if key in seen:

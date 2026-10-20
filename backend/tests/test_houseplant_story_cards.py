@@ -72,3 +72,11 @@ def test_herbarium_card_of_houseplant_gets_story_lead():
     herb = {"origin": "herbarium", "lead_fact": {"text": "обогащает помещение аэроионами"}}
     out = apply_story(herb, story, houseplant=True)
     assert out["lead_fact"]["text"].startswith("Во время мужской фазы")
+
+
+def test_subgenus_facts_skipped():
+    rows = ROWS + [row("Philodendron", "homeland", "Южноамериканские филодендроны этого подрода древовидные.",
+                       ru="Филодендрон подрод Меконостигма")]
+    story = build_story("Philodendron", "Филодендрон", rows)
+    texts = [f["text"] for b in story["story"] for f in b["facts"]]
+    assert not any("подрода" in t for t in texts)

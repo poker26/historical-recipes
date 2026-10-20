@@ -87,8 +87,10 @@ def aroid_rule(name_latin: str | None) -> dict | None:
                 "edible_parts": ["зрелые плоды"],
                 "dangerous_parts": ["незрелые плоды", "листья", "стебли"], "deadly_twin": None}
     if genus in AROID_RAPHIDE_GENERA:
+        # Опасные части не перечисляем: подпись уровня уже говорит, что опасен сок,
+        # а строка «Опасные части: все части» на плашке читалась как повтор.
         return {"level": 3, "label": AROID_LABEL, "rationale": AROID_RATIONALE,
-                "edible_parts": [], "dangerous_parts": ["все части"], "deadly_twin": None}
+                "edible_parts": [], "dangerous_parts": [], "deadly_twin": None}
     return None
 
 

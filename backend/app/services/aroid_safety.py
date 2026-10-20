@@ -31,12 +31,17 @@ _BOILERPLATE = re.compile(r"^Комнатное растение\.$|Здесь �
 
 
 def fix_verdict(verdict: str | None, level: int) -> str:
-    """Первая фраза: правило уровня, затем то, что ему не противоречит (например, родина)."""
-    lead = AROID_VERDICT.get(level, "")
+    """Первая фраза без всего, что противоречит уровню или повторяет плашку.
+
+    Об опасности говорит красная плашка над фразой, поэтому сама фраза её не
+    повторяет (на экране OnePlus 20.10.2026 стояло дважды «ядовито: сок
+    обжигает рот и горло»). Остаётся то, что плашке не противоречит: родина.
+    """
     sentences = re.split(r"(?<=[.!?])\s+", (verdict or "").strip())
     keep = [s for s in sentences
-            if s and not _CONTRADICTS.search(s) and not _BOILERPLATE.search(s) and s != lead]
-    return " ".join([lead] + keep).strip()
+            if s and not _CONTRADICTS.search(s) and not _BOILERPLATE.search(s)
+            and s not in AROID_VERDICT.values()]
+    return " ".join(keep).strip()
 
 
 def fix_monograph(mono: dict, rule: dict) -> dict:
@@ -51,8 +56,15 @@ def fix_monograph(mono: dict, rule: dict) -> dict:
         roles.append("toxic")
     if "roles" in m or level >= 3:
         m["roles"] = roles
-    if level != 2 or "смертельн" in (m.get("verdict") or "").lower() or "безопасн" in (m.get("verdict") or "").lower():
-        m["verdict"] = fix_verdict(m.get("verdict"), level)
+    verdict = m.get("verdict") or ""
+    low = verdict.lower()
+    stale = "смертельн" in low or "безопасн" in low or verdict.startswith(tuple(AROID_VERDICT.values()))
+    if level != 2 or stale:
+        verdict = fix_verdict(verdict, level)
+        if verdict:
+            m["verdict"] = verdict
+        else:
+            m.pop("verdict", None)
     return m
 
 
