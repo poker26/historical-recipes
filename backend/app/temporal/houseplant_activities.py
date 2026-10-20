@@ -72,6 +72,23 @@ async def houseplant_story_activity(source: str, pages: list[int] | None = None,
 
 
 @activity.defn
+async def houseplant_story_cards_activity() -> dict:
+    """Вписывает рассказ о растении в карточки: разделы, «Интересное», первую фразу.
+
+    Только база, без модели и без iNaturalist, поэтому отдельно от пересборки
+    карточек ухода: её незачем гонять ради рассказа.
+    """
+    from app.database import async_session
+    from app.services.houseplant_story_cards import apply_story_all
+
+    async def report(progress: dict) -> None:
+        activity.heartbeat(progress.get("done", 0), progress)
+
+    async with async_session() as db:
+        return await apply_story_all(db, on_piece=report)
+
+
+@activity.defn
 async def houseplant_toxicity_activity(source: str, book: str, limit: int = 0) -> dict:
     """Разбирает пособие по ядовитым комнатным: чем опасно, симптомы, первая помощь.
 

@@ -70,6 +70,7 @@ with workflow.unsafe.imports_passed_through():
         houseplant_cards_activity,
         houseplant_ingest_activity,
         houseplant_story_activity,
+        houseplant_story_cards_activity,
         houseplant_toxicity_activity,
     )
 
@@ -553,6 +554,24 @@ class HouseplantStoryWorkflow:
             start_to_close_timeout=timedelta(hours=24),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
         workflow.logger.info(f"HouseplantStoryWorkflow done: {out}")
+        return out
+
+
+@workflow.defn
+class HouseplantStoryCardsWorkflow:
+    """Рассказ о растении в карточки: разделы, «Интересное», первая фраза.
+
+    Без модели и без iNaturalist. Запускается после разбора книг рассказа.
+    Singleton ``houseplant-story-cards``.
+    """
+
+    @workflow.run
+    async def run(self) -> dict:
+        out = await workflow.execute_activity(
+            houseplant_story_cards_activity,
+            start_to_close_timeout=timedelta(hours=2),
+            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+        workflow.logger.info(f"HouseplantStoryCardsWorkflow done: {out}")
         return out
 
 

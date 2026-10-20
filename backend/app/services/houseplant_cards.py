@@ -314,12 +314,6 @@ def build_monograph(latin: str, rows, photo: dict | None, toxicity: list | None 
     names_ru = [r.taxon_ru for r in rows if r.taxon_ru]
     name_ru = pick_russian_name(names_ru)
     books = sorted({r.book for r in rows if r.book})
-    genus_only = " " not in latin
-
-    verdict = ("Комнатное растение. Здесь собрано то, что о нём пишут книги по "
-               "комнатному цветоводству: свет, полив, земля, пересадка и размножение.")
-    if genus_only:
-        verdict += " Книги описывают весь род, поэтому совет годится и для сортов."
 
     # Сводка идёт первой фразой описания: человек открыл карточку, чтобы узнать,
     # что делать с растением сегодня, а не чтобы прочитать всё, что о нём пишут
@@ -332,7 +326,6 @@ def build_monograph(latin: str, rows, photo: dict | None, toxicity: list | None 
         "name_latin": latin,
         "kingdom": "растение",
         "origin": "houseplant",
-        "verdict": verdict,
         "description": description,
         "care_summary": summary,
         "care_sections": sections,
@@ -352,9 +345,11 @@ def build_monograph(latin: str, rows, photo: dict | None, toxicity: list | None 
     if caution:
         monograph["cautions"] = caution
         monograph["is_toxic"] = True
-        # Предупреждение важнее совета про полив, поэтому в вердикт оно идёт
-        # первой фразой: его человек читает раньше всего.
-        monograph["verdict"] = f"{SEVERITY_RU.get(caution['severity'], 'Растение небезопасно')}. " + verdict
+        # Предупреждение идёт первой фразой карточки: его человек читает раньше
+        # всего. Следом слой рассказа допишет, где растение живёт в природе.
+        # Объяснять, откуда взят текст, читателю не нужно, поэтому прежней
+        # фразы «Здесь собрано то, что о нём пишут книги…» больше нет.
+        monograph["verdict"] = f"{SEVERITY_RU.get(caution['severity'], 'Растение небезопасно')}."
 
     if lead:
         monograph["lead_fact"] = {"text": lead, "source": (rows[0].book if rows else None)}
@@ -549,13 +544,18 @@ async def build_cards(db: AsyncSession, limit: int = 0, min_facts: int = 3) -> d
             updated += 1
     await db.commit()
 
+    # Рассказ о растении живёт в своём слое; пересборка ухода переписала
+    # монографы, и рассказ вписывается в них заново.
+    from app.services.houseplant_story_cards import apply_story_all
+    story = await apply_story_all(db)
+
     skipped = len(grouped) - len(names)
     with_danger = sum(1 for n in names
                       if danger.get(n) or danger.get(n.split(" ")[0]))
     return {"plants_in_layer": len(grouped), "cards": len(names),
             "created": created, "updated": updated,
             "skipped_thin": skipped, "with_photo": len(photos),
-            "with_danger": with_danger}
+            "with_danger": with_danger, "story": story}
 
 
 async def cards_for_latins(db: AsyncSession, latins: list[str]) -> dict[str, dict]:

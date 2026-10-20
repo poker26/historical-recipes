@@ -7,6 +7,7 @@
         --source zhr1982t6 --start [--pages 470-482] [--limit 5]
 
 ``--all`` ставит все книги слоя рассказа, каждую своим воркфлоу.
+``--cards`` вписывает разобранный рассказ в карточки.
 """
 
 import argparse
@@ -37,7 +38,21 @@ async def main() -> int:
     parser.add_argument("--pages", help="страницы PDF, например 470-482")
     parser.add_argument("--limit", type=int, default=0, help="сколько страниц разобрать")
     parser.add_argument("--start", action="store_true", help="поставить в Temporal")
+    parser.add_argument("--cards", action="store_true",
+                        help="вписать уже разобранный рассказ в карточки (без разбора книг)")
     args = parser.parse_args()
+
+    if args.cards:
+        from app.temporal.client import get_temporal_client
+        from app.temporal.dispatcher_worker import DISPATCHER_TASK_QUEUE
+        from app.temporal.workflows import HouseplantStoryCardsWorkflow
+
+        client = await get_temporal_client()
+        handle = await client.start_workflow(
+            HouseplantStoryCardsWorkflow.run, id="houseplant-story-cards",
+            task_queue=DISPATCHER_TASK_QUEUE)
+        print(f"Поставлено: {handle.id}")
+        return 0
 
     sources = STORY_SOURCES if args.all else [args.source] if args.source else []
     if not args.start or not sources:
