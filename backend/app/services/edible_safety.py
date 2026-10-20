@@ -36,6 +36,62 @@ def is_deadly_anchor(name_latin: str | None) -> bool:
     return bool(name_latin and _DEADLY.search(name_latin))
 
 
+# Ароидные с игольчатыми кристаллами оксалата кальция (рафидами) в соке. Модель
+# ставила им то L4 «смертельно» с выдуманными «цианидами», «нефритом» и «вератридином»
+# (замиокулькас, спатифиллум, аглаонема, калла), то L0 «нет данных» (эпипремнум,
+# филодендрон), то L1 «съедобно» сырому таро. Взять такое растение в рот — сильное
+# жжение и отёк рта и горла; смертельным отравлением это не считается. Уровень
+# здесь задан правилом, модель его не решает (20.10.2026).
+AROID_RAPHIDE_GENERA = frozenset({
+    "aglaonema", "alocasia", "amorphophallus", "anthurium", "anubias", "arisaema", "arisarum",
+    "arum", "caladium", "calla", "cryptocoryne", "dieffenbachia", "dracunculus", "epipremnum",
+    "homalomena", "lysichiton", "monstera", "orontium", "philodendron", "pinellia", "pistia",
+    "rhaphidophora", "sauromatum", "schismatoglottis", "scindapsus", "spathiphyllum",
+    "symplocarpus", "syngonium", "typhonium", "zamioculcas", "zantedeschia",
+})
+# Ароидные, которые едят после долгой варки: таро и ксантозома.
+AROID_COOKED_FOOD = frozenset({"colocasia", "xanthosoma"})
+
+AROID_LABEL = "ядовито: сок обжигает рот и горло"
+AROID_RATIONALE = (
+    "Во всех частях сок с игольчатыми кристаллами оксалата кальция. Если взять растение "
+    "в рот, сразу начинаются сильное жжение, слюнотечение, отёк губ, языка и горла. "
+    "Сильный отёк горла мешает глотать и дышать, тогда нужен врач. Сок на коже и в глазах "
+    "тоже вызывает раздражение.")
+AROID_COOKED_RATIONALE = (
+    "Сырые клубни и листья жгут рот: в них игольчатые кристаллы оксалата кальция. "
+    "Клубни едят только после долгой варки или запекания.")
+MONSTERA_FRUIT_RATIONALE = (
+    "Съедобны только полностью зрелые плоды. В незрелых плодах, листьях и стеблях "
+    "игольчатые кристаллы оксалата кальция: они обжигают рот и горло.")
+
+
+AROID_VERDICT = {
+    3: "Ядовито: сок обжигает рот и горло, есть нельзя.",
+    2: "Едят только после обработки: сырые части обжигают рот.",
+}
+
+
+def aroid_rule(name_latin: str | None) -> dict | None:
+    """Уровень безопасности ароидного растения по правилу, или ``None``, если это не ароидное."""
+    parts = (name_latin or "").lower().split()
+    if not parts:
+        return None
+    genus, species = parts[0], " ".join(parts[:2])
+    if genus in AROID_COOKED_FOOD:
+        return {"level": 2, "label": "условно съедобно", "rationale": AROID_COOKED_RATIONALE,
+                "edible_parts": ["клубни после варки"],
+                "dangerous_parts": ["сырые клубни", "сырые листья"], "deadly_twin": None}
+    if species == "monstera deliciosa":
+        return {"level": 2, "label": "условно съедобно", "rationale": MONSTERA_FRUIT_RATIONALE,
+                "edible_parts": ["зрелые плоды"],
+                "dangerous_parts": ["незрелые плоды", "листья", "стебли"], "deadly_twin": None}
+    if genus in AROID_RAPHIDE_GENERA:
+        return {"level": 3, "label": AROID_LABEL, "rationale": AROID_RATIONALE,
+                "edible_parts": [], "dangerous_parts": ["все части"], "deadly_twin": None}
+    return None
+
+
 # Те же смертельные роды по русскому имени. Нужны карточкам, у которых латыни нет или она
 # неверная после распознавания: «Строчок» с латынью Morchella, «Омежник» с Peucedanum.
 # Сверяем только ПЕРВОЕ слово имени: «Борщевик аконитолистный» и «Гриб-зонтик» не яды.

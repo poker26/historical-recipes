@@ -587,7 +587,9 @@ async def edible_safety_activity() -> dict:
     «ядовито». Перед проходом сбрасываются устаревшие быстрые уровни: у карточки с «[auto]»
     после слияний появились записи о ядовитости, а «несъедобно» раньше давало уровень 1.
     В конце is_toxic выравнивается по уровню у всех карточек."""
-    from app.services.edible_safety import classify_safety, is_deadly_anchor, is_deadly_name, EDIBILITY_CANON
+    from app.services.edible_safety import (
+        EDIBILITY_CANON, aroid_rule, classify_safety, is_deadly_anchor, is_deadly_name,
+    )
     done = det = llm = 0
     sem = asyncio.Semaphore(6)
 
@@ -614,6 +616,15 @@ async def edible_safety_activity() -> dict:
             "SELECT id::text, name FROM plants WHERE safety_level < 4 AND rank IN ('species', 'genus') "
             "AND kingdom IN ('растение', 'гриб')"))).all()
         by_name = [pid for pid, name in cand if is_deadly_name(name)]
+        # Ароидные с рафидами: уровень задаёт правило. Карточку, у которой стоит
+        # что-то другое (так было до 20.10.2026), пересчитываем.
+        aroids = (await db.execute(text(
+            "SELECT id::text, name_latin, safety_level, safety_rationale FROM plants "
+            "WHERE rank IN ('species', 'genus') AND name_latin IS NOT NULL"))).all()
+        for pid, latin, lvl, why in aroids:
+            rule = aroid_rule(latin)
+            if rule and (lvl != rule["level"] or why != rule["rationale"]):
+                by_name.append(pid)
         if by_name:
             await db.execute(text("UPDATE plants SET safety_level = NULL WHERE id::text = ANY(:ids)"),
                              {"ids": by_name})
@@ -646,6 +657,10 @@ async def edible_safety_activity() -> dict:
                         for h in house if (h.quote or h.symptoms)] + (
                         [f"[предупреждение из очерка карточки] {mono}"] if mono else []),
                     "has_medicinal": bool(med)}
+            rule = aroid_rule(p.name_latin)
+            if rule:
+                # Ароидные с рафидами: уровень по правилу, модель не спрашиваем.
+                return pid, rule["level"], dict(rule)
             try:
                 res = await asyncio.wait_for(classify_safety(data), timeout=90)
             except Exception:
@@ -676,7 +691,8 @@ async def edible_safety_activity() -> dict:
         async with async_session() as db:
             for pid, latin, pname, ntox, edi in rows:
                 canon = {EDIBILITY_CANON.get(e, e) for e in (edi.split("|") if edi else [])}
-                if is_deadly_anchor(latin) or is_deadly_name(pname) or ntox > 0 or ("ядовито" in canon):
+                if (is_deadly_anchor(latin) or is_deadly_name(pname) or ntox > 0
+                        or ("ядовито" in canon) or aroid_rule(latin)):
                     risky.append(pid)
                     continue
                 # no toxicity signal → safe deterministic default (no LLM spend).

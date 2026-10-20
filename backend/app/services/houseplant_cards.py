@@ -351,6 +351,15 @@ def build_monograph(latin: str, rows, photo: dict | None, toxicity: list | None 
         # фразы «Здесь собрано то, что о нём пишут книги…» больше нет.
         monograph["verdict"] = f"{SEVERITY_RU.get(caution['severity'], 'Растение небезопасно')}."
 
+    # Ароидные: уровень, плашка и первая фраза по правилу (edible_safety.aroid_rule).
+    # Без этого пересборка возвращала бы «ядовито при попадании внутрь» без слов о
+    # том, что именно происходит, а у эпипремнума — пустую плашку.
+    from app.services.aroid_safety import fix_monograph
+    from app.services.edible_safety import aroid_rule
+    rule = aroid_rule(latin)
+    if rule:
+        monograph = fix_monograph(monograph, rule)
+
     if lead:
         monograph["lead_fact"] = {"text": lead, "source": (rows[0].book if rows else None)}
     if photo:

@@ -119,7 +119,9 @@ def clean_verdict(verdict: str | None, homeland: str | None) -> str | None:
     for phrase in _BOILERPLATE:
         v = v.replace(phrase, "")
     v = " ".join(v.split())
-    if homeland:
+    # Сборка перезапускается после каждой книги: фраза о родине не должна
+    # дописываться второй раз.
+    if homeland and homeland not in v:
         v = f"{v} {homeland}".strip()
     return v or None
 
