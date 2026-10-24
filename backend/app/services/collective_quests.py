@@ -17,7 +17,7 @@ import re
 import time
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -195,9 +195,158 @@ async def home_genera(db: AsyncSession) -> set[str]:
     return (await _home_layer(db))[0]
 
 
+# ---- справочник средней полосы для «Нашего леса» ---------------------------------
+#
+# Пул из одних наших снимков поздней осенью тонкий: за две недели 83 рода, у большинства
+# по одному-два снимка. Замены застрявших позиций исчерпали частые роды, и в «Наш лес»
+# пошли душистый табак с клумбы, альбиция из Сочи, садовая астра (24.10.2026). Решение
+# владельца: «Наш лес» — дикие растения и грибы средней полосы этого месяца. Свидетель —
+# iNaturalist: проверенные наблюдения не культурных растений в центре европейской России
+# за текущий месяц. Справочник берётся раз в месяц и хранится в inat_observation_cache.
+
+NATURE_BBOX = {"swlat": 53.0, "swlng": 32.0, "nelat": 58.5, "nelng": 43.0}   # Смоленск — Н. Новгород, Тула — Ярославль
+NATURE_REF_PAGES = 2
+NATURE_REF_TIMEOUT = 11.0    # справочник запрашивается из пересборки квеста, а её вызывает экран пользователя
+_nature_mem: tuple[float, str, dict | None] = (0.0, "", None)
+
+
+def reference_from_counts(results: list[dict]) -> dict[str, dict]:
+    """Ответ iNaturalist species_counts → {род: {"obs": наблюдений, "species": [латынь]}}."""
+    ref: dict[str, dict] = {}
+    for r in results or []:
+        taxon = r.get("taxon") or {}
+        name = taxon.get("name")
+        g = genus_of(name)
+        if not g:
+            continue
+        e = ref.setdefault(g, {"obs": 0, "species": []})
+        e["obs"] += int(r.get("count") or 0)
+        if name and " " in name and len(e["species"]) < 8:
+            e["species"].append(name)
+    return ref
+
+
+def select_nature_pool(pool: list[dict], ref: dict[str, dict] | None, need: int,
+                       skip: set[str] = frozenset()) -> tuple[list[dict], list[str]]:
+    """Пул «Нашего леса» по справочнику: роды из снимков, которые есть в справочнике, и
+    роды справочника для добора, по убыванию наблюдений. Без справочника пул как был."""
+    if not ref:
+        return pool, []
+    kept = [g for g in pool if g["genus"] in ref]
+    if len(kept) >= need:
+        return kept, []
+    have = {g["genus"] for g in kept}
+    extra = [g for g, _ in sorted(ref.items(), key=lambda kv: (-kv[1]["obs"], kv[0]))
+             if g not in have and g not in skip]
+    return kept, extra
+
+
+def _month_keys(now: datetime) -> tuple[str, str]:
+    prev = (now.replace(day=1) - timedelta(days=1))
+    return f"nature_ref:{now:%Y-%m}", f"nature_ref:{prev:%Y-%m}"
+
+
+async def nature_reference() -> dict[str, dict] | None:
+    """Справочник родов средней полосы на этот месяц. Нет его и нельзя запросить (пауза
+    iNaturalist, сбой, пустой ответ) — справочник прошлого месяца; нет и его — None, и
+    «Наш лес» набирается как раньше, по одним снимкам."""
+    global _nature_mem
+    from app.services.inaturalist import INAT_BASE, _HEADERS, _cache_get, _cache_put, _note_throttle, _paused
+
+    now = datetime.now(timezone.utc)
+    key, prev_key = _month_keys(now)
+    at, mem_key, mem = _nature_mem
+    if mem_key == key and time.monotonic() - at < 3600:
+        return mem
+
+    hit = await _cache_get(key)
+    if hit and hit[0].get("genera"):
+        _nature_mem = (time.monotonic(), key, hit[0]["genera"])
+        return hit[0]["genera"]
+
+    async def fallback() -> dict | None:
+        # Неудачу тоже запоминаем на 15 минут: иначе каждый заход на экран квестов снова
+        # ждал бы iNaturalist до NATURE_REF_TIMEOUT на страницу.
+        global _nature_mem
+        old = await _cache_get(prev_key)
+        genera = old[0].get("genera") if old else None
+        _nature_mem = (time.monotonic() - 3600 + 900, key, genera)
+        return genera
+
+    if await _paused():
+        return await fallback()
+
+    import httpx
+    params = {**NATURE_BBOX, "month": now.month, "captive": "false", "quality_grade": "research",
+              "iconic_taxa": "Plantae,Fungi", "per_page": 500}
+    results: list[dict] = []
+
+    async def fetch() -> bool:
+        async with httpx.AsyncClient(timeout=NATURE_REF_TIMEOUT) as client:
+            for page in range(1, NATURE_REF_PAGES + 1):
+                r = await client.get(f"{INAT_BASE}/observations/species_counts",
+                                     params={**params, "page": page}, headers=_HEADERS)
+                if await _note_throttle(r, "collective-nature") or r.status_code != 200:
+                    return False
+                chunk = r.json().get("results", [])
+                results.extend(chunk)
+                if len(chunk) < params["per_page"]:
+                    break
+        return True
+
+    try:
+        ok = await asyncio.wait_for(fetch(), timeout=NATURE_REF_TIMEOUT * NATURE_REF_PAGES)
+    except Exception as e:  # noqa: BLE001 — сеть, разбор, срок: справочник необязателен
+        logger.warning("nature reference fetch failed: %s", str(e)[:80])
+        ok = False
+    ref = reference_from_counts(results) if ok else {}
+    if not ref:
+        return await fallback()
+    await _cache_put(key, {"genera": ref, "fetched": now.isoformat(), "bbox": NATURE_BBOX})
+    _nature_mem = (time.monotonic(), key, ref)
+    logger.info("nature reference %s: %d родов", key, len(ref))
+    return ref
+
+
+async def _reference_slots(db: AsyncSession, genera: list[str], ref: dict[str, dict],
+                           limit: int) -> list[dict]:
+    """Позиции для добора из справочника: у каждого рода карточка с фото (сначала вид из
+    справочника) и русская подпись. Роды без такой карточки пропускаются."""
+    if not genera or limit <= 0:
+        return []
+    rows = (await db.execute(text("""
+        SELECT p.id, p.name_latin, COALESCE(NULLIF(p.name_modern, ''), p.name) AS name, p.photo_url
+        FROM plants p
+        WHERE split_part(p.name_latin, ' ', 1) = ANY(:g) AND p.photo_url IS NOT NULL
+          AND p.kingdom IN ('растение', 'гриб') AND COALESCE(p.origin, '') <> 'houseplant'
+          AND COALESCE(p.rank, 'species') = 'species'"""), {"g": genera})).all()
+    by_genus: dict[str, list] = {}
+    for pid, latin, name, photo in rows:
+        g = genus_of(latin)
+        if g:
+            by_genus.setdefault(g, []).append((pid, latin, name, photo))
+    out = []
+    for g in genera:
+        cards = by_genus.get(g)
+        if not cards:
+            continue
+        known = {" ".join(s.lower().split()[:2]) for s in ref.get(g, {}).get("species", [])}
+        cards.sort(key=lambda c: " ".join((c[1] or "").lower().split()[:2]) not in known)
+        name = display_name([(c[2], 2 if " ".join((c[1] or "").lower().split()[:2]) in known else 1)
+                             for c in cards])
+        if not name:
+            continue
+        top = cards[0]
+        out.append({"genus": g, "name_ru": name, "plant_id": top[0], "photo_url": top[3], "devices": 0})
+        if len(out) >= limit:
+            break
+    return out
+
+
 async def genus_pool(db: AsyncSession, kind: str) -> list[dict]:
     """Роды, снятые за POOL_DAYS, по убыванию числа разных устройств. У каждого рода
-    подпись, карточка самого частого вида и её фото."""
+    подпись, карточка самого частого вида и её фото. «Наш лес» берёт только роды из
+    справочника средней полосы и при нехватке добирает родами справочника."""
     rows = (await db.execute(text("""
         SELECT p.id, p.name_latin, COALESCE(NULLIF(p.name_modern, ''), p.name) AS name, p.photo_url,
                count(*) AS shots, count(DISTINCT i.device_key) AS devices
@@ -228,6 +377,12 @@ async def genus_pool(db: AsyncSession, kind: str) -> list[dict]:
         pool.append({"genus": g, "name_ru": name, "plant_id": top["id"], "photo_url": top["photo"],
                      "devices": e["devices"]})
     pool.sort(key=lambda x: (-x["devices"], x["genus"]))
+    if kind == "nature":
+        ref = await nature_reference()
+        need = SIZE * POOL_TOP_FACTOR
+        pool, extra = select_nature_pool(pool, ref, need, skip=EXCLUDE | home)
+        if extra:
+            pool += await _reference_slots(db, extra[:need * 3], ref, need - len(pool))
     return pool
 
 
@@ -292,8 +447,40 @@ async def _replace_stale(db: AsyncSession, quest_id, kind: str) -> int:
     return n
 
 
+async def _prune_off_reference(db: AsyncSession, quest_id) -> int:
+    """Открытые позиции «Нашего леса», чьего рода нет в справочнике этого месяца, уходят:
+    садовые, южные, отошедшие по сезону. На их место встают роды из пула. Найденные
+    позиции не трогаются. Вызывается под _lock."""
+    ref = await nature_reference()
+    if not ref:
+        return 0
+    rows = (await db.execute(text("""
+        SELECT id, position, genus FROM collective_slots
+        WHERE quest_id = :q AND status = 'open' ORDER BY position"""), {"q": quest_id})).all()
+    off = [(sid, pos) for sid, pos, g in rows if g not in ref]
+    if not off:
+        return 0
+    used = set((await db.execute(text(
+        "SELECT genus FROM collective_slots WHERE quest_id = :q"), {"q": quest_id})).scalars().all())
+    fresh = [g for g in await genus_pool(db, "nature") if g["genus"] not in used]
+    n = 0
+    for slot_id, pos in off:
+        if not fresh:
+            break
+        await db.execute(text("UPDATE collective_slots SET status = 'replaced' WHERE id = :id"),
+                         {"id": slot_id})
+        await _insert_slot(db, quest_id, pos, fresh.pop(0))
+        n += 1
+    if n:
+        logger.info("collective nature: %d позиций не из справочника заменены", n)
+    return n
+
+
 async def maintain(db: AsyncSession) -> None:
     """Открыть недостающие квесты и заменить застрявшие позиции. Коммитит сам."""
+    # Справочник «Нашего леса» — до блокировки: запрос к iNaturalist раз в месяц идёт
+    # до 11 с, и держать всё это время блокировку зачёта нельзя. Дальше он в памяти.
+    await nature_reference()
     await _lock(db)
     for kind in KINDS:
         row = (await db.execute(text(
@@ -303,6 +490,8 @@ async def maintain(db: AsyncSession) -> None:
             await _open_quest(db, kind)
         else:
             await _replace_stale(db, row[0], kind)
+            if kind == "nature":
+                await _prune_off_reference(db, row[0])
     await db.commit()
 
 
