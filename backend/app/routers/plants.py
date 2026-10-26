@@ -34,6 +34,7 @@ from app.services.medical_matching import is_nontarget_action
 from app.services.qdrant import delete_points
 from app.services.inaturalist import enrich_plants_inat, find_observations
 from app.services.text_tidy import tidy_deep
+from app.services.edible_safety import AROID_LABEL, aroid_rule
 
 router = APIRouter()
 
@@ -162,12 +163,23 @@ def _safety_block(p) -> dict | None:
         return None
     return {
         "level": lvl,
-        "label": SAFETY_LABELS.get(lvl, "нет данных"),
+        "label": safety_label(lvl, getattr(p, "kingdom", None), getattr(p, "name_latin", None)),
         "edible_parts": p.edible_parts or [],
         "dangerous_parts": p.dangerous_parts or [],
         "deadly_twin": p.deadly_twin,
+        "confused_with": getattr(p, "confused_with", None),
         "rationale": p.safety_rationale,
     }
+
+
+def safety_label(lvl: int, kingdom: str | None = None, latin: str | None = None) -> str:
+    """Подпись уровня. Уровень 3 у растения значит «лекарство в малой дозе, яд в
+    большой», а ядовитый гриб и ароидное растение лекарством не бывают."""
+    if lvl == 3 and kingdom == "гриб":
+        return "ядовито"
+    if lvl == 3 and aroid_rule(latin):
+        return AROID_LABEL
+    return SAFETY_LABELS.get(lvl, "нет данных")
 
 
 @router.get("/")
@@ -1321,7 +1333,7 @@ async def _genus_view(db: AsyncSession, genus: Plant) -> dict:
         worst = max(levels)
         genus_safety = {
             "level": worst,
-            "label": SAFETY_LABELS.get(worst, "нет данных"),
+            "label": safety_label(worst, genus.kingdom, genus.name_latin),
             "note": "уровень опасности различается по видам — сверяйтесь с конкретным видом",
             "dangerous_members": [
                 {"id": str(m.id), "name": m.name, "level": m.safety_level,

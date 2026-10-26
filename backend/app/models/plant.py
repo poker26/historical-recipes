@@ -48,6 +48,7 @@ class Plant(Base):
     edible_parts: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     dangerous_parts: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     deadly_twin: Mapped[str | None] = mapped_column(Text)        # easily-confused deadly lookalike
+    confused_with: Mapped[str | None] = mapped_column(Text)      # ядовитый гриб: за какой съедобный его принимают
     safety_rationale: Mapped[str | None] = mapped_column(Text)
     qdrant_point_id: Mapped[str | None] = mapped_column(String(100))
     qdrant_collection: Mapped[str | None] = mapped_column(String(50))

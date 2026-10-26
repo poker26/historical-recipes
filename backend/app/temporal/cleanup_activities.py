@@ -590,6 +590,7 @@ async def edible_safety_activity() -> dict:
     from app.services.edible_safety import (
         EDIBILITY_CANON, aroid_rule, classify_safety, is_deadly_anchor, is_deadly_name,
     )
+    from app.services import fungi_safety
     done = det = llm = 0
     sem = asyncio.Semaphore(6)
 
@@ -613,9 +614,12 @@ async def edible_safety_activity() -> dict:
     # должна стоять на уровне 4, пересчитываем, если она ниже.
     async with async_session() as db:
         cand = (await db.execute(text(
-            "SELECT id::text, name FROM plants WHERE safety_level < 4 AND rank IN ('species', 'genus') "
-            "AND kingdom IN ('растение', 'гриб')"))).all()
-        by_name = [pid for pid, name in cand if is_deadly_name(name)]
+            "SELECT id::text, name, name_latin, kingdom FROM plants WHERE safety_level < 4 "
+            "AND rank IN ('species', 'genus') AND kingdom IN ('растение', 'гриб')"))).all()
+        # Гриб с уровнем по правилу (кесарев гриб, «мухомор» по имени) не пересчитываем:
+        # правило всё равно вернёт его уровень в конце прохода.
+        by_name = [pid for pid, name, latin, kingdom in cand if is_deadly_name(name)
+                   and not (kingdom == "гриб" and fungi_safety.level_rule(name, latin))]
         # Ароидные с рафидами: уровень задаёт правило. Карточку, у которой стоит
         # что-то другое (так было до 20.10.2026), пересчитываем.
         aroids = (await db.execute(text(
@@ -635,7 +639,7 @@ async def edible_safety_activity() -> dict:
         async with sem:
             async with async_session() as db:
                 p = (await db.execute(text(
-                    "SELECT name, name_latin, family FROM plants WHERE id=:p"), {"p": pid})).first()
+                    "SELECT name, name_latin, family, kingdom FROM plants WHERE id=:p"), {"p": pid})).first()
                 edi = (await db.execute(text(
                     "SELECT DISTINCT edibility FROM plant_culinary_uses WHERE plant_id=:p AND edibility IS NOT NULL"), {"p": pid})).all()
                 tox = (await db.execute(text(
@@ -657,7 +661,8 @@ async def edible_safety_activity() -> dict:
                         for h in house if (h.quote or h.symptoms)] + (
                         [f"[предупреждение из очерка карточки] {mono}"] if mono else []),
                     "has_medicinal": bool(med)}
-            rule = aroid_rule(p.name_latin)
+            rule = aroid_rule(p.name_latin) or (
+                fungi_safety.level_rule(p.name, p.name_latin) if p.kingdom == "гриб" else None)
             if rule:
                 # Ароидные с рафидами: уровень по правилу, модель не спрашиваем.
                 return pid, rule["level"], dict(rule)
@@ -726,6 +731,11 @@ async def edible_safety_activity() -> dict:
             llm += 1
             done += 1
             activity.heartbeat({"done": done, "det": det, "llm": llm})
+    # Грибам двойников и уровни по видам задаёт справочник, а не модель (26.10.2026):
+    # модель давала строчку осеннему «двойника» бледную поганку, а кесарев гриб
+    # объявляла смертельным по роду.
+    async with async_session() as db:
+        fungi = await fungi_safety.fix_fungi_cards(db, apply=True)
     # is_toxic производное от уровня (RFC-edible-safety). Слияния складывали флаги, и у
     # части карточек он разошёлся с уровнем: выравниваем у всех посчитанных.
     async with async_session() as db:
@@ -735,4 +745,4 @@ async def edible_safety_activity() -> dict:
         await db.commit()
     return {"phase": "edible_safety", "done": done, "deterministic": det, "llm": llm,
             "reset_stale": stale, "reset_inedible": inedible, "reset_deadly_name": len(by_name),
-            "is_toxic_aligned": aligned}
+            "is_toxic_aligned": aligned, "fungi_fixed": len(fungi["changed"])}

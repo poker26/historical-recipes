@@ -64,6 +64,7 @@ export function SafetyPanel({ safety, isToxic, extra }: { safety: SafetyInfo | n
         </div>
       ) : null}
       {safety?.deadly_twin ? <p className="pc-twin">Этот вид легко спутать с опасным двойником, это {safety.deadly_twin}.</p> : null}
+      {safety?.confused_with ? <p className="pc-twin">Его путают {safety.confused_with}.</p> : null}
       {extra}
     </div>
   );

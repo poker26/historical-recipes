@@ -19,6 +19,7 @@ export type SafetyInfo = {
   edible_parts?: string[] | null;
   dangerous_parts?: string[] | null;
   deadly_twin?: string | null;
+  confused_with?: string | null;
   rationale?: string | null;
   note?: string | null;
   dangerous_members?: { id: string; name: string; level?: number | null; deadly_twin?: string | null }[] | null;
