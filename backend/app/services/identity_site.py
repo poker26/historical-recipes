@@ -1799,13 +1799,34 @@ async def _alien_decide(client: httpx.AsyncClient, vern: Vernacular, r, genus: s
             hit = next((v for a in alts for v in vn if _name_match_loose(a, v)), None)
         if hit:
             return "relatin", acc, f"модель ({prop['conf']}), народное название вида: {hit}", [acc]
+        # Русского названия у вида в справочниках нет («Орлая крупноцветковая»): вид модели
+        # принимается, если первое слово имени называет его род, а видовое слово переводит эпитет.
+        g_acc, e_acc, _cap = latin_core(acc)
+        if prop.get("conf", 0) >= 90 and g_acc and e_acc:
+            gnames = await vern.names(g_acc)
+            for a in alts:
+                words = _ru_words(a)
+                if len(words) < 2:
+                    continue
+                if not (_genus_word_match(a, gnames) or _translit_genus(words[0], g_acc)):
+                    continue
+                how = epithet_match(species_word(a), e_acc)
+                if how:
+                    return "relatin", acc, (f"модель ({prop['conf']}), род по имени «{words[0]}», "
+                                            f"эпитет {e_acc} ({how})"), [acc]
     # Вида нет: род по первому слову имени, если слово называет один род.
     words = _ru_words(r.name)
     adjective_first = bool(words) and re.search(r"(ая|яя|ый|ий|ой|ое|ее|ые|ие)$", words[0]) is not None
     if words and not adjective_first and words[0] not in _POLYSEMOUS_GENUS_WORDS:
         ru_genus = await _genus_by_ru_word(client, words[0], r.kingdom)
+        # Старое имя называет иногда не тот род, что сейчас («пролеска однолетняя» это
+        # пролесник, Mercurialis, а не Scilla): род пишется, только если он стоит в цитатах карточки.
         if ru_genus and ru_genus[0].lower() != genus.lower():
-            return "genus", ru_genus[0], f"вид не найден, род по первому слову имени: {ru_genus[1]} = {ru_genus[0]}", []
+            if re.search(r"(?<![a-z])" + re.escape(ru_genus[0].lower()) + r"(?![a-z])", quotes):
+                return "genus", ru_genus[0], (f"вид не найден, род по первому слову имени: {ru_genus[1]} = "
+                                              f"{ru_genus[0]}, род стоит в цитатах карточки"), []
+            return "review", None, (f"вид не найден; по первому слову имени род {ru_genus[0]} ({ru_genus[1]}), "
+                                    "но в цитатах карточки его нет"), []
     return "review", None, (f"вид не найден (модель: {prop.get('latin')}, {prop.get('conf')}), "
                             "род по первому слову имени не установлен"), []
 
