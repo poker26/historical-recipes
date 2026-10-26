@@ -18,7 +18,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -272,10 +272,37 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
 
 def _parse_captured_at(raw: str | None) -> datetime | None:
     """Parse the client's capture timestamp leniently — ISO 8601 or epoch
-    seconds/millis. Returns None on anything unparseable (the field is optional)."""
+    seconds/millis. Returns None on anything unparseable (the field is optional).
+
+    Невозможное время заменяется временем получения. iOS до 2.4.x слал счётчик
+    kotlin.system.getTimeMillis() от произвольной точки, и в базе стояли даты от
+    1970 до 8463 года; у Android кривой EXIF давал даже 1791 год (замер 26.10.2026).
+    По этому полю прогулки и квесты решают, засчитать ли снимок, и снимки с iPhone
+    не засчитывались. Снимок приходит сразу после съёмки, поэтому время получения
+    честнее мусора."""
     if not raw:
         return None
-    raw = raw.strip()
+    dt = _parse_ts_lenient(raw.strip())
+    now = datetime.now(timezone.utc)
+    if dt is None or dt < _CAPTURE_FLOOR or dt > now + timedelta(days=1):
+        return now
+    return dt
+
+
+_CAPTURE_FLOOR = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+
+def _capture_time(raw: str | None, manufacturer: str | None) -> datetime | None:
+    """iOS шлёт не время из EXIF, а «сейчас» в момент отправки, и до 2.4.x это был
+    счётчик от произвольной точки: прочитанный как секунды, он даёт и правдоподобные
+    даты 2000–2025 годов, которые по значению не отличить. Поэтому снимку с iPhone
+    ставим время получения, а у Android проверяем диапазон."""
+    if raw and (manufacturer or "").lower() == "apple":
+        return datetime.now(timezone.utc)
+    return _parse_captured_at(raw)
+
+
+def _parse_ts_lenient(raw: str) -> datetime | None:
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
@@ -371,7 +398,7 @@ async def _archive(db: AsyncSession, *, photo: bytes | None, result: dict,
             engine=result.get("engine"),
             organ=(organs[0] if organs else None),
             lat=lat, lng=lng, geo_accuracy=geo_accuracy,
-            captured_at=_parse_captured_at(captured_at),
+            captured_at=_capture_time(captured_at, device_manufacturer),
             exif=exif,
             device_model=device_model,
             device_manufacturer=device_manufacturer,
