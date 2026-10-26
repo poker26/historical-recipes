@@ -33,6 +33,7 @@ from app.services import minio as minio_svc
 from app.services import plant_id
 from app.services.houseplant_care import care_for_latins
 from app.services.houseplant_cards import cards_for_latins
+from app.services.genus_alias import atlas_alias
 from app.services import mushroom_id
 from app.services import quests as quests_svc
 from app.services import collective_quests
@@ -143,12 +144,20 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
     candidates = result.get("candidates") or []
     if not candidates:
         return result
-    by_latin = await resolve_latin_to_plants(db, [c["latin"] for c in candidates])
+    # Род переименован: Pl@ntNet говорит Goeppertia, а карточка заведена как Calathea.
+    # Старое имя пробуем только после прямого, чтобы точное совпадение всегда побеждало.
+    alias = {c["latin"]: a for c in candidates if (a := atlas_alias(c["latin"]))}
+
+    def via_alias(found: dict, latin: str):
+        return found.get(latin) or found.get(alias.get(latin, ""))
+
+    by_latin = await resolve_latin_to_plants(
+        db, [c["latin"] for c in candidates] + list(alias.values()))
     syn = await synonym_map(db)
     matched = 0
     unmatched_latins: list[str] = []
     for c in candidates:
-        p = by_latin.get(c["latin"])
+        p = via_alias(by_latin, c["latin"])
         c["plant"] = _plant_card(p) if p is not None else None
         # Canonical accepted-name key, so the client can tell «same species» even across
         # genus synonyms (Betonica↔Stachys officinalis) or duplicate corpus cards.
@@ -214,19 +223,20 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
         # слой ухода знает и свет, и полив, и зимнюю температуру. Поэтому к
         # такому кандидату прикладываем адрес его карточки ухода: клиент вместо
         # тупика «вне рамок травника» ведёт человека туда, где ответ есть.
-        care = await care_for_latins(db, unmatched_latins)
+        with_alias = unmatched_latins + [alias[n] for n in unmatched_latins if n in alias]
+        care = await care_for_latins(db, with_alias)
         # Карточку комнатного ищем и по роду: определитель называет вид
         # («Syngonium podophyllum»), а книги описывают род, и карточка заведена
         # на него. Без этого человек, снявший сингониум, слышал «карточки нет»
         # при живой карточке рода.
-        houseplant_cards = await cards_for_latins(db, unmatched_latins)
+        houseplant_cards = await cards_for_latins(db, with_alias)
         care_count = 0
         for c in candidates:
-            found = care.get(c["latin"])
+            found = via_alias(care, c["latin"])
             if found:
                 c["care"] = found
                 care_count += 1
-            card = houseplant_cards.get(c["latin"])
+            card = via_alias(houseplant_cards, c["latin"])
             if card and c.get("plant") is None:
                 c["plant"] = {k: v for k, v in card.items() if k != "scope"}
                 c["plant"]["origin"] = "houseplant"
@@ -240,11 +250,12 @@ async def _bridge(result: dict, db: AsyncSession) -> dict:
         # атласе» отдаём родню, честно помеченную отдельным полем. Подменять вид
         # родственником в поле `plant` НЕЛЬЗЯ — снят Crassula ovata, а показать
         # Тиллею водную как «его карточку» было бы враньём.
-        relatives = await resolve_genus_relatives(db, unmatched_latins)
+        relatives = await resolve_genus_relatives(db, with_alias)
         genus_hits = 0
         for c in candidates:
-            if c.get("plant") is None and c["latin"] in relatives:
-                c["genus_relatives"] = relatives[c["latin"]]
+            rel = via_alias(relatives, c["latin"])
+            if c.get("plant") is None and rel:
+                c["genus_relatives"] = rel
                 genus_hits += 1
         if genus_hits:
             result["genus_count"] = genus_hits

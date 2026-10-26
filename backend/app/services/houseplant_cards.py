@@ -599,8 +599,18 @@ async def cards_for_latins(db: AsyncSession, latins: list[str]) -> dict[str, dic
           AND (p.origin = 'houseplant'
                OR EXISTS (SELECT 1 FROM houseplant_care c
                           WHERE c.latin_verified AND c.taxon_latin = p.name_latin))
+        ORDER BY (p.origin = 'houseplant') DESC, (p.rank = 'genus') DESC,
+                 (SELECT count(*) FROM plants k WHERE k.parent_id = p.id) DESC,
+                 (p.name ~ '[А-Яа-яЁё]') DESC, p.name
     """), {"names": names})).all()
-    known = {r.name_latin: r for r in rows}
+    # Под голой латынью рода в гербарии лежат и родовая карточка, и видовые с
+    # битым именем: под «Sedum» — «Очиток» и «Смолёвка сибирская». Раньше
+    # побеждала последняя строка, и снимок очитка получал карточку смолёвки.
+    # Из нескольких родовых берём ту, в которой больше видов: «Первоцвет»,
+    # а не опечатку распознавания «Нервоцвет».
+    known: dict = {}
+    for r in rows:
+        known.setdefault(r.name_latin, r)
 
     out: dict[str, dict] = {}
     for latin, (species, genus) in wanted.items():
