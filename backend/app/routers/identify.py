@@ -79,6 +79,13 @@ _KINGDOM_PLANT = 0.30
 # 26.10.2026). Выше неё показываем ответ мохового индекса: Pl@ntNet мхов не знает
 # (0 из 18 снимков мхов, кукушкин лён у него подорожник с уверенностью 0.87).
 _KINGDOM_MOSS = 0.70
+# Вторая дорога в мох: классификатор колеблется (кукушкин лён 0.65, маршанция 0.49),
+# но моховой индекс узнаёт снимок уверенно. У растений и грибов сходство с лучшим
+# мхом не выше 0.80–0.83, у мхов медиана 0.884 (замер 26.10.2026: 200 мхов, 150
+# грибов, 150 полевых снимков растений). С этим правилом мхом признано 97.5% мхов,
+# 0 растений и 1 гриб из 150.
+_MOSS_DOUBT = 0.40
+_MOSS_SIM = 0.86
 
 
 async def _auto_route(blobs, *, organs, limit) -> tuple[dict, bool]:
@@ -100,8 +107,11 @@ async def _auto_route(blobs, *, organs, limit) -> tuple[dict, bool]:
     )
     p_fungus = shroom.get("p_fungus") if isinstance(shroom, dict) else None
     moss = shroom.get("moss") if isinstance(shroom, dict) else None
-    if moss and (shroom.get("p_moss") or 0) >= _KINGDOM_MOSS and moss.get("candidates"):
-        return moss, False
+    if moss and moss.get("candidates"):
+        p_moss = shroom.get("p_moss") or 0
+        sim = moss["candidates"][0].get("raw_similarity") or 0
+        if p_moss >= _KINGDOM_MOSS or (p_moss >= _MOSS_DOUBT and sim >= _MOSS_SIM):
+            return moss, False
 
     if p_fungus is None:                       # движок без классификатора → старая лестница
         if _confident(plant, _PLANT_CONFIDENT):

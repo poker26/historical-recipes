@@ -27,12 +27,16 @@ logger = logging.getLogger(__name__)
 
 # Косинус → сопоставимая с вероятностью уверенность (см. калибровку ниже).
 _CAL_LO, _CAL_HI = 0.78, 0.95
+# У мхов сходство со своими опорными снимками ниже, чем у грибов (замер 26.10.2026 на
+# 200 проверочных снимках: медиана 0.884, p10 0.829). С грибной шкалой верный
+# плевроциум со сходством 0.784 показывался как «2%».
+_MOSS_LO, _MOSS_HI = 0.75, 0.95
 
 
-def _calibrate(sim: float | None) -> float:
+def _calibrate(sim: float | None, lo: float = _CAL_LO, hi: float = _CAL_HI) -> float:
     if sim is None:
         return 0.0
-    return round(min(1.0, max(0.0, (float(sim) - _CAL_LO) / (_CAL_HI - _CAL_LO))), 4)
+    return round(min(1.0, max(0.0, (float(sim) - lo) / (hi - lo))), 4)
 
 
 async def identify(
@@ -77,11 +81,11 @@ async def identify(
            "p_fungus": body.get("p_fungus"), "p_moss": body.get("p_moss")}
     if body.get("moss_candidates"):
         out["moss"] = {"engine": "bioclip-moss",
-                       "candidates": _cands(body["moss_candidates"], limit)}
+                       "candidates": _cands(body["moss_candidates"], limit, _MOSS_LO, _MOSS_HI)}
     return out
 
 
-def _cands(raw, limit: int) -> list[dict]:
+def _cands(raw, limit: int, lo: float = _CAL_LO, hi: float = _CAL_HI) -> list[dict]:
     return [{
         "latin": c.get("latin"),
         "latin_author": c.get("latin"),
@@ -90,7 +94,7 @@ def _cands(raw, limit: int) -> list[dict]:
         # Калибровка на реальных фото (2026-08-25, 120 грибов vs 120 растений):
         # грибы медиана 0.888 / p10 0.824; растения медиана 0.752 / p90 0.826.
         # Линейно растягиваем рабочий диапазон 0.78–0.95 в 0–1.
-        "score": _calibrate(c.get("score")),
+        "score": _calibrate(c.get("score"), lo, hi),
         "raw_similarity": c.get("score"),
         "common_names": [],
         "genus": (c.get("latin") or "").split(" ")[0] or None,
