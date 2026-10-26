@@ -27,13 +27,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 # Википедия отвечает 403 всем, кто не представился, и просит в подписи адрес,
-# по которому с нами можно связаться.
-_HEADERS = {"User-Agent": "chto-rastet/1.0 (plant cards; contact via begemot26.ru)"}
+# по которому с нами можно связаться. Голое имя домена в скобках перестало
+# проходить: 26.10.2026 прогон получил 403 на всё и нашёл 0 снимков из 83.
+# Нужен полный URL, как в образце из правил (https://w.wiki/4wJS).
+_HEADERS = {"User-Agent": "ChtoRastet/1.0 (https://botanik.fun; plant atlas photo lookup) httpx"}
 
 # Языки по очереди: русская статья чаще ведёт к привычному русскому имени,
 # английская выручает там, где русской статьи про вид ещё нет.
@@ -123,6 +128,11 @@ async def _ask(client: httpx.AsyncClient, host: str, params: dict) -> dict:
             wait = response.headers.get("Retry-After")
             await asyncio.sleep(float(wait) if (wait or "").isdigit() else 30.0 * (attempt + 1))
             continue
+        if response.status_code != 200:
+            # Отказ без шума выглядит как «снимков нет»: так прогон 26.10 молча
+            # нашёл ноль. Пусть отказ будет виден в журнале воркера.
+            logger.warning(f"wikimedia {host}: HTTP {response.status_code}")
+            return {}
         try:
             return response.json()
         except Exception:
