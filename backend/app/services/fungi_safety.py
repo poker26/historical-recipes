@@ -116,6 +116,10 @@ _CORT_DEADLY = ("Содержит орелланин, яд, который ра�
                 "когда почки уже повреждены.")
 _AMANITIN = ("Содержит аманитины, яды, которые разрушают печень. Взрослого человека может "
              "убить один гриб, а признаки отравления появляются только через 6–24 часа.")
+_PUFFBALL = ("Дождевики и головачи съедобны, пока мякоть внутри белая и плотная; пожелтевшие "
+             "и потемневшие грибы не едят. Молодой мухомор в общем покрывале тоже похож на "
+             "белый шарик, поэтому каждый гриб разрезают вдоль и смотрят, нет ли внутри "
+             "очертаний шляпки и ножки.")
 _MIXED_GENUS = {
     "amanita": ("В роде мухоморов есть смертельно ядовитые виды. Про этот вид в книгах "
                 "нет надёжных данных, поэтому есть его нельзя."),
@@ -140,19 +144,19 @@ LEVEL_RULES = {
     "amanita ocreata": _r(4, _AMANITIN),
     "amanita bisporigera": _r(4, _AMANITIN),
     "amanita exitialis": _r(4, _AMANITIN),
-    "amanita pantherina": _r(4, "Мухомор пантерный смертельно ядовит: иботеновой кислоты "
+    "amanita pantherina": _r(4, "Смертельно ядовит: иботеновой кислоты "
                                 "и мусцимола в нём больше, чем в красном мухоморе. "
                                 "Отравление начинается с бреда и судорог и может кончиться "
                                 "смертью."),
-    "amanita muscaria": _r(3, "Мухомор красный ядовит: иботеновая кислота и мусцимол "
+    "amanita muscaria": _r(3, "Ядовит: иботеновая кислота и мусцимол "
                               "вызывают бред, судороги и потерю сознания. Смертельные "
                               "отравления редки, но бывают."),
-    "amanita regalis": _r(3, "Мухомор королевский ядовит так же, как красный: иботеновая "
+    "amanita regalis": _r(3, "Ядовит так же, как мухомор красный: иботеновая "
                              "кислота и мусцимол вызывают бред, судороги и потерю сознания."),
-    "amanita gemmata": _r(3, "Мухомор жёлто-бурый ядовит: в нём есть иботеновая кислота, "
+    "amanita gemmata": _r(3, "Ядовит: в нём есть иботеновая кислота, "
                              "та же, что в красном мухоморе."),
-    "amanita citrina": _r(3, "Мухомор поганковидный ядовит, в пищу его не употребляют."),
-    "amanita porphyria": _r(3, "Мухомор порфировый ядовит, в пищу его не употребляют."),
+    "amanita citrina": _r(3, "Ядовит, в пищу его не употребляют."),
+    "amanita porphyria": _r(3, "Ядовит, в пищу его не употребляют."),
     "amanita caesarea": _r(1, "Кесарев гриб съедобен и считается деликатесом. Молодой гриб "
                               "в общем покрывале похож на яйцо бледной поганки, поэтому "
                               "собирают только раскрывшиеся грибы с оранжевой шляпкой и "
@@ -200,6 +204,12 @@ LEVEL_RULES = {
     "cortinarius infractus": _r(0, "Паутинник надломленный несъедобен из-за сильной горечи."),
     "cortinarius traganus": _r(0, "Паутинник козлиный несъедобен: у него резкий неприятный "
                                   "запах. О ядовитости данных мало."),
+    # дождевики и головачи
+    "lycoperdon": _r(1, _PUFFBALL, edible=["молодые грибы с белой мякотью"]),
+    "calvatia": _r(1, _PUFFBALL, edible=["молодые грибы с белой мякотью"]),
+    "bovista": _r(1, _PUFFBALL, edible=["молодые грибы с белой мякотью"]),
+    "pleurotus": _r(1, "Вешенки съедобны, их выращивают и собирают в лесу.",
+                    edible=["плодовое тело"]),
     # прочие ошибки модели
     "armillaria": _r(2, "Опята съедобны только после варки: сырые или недоваренные они "
                         "вызывают расстройство желудка.", edible=["шляпки после варки"],
@@ -211,7 +221,7 @@ LEVEL_RULES = {
                                    "расстройство желудка, описаны и смертельные случаи."),
     "omphalotus": _r(3, "Омфалоты ядовиты: через полчаса-два после еды начинаются сильная "
                         "рвота и понос."),
-    "caloboletus radicans": _r(0, "Боровик укореняющийся несъедобен из-за горечи."),
+    "caloboletus radicans": _r(0, "Несъедобен из-за сильной горечи."),
     "mycosarcoma maydis": _r(1, "Молодые вздутия кукурузной головни едят в Мексике, там это "
                                 "блюдо называют уитлакоче.", edible=["молодые вздутия"]),
     "ustilago maydis": _r(1, "Молодые вздутия кукурузной головни едят в Мексике, там это "
@@ -245,7 +255,44 @@ def identity_conflict(name: str | None, latin: str | None) -> str | None:
         return "имя ядовитого гриба, латынь съедобного"
     if _EDIBLE_NAME.match(n) and genus in ("gyromitra", "amanita", "galerina"):
         return "имя съедобного гриба, латынь ядовитого"
+    expect = _NAME_BY_GENUS.get(genus)
+    if expect and re.search(r"[а-яё]", n) and not re.match(expect, n):
+        return "русское имя не из этого рода"
     return None
+
+
+# Русские имена, которые ждём у рода из справочника. Латынь в атласе местами чужая
+# («Майский гриб» с Agaricus, «Пестрец колокольчатый» с Galerina), и правило рода
+# досталось бы не тому грибу.
+_NAME_BY_GENUS = {
+    "agaricus": r"шампиньон|агарик|печериц",
+    "russula": r"сыроежк|подгруздок|валу",
+    "tricholoma": r"рядовк|зеленушк",
+    "armillaria": r"оп[её]н|опят",
+    "kuehneromyces": r"оп[её]н|опят",
+    "hypholoma": r"л[ож]*ноопен|л[ож]*ноопён|ложный|серно-ж|оп[её]н|опят",
+    "marasmius": r"оп[её]н|негниючник",
+    "calocybe": r"рядовк|майск|калоцибе",
+    "entoloma": r"энтолом",
+    "morchella": r"сморч",
+    "gyromitra": r"строч",
+    "macrolepiota": r"зонтик|гриб-зонтик",
+    "chlorophyllum": r"зонтик|гриб-зонтик",
+    "amanita": r"мухомор|поплав|кесарев|поганк",
+    "cortinarius": r"паутинник|колпак|розитес",
+    "lycoperdon": r"дождевик|головач|порховк|пороховк",
+    "bovista": r"дождевик|головач|порховк|пороховк",
+    "calvatia": r"дождевик|головач|лангерманн",
+    "pleurotus": r"в[её]шенк|в[её]шонк",
+    "galerina": r"галерин",
+    "lepiota": r"лепиот",
+    "scleroderma": r"ложнодождевик|склеродерм",
+    "tylopilus": r"желчн|горчак",
+    "rubroboletus": r"сатанинск|боровик",
+    "omphalotus": r"омфалот",
+    "clitocybe": r"говорушк",
+    "inocybe": r"волоконниц",
+}
 
 
 def level_rule(name: str | None, latin: str | None) -> dict | None:
@@ -254,6 +301,8 @@ def level_rule(name: str | None, latin: str | None) -> dict | None:
         return None
     species, genus = _keys(latin)
     rule = LEVEL_RULES.get(species) or LEVEL_RULES.get(genus)
+    if rule is None and genus == "amanita" and (name or "").lower().startswith("поплав"):
+        rule = _r(2, _POPLAVOK, edible=["плодовое тело после варки"])
     if rule is None and species and genus in _MIXED_GENUS:
         rule = _r(0, _MIXED_GENUS[genus])
     if rule is None:
@@ -283,8 +332,13 @@ def lookalikes(name: str | None, latin: str | None, rank: str | None = None) -> 
 # Фразы очерка, где модель пересказала прежнего двойника: «Опасный двойник —
 # бледная поганка, не перепутай».
 _TWIN_SENTENCE = re.compile(r"двойник|не перепута", re.I)
-_SAYS_DEADLY = re.compile(r"смертельн|есть нельзя|употреблять нельзя|ядовит", re.I)
+# Хвост фразы с двойником: «Условно съедобен; опасный двойник — X, не перепутай.»
+_TWIN_TAIL = re.compile(r"\s*[;,—–-]?\s*(?:[а-яё]+\s+){0,2}двойник\b.*$", re.I)
+_SAYS_DEADLY = re.compile(r"смертельн|есть нельзя|употреблять нельзя|ядовит|несъедоб|"
+                          r"съедобность исключена", re.I)
 _SAYS_SAFE = re.compile(r"съедоб|безопас", re.I)
+_SAYS_LETHAL = re.compile(r"смертельн", re.I)
+_SAYS_NO_DATA = re.compile(r"недостаточно данных|нет данных|достоверных данных|нет надёжных", re.I)
 
 
 def _sentences(t: str) -> list[str]:
@@ -296,10 +350,17 @@ def fix_text(t: str | None, level: int, level_changed: bool) -> str:
     keep = []
     for s in _sentences(t or ""):
         if _TWIN_SENTENCE.search(s):
-            continue
+            head = _TWIN_TAIL.sub("", s).rstrip(" ,;:—–-")
+            if len(head) < 15 or _TWIN_SENTENCE.search(head):
+                continue
+            s = head + "."
         if level_changed and level <= 2 and _SAYS_DEADLY.search(s):
             continue
         if level_changed and level >= 3 and _SAYS_SAFE.search(s):
+            continue
+        if level_changed and level == 3 and _SAYS_LETHAL.search(s):
+            continue
+        if level_changed and level > 0 and _SAYS_NO_DATA.search(s):
             continue
         keep.append(s)
     return " ".join(keep).strip()
@@ -311,21 +372,26 @@ def safety_block(level, rationale, edible, dangerous, twin, confused) -> dict:
             "deadly_twin": twin, "confused_with": confused}
 
 
-def fix_monograph(mono: dict, safety: dict) -> dict:
+def fix_monograph(mono: dict, safety: dict, curated: bool = False) -> dict:
+    """``curated``: уровень и обоснование заданы правилом, а не моделью; тогда
+    опустевший вердикт заменяется первой фразой обоснования."""
     m = dict(mono)
     old = m.get("safety") or {}
     level = safety["level"]
     changed = old.get("level") != level
     m["safety"] = safety
     m["is_toxic"] = level >= 3
+    if "kingdom" in m:
+        m["kingdom"] = "гриб"       # 95 грибов стояли растениями до 26.10.2026
     roles = [r for r in (m.get("roles") or []) if r != "toxic"]
     if level >= 3:
         roles.append("toxic")
     if "roles" in m or level >= 3:
         m["roles"] = roles
     verdict = fix_text(m.get("verdict"), level, changed)
-    if not verdict and changed and level in (1, 2) and safety.get("rationale"):
-        verdict = _sentences(safety["rationale"])[0]
+    if not verdict and curated and safety.get("rationale"):
+        parts = _sentences(safety["rationale"])
+        verdict = " ".join(parts[:2]) if len(" ".join(parts[:2])) <= 260 else parts[0]
     if verdict:
         m["verdict"] = verdict
     else:
@@ -358,10 +424,13 @@ async def fix_fungi_cards(db: AsyncSession, apply: bool = False) -> dict:
             ep, dp = rule["edible_parts"] or None, rule["dangerous_parts"] or None
         else:
             level, why, ep, dp = r.safety_level, r.safety_rationale, r.edible_parts, r.dangerous_parts
+        if (level or 0) >= 3:
+            twin = None             # ядовитый двойник бывает только у съедобного гриба
         mono = r.monograph if isinstance(r.monograph, dict) else (json.loads(r.monograph) if r.monograph else None)
         new_mono = None
         if mono is not None and level is not None:
-            new_mono = fix_monograph(mono, safety_block(level, why, ep, dp, twin, confused))
+            new_mono = fix_monograph(mono, safety_block(level, why, ep, dp, twin, confused),
+                                     curated=rule is not None)
         if (level == r.safety_level and why == r.safety_rationale and ep == r.edible_parts
                 and dp == r.dangerous_parts and twin == r.deadly_twin and confused == r.confused_with
                 and new_mono == mono):

@@ -62,8 +62,35 @@ def test_monograph_gets_rule_verdict_when_empty():
             "safety": {"level": 4}, "roles": ["toxic"], "is_toxic": True}
     rule = level_rule("Поплавок серый", "Amanita vaginata")
     s = safety_block(rule["level"], rule["rationale"], rule["edible_parts"], [], "бледная поганка", None)
-    out = fix_monograph(mono, s)
+    out = fix_monograph(mono, s, curated=True)
     assert out["safety"]["level"] == 2 and out["safety"]["deadly_twin"] == "бледная поганка"
     assert out["is_toxic"] is False and "toxic" not in out["roles"]
     assert out["verdict"].startswith("Поплавки условно съедобны")
-    assert fix_monograph(out, s) == out                     # повторный прогон ничего не меняет
+    assert "после варки" in out["verdict"]
+    assert fix_monograph(out, s, curated=True) == out                     # повторный прогон ничего не меняет
+
+
+def test_twin_clause_cut_keeps_head():
+    v = "Условно съедобный гриб, требует тщательной обработки перед употреблением; опасный двойник — Тигровый мухомор, не перепутай."
+    assert fix_text(v, 2, level_changed=False) == "Условно съедобный гриб, требует тщательной обработки перед употреблением."
+    v = "СМЕРТЕЛЬНО ядовит — есть нельзя; опасный двойник — сыроежки, не перепутай."
+    assert fix_text(v, 1, level_changed=True) == ""
+
+
+def test_contradictions_after_level_change():
+    assert fix_text("Съедобность исключена.", 2, level_changed=True) == ""
+    assert fix_text("Мухомор поганковидный смертельно ядовит — есть его нельзя.", 3, level_changed=True) == ""
+
+
+def test_poplavok_by_name():
+    assert level_rule("Поплавок серый", "Amanita nivalis")["level"] == 2
+    assert "королевский" not in level_rule("Мухомор поганковидный", "Amanita regalis")["rationale"]
+
+
+def test_name_must_fit_genus():
+    assert identity_conflict("Майский гриб", "Agaricus")
+    assert identity_conflict("Пестрец колокольчатый", "Galerina")
+    assert identity_conflict("омфалина каменистая", "Pleurotus tuber-regium")
+    assert level_rule("омфалина каменистая", "Pleurotus tuber-regium") is None
+    assert identity_conflict("Agaricus", "Agaricus") is None         # имя латиницей не проверяем
+    assert identity_conflict("Лжноопёнок серно-жёлтый", "Hypholoma fasciculare") is None
