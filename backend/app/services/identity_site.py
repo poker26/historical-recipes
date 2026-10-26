@@ -1625,6 +1625,46 @@ async def run_aliasjunk(apply: bool, limit: int = 0, progress: Progress | None =
 CHECK_ALIEN = "identity.alien_genus"
 
 
+def _strip_family(name: str | None) -> str:
+    """«Семейство Ломонос прямой» → «Ломонос прямой»: приставка осталась от разметки книги."""
+    return re.sub(r"^\s*семейство\s+", "", name or "", flags=re.I)
+
+
+def _translit_genus(word: str, genus: str) -> bool:
+    """Слово это латынь рода, записанная кириллицей: «агримония» = Agrimonia, «абрутилон» = Abutilon."""
+    t = _norm_translit(word.lower().replace("ё", "е").translate(_TRANSLIT))
+    g = _norm_translit(genus.lower().replace("qu", "kv"))
+    if len(t) < 4 or len(g) < 4:
+        return False
+    return Levenshtein.distance(t[:len(g) + 1], g) <= max(1, len(g) // 4)
+
+
+def _alt_names(name: str | None) -> list[str]:
+    """Основное имя и другие имена карточки: в скобках, через запятую, через «или»
+    («Подник крапчатый (пазник крапчатый, троммсдорфия крапчатая)»)."""
+    out = []
+    for part in re.split(r",|\(|\)|\sили\s|;", _strip_family(name)):
+        part = part.strip()
+        if len(_ru_words(part)) >= 1 and _CYR.search(part) and part not in out:
+            out.append(part)
+    return out[:3]
+
+
+def _name_match_loose(card: str, other: str | None) -> bool:
+    """Как _name_match, но видовое слово может отличаться окончанием суффикса, если у
+    слов общее начало не короче девяти букв: «крупноцветковая» и «крупноцветная»."""
+    if _name_match(card, other):
+        return True
+    a, b = _ru_words(card), _ru_words(other)
+    if len(a) < 2 or len(b) < 2 or _stem(a[0]) != _stem(b[0]):
+        return False
+    x, y = a[-1], b[-1]
+    k = 0
+    while k < min(len(x), len(y)) and x[k] == y[k]:
+        k += 1
+    return k >= 9
+
+
 async def alien_genus_cards(db, vern: Vernacular | None = None) -> tuple[list, dict]:
     """Видовые карточки растений, у которых латынь только рода, а русское имя этому роду не
     принадлежит (грибы сверены с родом 26.10 в fungi_safety; замер 26.10.2026: 22 растения на Aconitum, среди них орлая и подник,
@@ -1636,7 +1676,8 @@ async def alien_genus_cards(db, vern: Vernacular | None = None) -> tuple[list, d
     rows = (await db.execute(text("""
         SELECT id, name, name_latin, kingdom, safety_level, names_historical FROM plants
         WHERE rank = 'species' AND kingdom = 'растение' AND name_latin IS NOT NULL
-        ORDER BY name"""))).all()
+        -- первыми карточки со смертельным и ядовитым уровнем: на них чужой род врёт сильнее всего
+        ORDER BY safety_level DESC NULLS LAST, name"""))).all()
     single = []
     for r in rows:
         genus, epi, _cap = latin_core(r.name_latin)
@@ -1657,7 +1698,9 @@ async def alien_genus_cards(db, vern: Vernacular | None = None) -> tuple[list, d
             names[g].add(n)
     def _own(name: str | None, g: str) -> bool:
         gn = {_ru_words(v)[0] for v in names[g] if _ru_words(v)}
-        return any(_stem(w) == _stem(v) for w in _ru_words(name)[:3] for v in gn)
+        words = _ru_words(_strip_family(name))
+        return bool(words) and (_translit_genus(words[0], g)
+                                or any(_stem(w) == _stem(v) for w in words[:3] for v in gn))
 
     if vern:
         # Народные названия спрашиваются только у родов, где имя хоть одной карточки не
@@ -1706,10 +1749,15 @@ async def _in_backbone(db, latin: str) -> bool:
 async def _alien_decide(client: httpx.AsyncClient, vern: Vernacular, r, genus: str) -> tuple[str, str | None, str, list]:
     """(решение, латынь, почему, кандидаты). Решения: relatin (вид), genus (только род),
     review (на ручной разбор), deferred (iNaturalist не ответил)."""
-    head = re.split(r",|\(|\sили\s|;", r.name or "")[0].strip()
+    alts = _alt_names(r.name)
+    head = alts[0] if alts else (r.name or "")
     async with async_session() as db:
         quotes = await _card_quotes(db, r.id)
     ranked, hints = await _candidates_by_name(client, head, r.kingdom)
+    for alt in alts[1:]:
+        if ranked:
+            break
+        ranked, hints = await _candidates_by_name(client, alt, r.kingdom)
     cands = [f"{k} ({hints.get(k)}; {', '.join(sorted(s))})" for k, s in ranked[:4]]
     if ranked:
         best, srcs = ranked[0]
@@ -1745,7 +1793,10 @@ async def _alien_decide(client: httpx.AsyncClient, vern: Vernacular, r, genus: s
     if prop.get("latin") and prop.get("conf", 0) >= 80:
         acc = await _gbif_species(client, prop["latin"], r.kingdom, exact_only=True)
     if acc and acc.split()[0].lower() != genus.lower():
-        hit = next((v for v in await vern.names(acc) if _name_match(head, v)), None)
+        vn = await vern.names(acc)
+        hit = next((v for a in alts for v in vn if _name_match(a, v)), None)
+        if not hit and prop.get("conf", 0) >= 90:
+            hit = next((v for a in alts for v in vn if _name_match_loose(a, v)), None)
         if hit:
             return "relatin", acc, f"модель ({prop['conf']}), народное название вида: {hit}", [acc]
     # Вида нет: род по первому слову имени, если слово называет один род.
