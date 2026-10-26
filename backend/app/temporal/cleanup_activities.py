@@ -620,6 +620,11 @@ async def edible_safety_activity() -> dict:
         # правило всё равно вернёт его уровень в конце прохода.
         by_name = [pid for pid, name, latin, kingdom in cand if is_deadly_name(name)
                    and not (kingdom == "гриб" and fungi_safety.level_rule(name, latin))]
+        # Смертельная латынь растения при уровне ниже 4: латынь поменяли после того, как уровень
+        # был посчитан («Царский корень» стал Veratrum lobelianum при уровне 1). Уровни грибов
+        # задаёт fungi_safety, их не трогаем.
+        by_name += [pid for pid, name, latin, kingdom in cand
+                    if kingdom == "растение" and is_deadly_anchor(latin) and pid not in by_name]
         # Ароидные с рафидами: уровень задаёт правило. Карточку, у которой стоит
         # что-то другое (так было до 20.10.2026), пересчитываем.
         aroids = (await db.execute(text(
