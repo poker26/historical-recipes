@@ -713,3 +713,16 @@ def test_light_from_saakovs_wording():
 
     assert normalize_light("Растение необходимо устанавливать ближе к свету, "
                            "беречь от сквозняков")["level"] == "bright"
+
+
+def test_genus_heading_of_two_column_handbook():
+    from app.services.houseplant_ingest import _GENUS_HEADING_RE
+    page = "\n".join([
+        "Х. хохлатый — Ch. comosum Bak.",
+        "Ховея, кентия — Howea Benth. et Hook. f.",
+        "(Арековые, или Пальмы, — Arecaceae, или Palmae)",
+        "Х. Бельмора — H. belmoreana",
+        "Хойя — Hoya R. Br.",
+        "Растения содержат зимой при 14 °С. Уход — см. Финик.",
+    ])
+    assert _GENUS_HEADING_RE.findall(page) == ["Howea", "Hoya"]

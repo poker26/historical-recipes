@@ -103,11 +103,14 @@ def _indra_converter():
     return _indra
 
 
-def ocr_page_indra(image_bytes: bytes) -> tuple[str, float]:
+def ocr_page_indra(image_bytes: bytes, columns: bool = False) -> tuple[str, float]:
     """Распознаёт страницу Indra. Возвращает текст и среднюю уверенность строк 0–100.
 
     Модель грузится один раз на процесс. Конвертер общий, поэтому вызовы
     идут по одному: параллельные активности воркера ждут друг друга.
+
+    ``columns`` пересобирает порядок блоков для книги в две колонки с
+    заголовками во всю ширину (см. :func:`column_order`).
     """
     with _indra_lock, tempfile.NamedTemporaryFile(suffix=".png") as tmp:
         tmp.write(image_bytes)
@@ -118,7 +121,8 @@ def ocr_page_indra(image_bytes: bytes) -> tuple[str, float]:
     _, page = pages[0]
     confs = [line.conf for line in page.lines if line.text.strip()]
     confidence = 100 * sum(confs) / len(confs) if confs else 0.0
-    return fold_mixed_scripts(body_text(page.blocks) or page.text or ""), confidence
+    blocks = column_order(page.blocks) if columns else page.blocks
+    return fold_mixed_scripts(body_text(blocks) or page.text or ""), confidence
 
 
 # Блоки Indra, которые не относятся к связному тексту страницы.
@@ -135,6 +139,47 @@ def is_caption(text: str) -> bool:
         return True
     items = len(_LEGEND_ITEM_RE.findall(text))
     return items >= 3 or (items >= 1 and len(text) < 300)
+
+
+def column_order(blocks: list) -> list:
+    """Блоки страницы в порядке чтения книги в две колонки.
+
+    У Головкина каждый род открывается заголовком во всю ширину, а статья под
+    ним идёт двумя колонками. Indra иногда ставит конец правой колонки после
+    следующего заголовка: уход ховеи («Зимой содержат при температуре 14—18 °С…
+    Уход — см. Финик») оказался в тексте хойи, и модель приписала его хойе
+    (проба 26.10.2026). Поэтому страница режется на полосы по заголовкам, и в
+    каждой полосе сначала читается левая колонка сверху вниз, потом правая.
+    Блоки без координат возвращаются как есть.
+    """
+    boxed = [b for b in blocks or [] if isinstance(b, dict) and len(b.get("bbox") or []) == 4]
+    if not boxed or len(boxed) != len(blocks):
+        return list(blocks or [])
+    left_edge = min(b["bbox"][0] for b in boxed)
+    right_edge = max(b["bbox"][2] for b in boxed)
+    middle = (left_edge + right_edge) / 2
+
+    def is_heading(block: dict) -> bool:
+        return block.get("label") == "Section-Header"
+
+    headings = sorted((b for b in boxed if is_heading(b)), key=lambda b: b["bbox"][1])
+    cuts = [h["bbox"][1] for h in headings]
+
+    def band(block: dict) -> int:
+        top = block["bbox"][1]
+        return sum(1 for cut in cuts if cut <= top)
+
+    ordered: list = []
+    for index in range(len(cuts) + 1):
+        inside = [b for b in boxed if band(b) == index]
+        heads = sorted((b for b in inside if is_heading(b)), key=lambda b: b["bbox"][1])
+        rest = [b for b in inside if not is_heading(b)]
+        left = sorted((b for b in rest if (b["bbox"][0] + b["bbox"][2]) / 2 < middle),
+                      key=lambda b: b["bbox"][1])
+        right = sorted((b for b in rest if (b["bbox"][0] + b["bbox"][2]) / 2 >= middle),
+                       key=lambda b: b["bbox"][1])
+        ordered.extend(heads + left + right)
+    return ordered
 
 
 def body_text(blocks: list) -> str:
@@ -186,7 +231,8 @@ async def ocr_page_llm(image_bytes: bytes, task: str = "ocr_fallback") -> str:
     return await chat_completion(messages, task=task, temperature=0.1, max_tokens=8192)
 
 
-async def ocr_page_with_fallback(image_bytes: bytes, engine: str | None = None) -> tuple[str, float, str]:
+async def ocr_page_with_fallback(image_bytes: bytes, engine: str | None = None,
+                                 columns: bool = False) -> tuple[str, float, str]:
     """OCR with automatic fallback to LLM for low-confidence pages.
 
     Returns (text, confidence, method) where method is 'tesseract', 'indra',
@@ -199,7 +245,7 @@ async def ocr_page_with_fallback(image_bytes: bytes, engine: str | None = None) 
     engine = engine or settings.ocr_engine
     if engine == "indra":
         try:
-            text, confidence = ocr_page_indra(image_bytes)
+            text, confidence = ocr_page_indra(image_bytes, columns=columns)
         except Exception as e:
             logger.warning(f"Indra OCR failed: {e}; falling back to Tesseract")
             engine = "tesseract"

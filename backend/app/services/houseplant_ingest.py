@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import fitz
@@ -61,8 +62,11 @@ def open_book(book: str) -> "fitz.Document":
         response.release_conn()
 
 
-async def page_text(doc: "fitz.Document", number: int) -> str:
-    """Текст страницы; без текстового слоя страница распознаётся."""
+async def page_text(doc: "fitz.Document", number: int, columns: bool = False) -> str:
+    """Текст страницы; без текстового слоя страница распознаётся.
+
+    ``columns`` — книга набрана в две колонки (Головкин): порядок блоков
+    распознавания пересобирается по колонкам."""
     body = doc[number - 1].get_text().strip()
     if len(body) > 200:
         return body
@@ -72,7 +76,8 @@ async def page_text(doc: "fitz.Document", number: int) -> str:
     pixmap = page_pixmap(doc[number - 1])
     # Книги о комнатных растениях напечатаны современной орфографией, а латынь в
     # них на каждой странице. Indra читает её, Tesseract с русским словарём нет.
-    recognized, _confidence, _engine = await ocr_page_with_fallback(pixmap.tobytes("png"), engine="indra")
+    recognized, _confidence, _engine = await ocr_page_with_fallback(
+        pixmap.tobytes("png"), engine="indra", columns=columns)
     return recognized
 
 
@@ -156,8 +161,15 @@ async def save_plant(source_id: str, plant: dict) -> tuple[int, int]:
     return care_rows, problem_rows
 
 
+# Заголовок рода у Головкина: «Ховея, кентия — Howea Benth. et Hook. f.».
+# Строка вида начинается с буквы и точки («Х. Форстера — H. forsteriana»), а
+# строка семейства со скобки, поэтому ни та, ни другая сюда не попадают.
+_GENUS_HEADING_RE = re.compile(r"^[А-ЯЁ][а-яё]{2,}[^\n—]{0,60}—\s*([A-Z][a-z]{3,})\b", re.M)
+
+
 async def book_pieces(doc: "fitz.Document", by_genus: bool,
-                      numbers: list[int]) -> AsyncIterator[tuple[str, int, str]]:
+                      numbers: list[int],
+                      columns: bool = False) -> AsyncIterator[tuple[str, int, str]]:
     """Отдаёт куски книги по одному: текст, страница и род из заголовка.
 
     Кусок отдаётся сразу, как только готов, а не после того, как подготовится
@@ -176,15 +188,25 @@ async def book_pieces(doc: "fitz.Document", by_genus: bool,
     with_text = sum(1 for n in numbers if len(doc[n - 1].get_text().strip()) > 200)
     has_text_layer = with_text >= len(numbers) // 2
 
+    # Справочник в две колонки (Головкин) пишет уход в конце статьи рода, а
+    # статья тянется на несколько страниц: на странице с уходом заголовка рода
+    # уже нет, и вид «Х. лимолистная» остаётся без латыни. Поэтому последний
+    # заголовок рода переносится на следующую страницу, если она идёт подряд.
+    heading, previous = "", None
     for number in numbers:
         if has_text_layer:
             body = doc[number - 1].get_text().strip()
             if len(body) <= 200:
                 continue
         else:
-            body = await page_text(doc, number)
+            body = await page_text(doc, number, columns)
+        carried = heading if columns and previous == number - 1 else ""
+        previous = number
+        if columns:
+            found = _GENUS_HEADING_RE.findall(body)
+            heading = found[-1] if found else carried
         if body.strip():
-            yield body, number, ""
+            yield body, number, carried
 
 
 async def count_pieces(doc: "fitz.Document", by_genus: bool, numbers: list[int]) -> int:
@@ -226,7 +248,8 @@ async def ingest_book(
         await save_source(source_id, book)
 
     done = plants = care = problems = saved_care = saved_problems = 0
-    async for body, page, genus in book_pieces(doc, by_genus, numbers):
+    async for body, page, genus in book_pieces(doc, by_genus, numbers,
+                                               bool(meta.get("columns"))):
         done += 1
         if done <= start_at:
             continue
