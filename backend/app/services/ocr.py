@@ -121,7 +121,14 @@ def ocr_page_indra(image_bytes: bytes, columns: bool = False) -> tuple[str, floa
     _, page = pages[0]
     confs = [line.conf for line in page.lines if line.text.strip()]
     confidence = 100 * sum(confs) / len(confs) if confs else 0.0
-    blocks = column_order(page.blocks) if columns else page.blocks
+    blocks = page.blocks
+    if columns:
+        # Заголовок рода помечается «## »: по нему разбор узнаёт, чья статья
+        # идёт дальше. Искать заголовок в голом тексте нельзя: подпись к
+        # цветной вклейке («Ховея Форстера — Howea forsteriana») выглядит так же.
+        blocks = [dict(b, text="## " + b["text"].strip())
+                  if b.get("label") == "Section-Header" and (b.get("text") or "").strip() else b
+                  for b in column_order(page.blocks)]
     return fold_mixed_scripts(body_text(blocks) or page.text or ""), confidence
 
 

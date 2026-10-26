@@ -162,9 +162,14 @@ async def save_plant(source_id: str, plant: dict) -> tuple[int, int]:
 
 
 # Заголовок рода у Головкина: «Ховея, кентия — Howea Benth. et Hook. f.».
-# Строка вида начинается с буквы и точки («Х. Форстера — H. forsteriana»), а
-# строка семейства со скобки, поэтому ни та, ни другая сюда не попадают.
-_GENUS_HEADING_RE = re.compile(r"^[А-ЯЁ][а-яё]{2,}[^\n—]{0,60}—\s*([A-Z][a-z]{3,})\b", re.M)
+# За латынью рода в заголовке стоит автор с заглавной буквы («L.», «R. Br.»)
+# или конец строки. Подпись к цветной вклейке выглядит почти так же, но за
+# родом в ней идёт эпитет вида со строчной: «Ховея Форстера — Howea
+# forsteriana». Пометке заголовка от Indra («## ») верить нельзя, она ставит её
+# не всем родам. Строка вида начинается с буквы и точки и сюда не попадает.
+_GENUS_HEADING_RE = re.compile(
+    r"^(?:## )?[А-ЯЁ][а-яё]{2,}[^\n—]{0,40}—\s*([A-Z][a-z]{3,})(?:\s+[A-Z(][^\n]{0,40})?\s*$",
+    re.M)
 
 
 async def book_pieces(doc: "fitz.Document", by_genus: bool,
@@ -257,7 +262,11 @@ async def ingest_book(
             break
 
         try:
-            found = await extract_article(body, page=page, fallback_latin=genus)
+            allowed = None
+            if meta.get("columns"):
+                allowed = set(_GENUS_HEADING_RE.findall(body)) | ({genus} if genus else set())
+            found = await extract_article(body, page=page, fallback_latin=genus,
+                                          allowed_genera=allowed)
         except Exception as error:      # один кусок не должен валить прогон
             if on_piece:
                 await on_piece({"done": done, "total": total, "page": page,

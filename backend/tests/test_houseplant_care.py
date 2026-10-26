@@ -719,10 +719,39 @@ def test_genus_heading_of_two_column_handbook():
     from app.services.houseplant_ingest import _GENUS_HEADING_RE
     page = "\n".join([
         "Х. хохлатый — Ch. comosum Bak.",
-        "Ховея, кентия — Howea Benth. et Hook. f.",
-        "(Арековые, или Пальмы, — Arecaceae, или Palmae)",
+        "## Ховея, кентия — Howea Benth. et Hook. f.",
+        "## (Арековые, или Пальмы, — Arecaceae, или Palmae)",
         "Х. Бельмора — H. belmoreana",
+        "Ховея Форстера — Howea forsteriana",
         "Хойя — Hoya R. Br.",
+        "Хлорофитум — Chlorophytum",
+        "Родина — Ю. Африка",
         "Растения содержат зимой при 14 °С. Уход — см. Финик.",
     ])
-    assert _GENUS_HEADING_RE.findall(page) == ["Howea", "Hoya"]
+    assert _GENUS_HEADING_RE.findall(page) == ["Howea", "Hoya", "Chlorophytum"]
+
+
+def test_two_column_page_keeps_genus_from_its_own_headings(monkeypatch):
+    # Проба 26.10.2026: на странице хойи модель раскрыла «Х. мясистая — H. carnosa»
+    # в Howea по соседней статье. Род принимается только из заголовков страницы
+    # и прошлой страницы, иначе уход ложится на род из заголовка.
+    import asyncio
+    from app.services import houseplant_care as hc
+
+    page = ("Названа в честь садовода Т. Хоя.\n"
+            "Х. мясистая — H. carnosa R. Br. Лиана.\n"
+            "Растения зимой содержат при температуре 14—16 °С.")
+
+    async def fake_llm(messages, **kwargs):
+        return {"plants": [{
+            "taxon": {"latin": "Howea carnosa", "ru": "Х. мясистая", "rank": "species"},
+            "care": [{"field": "temperature",
+                      "quote": "Растения зимой содержат при температуре 14—16 °С.",
+                      "text": "Растения зимой содержат при температуре 14—16 °С."}],
+        }]}
+
+    monkeypatch.setattr(hc, "chat_completion_json", fake_llm)
+    monkeypatch.setattr(hc, "verify_latin", lambda latin, ru, text: latin)
+    found = asyncio.run(hc.extract_article(page, page=396, fallback_latin="Hoya",
+                                           allowed_genera={"Hoya"}))
+    assert [p["taxon"]["latin"] for p in found] == ["Hoya"]
