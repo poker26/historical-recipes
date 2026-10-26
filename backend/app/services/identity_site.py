@@ -1655,8 +1655,14 @@ async def alien_genus_cards(db, vern: Vernacular | None = None) -> tuple[list, d
     for g, n in list(hub) + list(fw):
         if n and _CYR.search(n):
             names[g].add(n)
+    def _own(name: str | None, g: str) -> bool:
+        gn = {_ru_words(v)[0] for v in names[g] if _ru_words(v)}
+        return any(_stem(w) == _stem(v) for w in _ru_words(name)[:3] for v in gn)
+
     if vern:
-        for g in genera:
+        # Народные названия спрашиваются только у родов, где имя хоть одной карточки не
+        # совпало с названиями из базы: запросы к iNaturalist идут из общего лимита.
+        for g in sorted({gg.lower() for r, gg in single if not _own(r.name, gg.lower())}):
             names[g] |= await vern.names(g.capitalize())
     alien, by_genus = [], defaultdict(lambda: {"own": 0, "alien": 0, "no_ru": 0, "names": set()})
     for r, genus in single:
@@ -1666,8 +1672,7 @@ async def alien_genus_cards(db, vern: Vernacular | None = None) -> tuple[list, d
         if not gn:
             by_genus[g]["no_ru"] += 1
             continue
-        words = _ru_words(r.name)[:3]
-        if any(_stem(w) == _stem(v) for w in words for v in gn):
+        if _own(r.name, g):
             by_genus[g]["own"] += 1
             continue
         by_genus[g]["alien"] += 1
@@ -1804,6 +1809,12 @@ async def run_aliengenus(apply: bool, limit: int = 0, progress: Progress | None 
                     else:
                         item["photo"] = await _refresh_taxon_data(client, r.id, latin, r.kingdom)
                         async with async_session() as db:
+                            # Очерк написан про чужой род («Орлая крупноцветковая… смертельно ядовита,
+                            # аконитин»), а его предостережения читает модель безопасности. Очерк
+                            # снимается, генератор напишет новый после пересчёта уровня.
+                            await db.execute(text("DELETE FROM plant_reader_monograph WHERE plant_id = :id"),
+                                             {"id": r.id})
+                            site_cache.mark(r.id)
                             await db.execute(text("""
                                 UPDATE data_quality_findings SET status = 'fixed', resolved_by = 'identity-site',
                                        resolved_at = now(), note = :note
