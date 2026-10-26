@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import books, recipes, plants, dictionaries, search, indexing, pipeline, wizard, compounds, medical, identify, oils, quality, devices, places, quests, monographs, ops, moderation, agent, analytics, walks, showcase, houseplants, library, collective
+from app.routers import books, recipes, plants, dictionaries, search, indexing, pipeline, wizard, compounds, medical, identify, oils, quality, devices, places, quests, monographs, ops, moderation, agent, analytics, walks, showcase, houseplants, library, collective, windowsill
 
 # Configure logging so our logger.info() calls show up in docker logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -50,6 +50,7 @@ app.include_router(identify.router, prefix="/api/identify", tags=["identify"])
 app.include_router(oils.router, prefix="/api/oils", tags=["oils"])
 app.include_router(quality.router, prefix="/api/quality", tags=["quality"])
 app.include_router(devices.router, prefix="/api/devices", tags=["devices"])
+app.include_router(windowsill.router, prefix="/api/devices", tags=["windowsill"])
 app.include_router(places.router, prefix="/api/places", tags=["places"])
 # Общие квесты под /api/quests/collective: префикс уже открыт в nginx для приложения.
 app.include_router(collective.router, prefix="/api/quests/collective", tags=["collective"])
