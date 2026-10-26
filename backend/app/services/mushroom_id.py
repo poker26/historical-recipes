@@ -67,7 +67,22 @@ async def identify(
     except (httpx.HTTPError, ValueError) as e:
         logger.warning("fungi engine transport error: %s", str(e)[:100])
         return {"error": f"fungi engine transport error: {str(e)[:120]}"}
-    cands = [{
+    cands = _cands(body.get("candidates"), limit)
+    # p_fungus — вероятность «это гриб» от классификатора царства на ТОМ ЖЕ
+    # эмбеддинге (см. router: он решает, чей ответ показывать). None, если движок
+    # старой версии или веса не загрузились — тогда роутер падает на пороги.
+    # p_moss и moss_candidates — то же для мхов и печёночников (индекс 26.10.2026):
+    # Pl@ntNet мхов не знает и кукушкин лён называл подорожником.
+    out = {"engine": body.get("engine") or "bioclip-fungi", "candidates": cands,
+           "p_fungus": body.get("p_fungus"), "p_moss": body.get("p_moss")}
+    if body.get("moss_candidates"):
+        out["moss"] = {"engine": "bioclip-moss",
+                       "candidates": _cands(body["moss_candidates"], limit)}
+    return out
+
+
+def _cands(raw, limit: int) -> list[dict]:
+    return [{
         "latin": c.get("latin"),
         "latin_author": c.get("latin"),
         # Движок отдаёт КОСИНУСНУЮ БЛИЗОСТЬ, а не вероятность: у любого фото она
@@ -82,9 +97,4 @@ async def identify(
         "family": None,
         "gbif_id": None,
         "powo_id": None,
-    } for c in (body.get("candidates") or [])[:limit] if c.get("latin")]
-    # p_fungus — вероятность «это гриб» от классификатора царства на ТОМ ЖЕ
-    # эмбеддинге (см. router: он решает, чей ответ показывать). None, если движок
-    # старой версии или веса не загрузились — тогда роутер падает на пороги.
-    return {"engine": body.get("engine") or "bioclip-fungi", "candidates": cands,
-            "p_fungus": body.get("p_fungus")}
+    } for c in (raw or [])[:limit] if c.get("latin")]

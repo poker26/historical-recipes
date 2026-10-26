@@ -36,12 +36,31 @@ ENGINE_TO_ATLAS = {
 }
 
 
+# Мхи, у которых сменилось всё имя, а не только род. Моховой движок называет вид
+# так, как его называет iNaturalist сейчас, а карточки атласа заведены по старым
+# книгам. Пары сверены с принятыми именами iNaturalist 26.10.2026; спорные
+# (Anthoceros punctatus и agrestis, Plagiochila asplenioides и porelloides) сюда не
+# идут: это разные виды.
+SPECIES_ENGINE_TO_ATLAS = {
+    "hylocomiadelphus triquetrus": "Hypnum triquetrum",   # ритидиадельфус трёхгранный
+    "calliergonella cuspidata": "Hypnum cuspidatum",
+    "ptychostomum imbricatulum": "Bryum caespiticium",
+    "plagiomnium cuspidatum": "Mnium cuspidatum",
+    "exsertotheca crispa": "Neckera crispa",
+    "lewinskya affinis": "Orthotrichum affine",
+    "sphagnum capillifolium": "Sphagnum acutifolium",
+}
+
+
 def atlas_alias(latin: str | None) -> str | None:
     """То же имя с родом, под которым растение заведено в атласе, или None,
     если род не переименован. «Goeppertia insignis» → «Calathea insignis»."""
     parts = (latin or "").split()
     if not parts:
         return None
+    species = SPECIES_ENGINE_TO_ATLAS.get(" ".join(parts[:2]).lower())
+    if species:
+        return species
     target = ENGINE_TO_ATLAS.get(parts[0].lower())
     if not target:
         return None

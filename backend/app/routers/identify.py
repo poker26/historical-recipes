@@ -75,6 +75,10 @@ _MUSH_CONFIDENT = 0.41
 # «сначала растение, если слабо — гриб», которая на косинусе давала ложные грибы.
 _KINGDOM_FUNGI = 0.70
 _KINGDOM_PLANT = 0.30
+# Граница классификатора «мох или нет» на том же эмбеддинге (моховой индекс
+# 26.10.2026). Выше неё показываем ответ мохового индекса: Pl@ntNet мхов не знает
+# (0 из 18 снимков мхов, кукушкин лён у него подорожник с уверенностью 0.87).
+_KINGDOM_MOSS = 0.70
 
 
 async def _auto_route(blobs, *, organs, limit) -> tuple[dict, bool]:
@@ -95,6 +99,9 @@ async def _auto_route(blobs, *, organs, limit) -> tuple[dict, bool]:
         mushroom_id.identify(blobs, organs=organs, limit=limit),
     )
     p_fungus = shroom.get("p_fungus") if isinstance(shroom, dict) else None
+    moss = shroom.get("moss") if isinstance(shroom, dict) else None
+    if moss and (shroom.get("p_moss") or 0) >= _KINGDOM_MOSS and moss.get("candidates"):
+        return moss, False
 
     if p_fungus is None:                       # движок без классификатора → старая лестница
         if _confident(plant, _PLANT_CONFIDENT):
