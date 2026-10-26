@@ -29,6 +29,9 @@
   получает находку ``identity.site_mismatch``: у неё, скорее всего, неверна латынь.
 - ``junkname``: испорченное имя без двойника заменяется русским именем вида из
   iNaturalist или GBIF.
+- ``aliengenus``: у видовой карточки латынь чужого рода («Орлая крупноцветковая» с
+  Aconitum). Вид ищется по русскому имени и пишется при втором свидетельстве, неясное
+  пишется находкой ``identity.alien_genus`` (подробности в run_aliengenus).
 
 Каждое слияние и переименование пишется в ``card_identity_audit`` (step ``site-*``).
 Слияние сбрасывает уровень съедобности цели: после ``sametaxon --apply`` запустить
@@ -53,8 +56,8 @@ from sqlalchemy import literal_column, select, text
 from app.database import async_session
 from app.models.plant import Plant
 from app.services.identity_cleanup import (
-    FACTS_SCORE, GBIF_PACE, GBIF_SPECIES, _audit, _kingdom_ok, _purge_qdrant, gbif_accepted, gbif_match,
-    merge_card,
+    FACTS_SCORE, GBIF_PACE, GBIF_SPECIES, _audit, _kingdom_ok, _merge_into_same_latin, _purge_qdrant,
+    gbif_accepted, gbif_match, merge_card,
 )
 from app.services import site_cache
 from app.services.identity_resolve import Vernacular, inat_taxa
@@ -1617,13 +1620,218 @@ async def run_aliasjunk(apply: bool, limit: int = 0, progress: Progress | None =
     return c
 
 
+# ------------------------------------------------------------------ aliengenus
+
+CHECK_ALIEN = "identity.alien_genus"
+
+
+async def alien_genus_cards(db, vern: Vernacular | None = None) -> tuple[list, dict]:
+    """Видовые карточки растений, у которых латынь только рода, а русское имя этому роду не
+    принадлежит (грибы сверены с родом 26.10 в fungi_safety; замер 26.10.2026: 22 растения на Aconitum, среди них орлая и подник,
+    16 на Senecio). Имя принадлежит роду, если одно из первых трёх слов имени совпадает
+    по основе с первым словом русского названия рода: у родовой карточки, у видовых
+    карточек этого рода с биномом (тех, что встречаются больше одного раза) и, с vern, в
+    народных названиях GBIF и iNaturalist. Род без единого русского названия в сводку
+    идёт отдельно: сказать, чужое ли имя, не по чему."""
+    rows = (await db.execute(text("""
+        SELECT id, name, name_latin, kingdom, safety_level, names_historical FROM plants
+        WHERE rank = 'species' AND kingdom = 'растение' AND name_latin IS NOT NULL
+        ORDER BY name"""))).all()
+    single = []
+    for r in rows:
+        genus, epi, _cap = latin_core(r.name_latin)
+        if genus and not epi and _CYR.search(r.name or "") and not is_junk(r.name):
+            single.append((r, genus))
+    genera = sorted({g.lower() for _r, g in single})
+    hub = (await db.execute(text("""
+        SELECT lower(split_part(name_latin, ' ', 1)) AS g, name FROM plants
+        WHERE rank = 'genus' AND name_latin IS NOT NULL AND lower(split_part(name_latin, ' ', 1)) = ANY(:g)"""),
+        {"g": genera})).all()
+    fw = (await db.execute(text("""
+        SELECT lower(split_part(name_latin, ' ', 1)) AS g, lower(split_part(name, ' ', 1)) AS w FROM plants
+        WHERE rank = 'species' AND name_latin ~ '^[A-Z][a-z]+ [a-z]' AND lower(split_part(name_latin, ' ', 1)) = ANY(:g)
+        GROUP BY 1, 2 HAVING count(*) > 1"""), {"g": genera})).all()
+    names: dict[str, set[str]] = defaultdict(set)
+    for g, n in list(hub) + list(fw):
+        if n and _CYR.search(n):
+            names[g].add(n)
+    if vern:
+        for g in genera:
+            names[g] |= await vern.names(g.capitalize())
+    alien, by_genus = [], defaultdict(lambda: {"own": 0, "alien": 0, "no_ru": 0, "names": set()})
+    for r, genus in single:
+        g = genus.lower()
+        gn = {_ru_words(v)[0] for v in names[g] if _ru_words(v)}
+        by_genus[g]["names"] = gn
+        if not gn:
+            by_genus[g]["no_ru"] += 1
+            continue
+        words = _ru_words(r.name)[:3]
+        if any(_stem(w) == _stem(v) for w in words for v in gn):
+            by_genus[g]["own"] += 1
+            continue
+        by_genus[g]["alien"] += 1
+        alien.append((r, genus))
+    summary = {g: {k: (sorted(v)[:6] if k == "names" else v) for k, v in d.items()}
+               for g, d in sorted(by_genus.items(), key=lambda kv: -kv[1]["alien"])}
+    return alien, summary
+
+
+def _binomial_in_quotes(latin: str, quotes: str) -> bool:
+    """Бином стоит в цитатах карточки целиком или с сокращённым родом («o. grandiflora»)."""
+    genus, epi, _cap = latin_core(latin)
+    if not genus or not epi:
+        return False
+    g = genus.lower()
+    pat = r"(?<![a-z])(" + re.escape(g) + "|" + re.escape(g[0]) + r"\.)\s*" + re.escape(epi) + r"(?![a-z])"
+    return re.search(pat, quotes) is not None
+
+
+async def _in_backbone(db, latin: str) -> bool:
+    """Бином есть в таксоспайне Черепанова принятым именем или синонимом (только точное совпадение)."""
+    from app.services.plant_matching import _latin_key
+    key = _latin_key(latin)
+    if not key:
+        return False
+    return bool((await db.execute(text(
+        "SELECT EXISTS (SELECT 1 FROM taxon_backbone WHERE accepted_key = :k) "
+        "OR EXISTS (SELECT 1 FROM taxon_synonym WHERE syn_key = :k)"), {"k": key})).scalar())
+
+
+async def _alien_decide(client: httpx.AsyncClient, vern: Vernacular, r, genus: str) -> tuple[str, str | None, str, list]:
+    """(решение, латынь, почему, кандидаты). Решения: relatin (вид), genus (только род),
+    review (на ручной разбор), deferred (iNaturalist не ответил)."""
+    head = re.split(r",|\(|\sили\s|;", r.name or "")[0].strip()
+    async with async_session() as db:
+        quotes = await _card_quotes(db, r.id)
+    ranked, hints = await _candidates_by_name(client, head, r.kingdom)
+    cands = [f"{k} ({hints.get(k)}; {', '.join(sorted(s))})" for k, s in ranked[:4]]
+    if ranked:
+        best, srcs = ranked[0]
+        if len(ranked) > 1 and len(ranked[1][1]) == len(srcs):
+            return "review", None, "по имени нашлось несколько видов", cands
+        if best.split()[0].lower() == genus.lower():
+            return "review", None, f"по имени выходит вид того же рода ({best}): имя роду всё-таки принадлежит", cands
+        ev = sorted(srcs)
+        if _binomial_in_quotes(best, quotes):
+            ev.append("цитаты карточки")
+        async with async_session() as db:
+            if await _in_backbone(db, best):
+                ev.append("Черепанов")
+        if "iNaturalist" in srcs and len(ev) >= 2:
+            return "relatin", best, f"{', '.join(ev)}: {hints.get(best)}", cands
+        if "GBIF" in srcs and "цитаты карточки" in ev:
+            return "relatin", best, f"{', '.join(ev)}: {hints.get(best)}", cands
+        if "iNaturalist" in srcs:
+            async with async_session() as db:
+                ctx = await _mismatch_context(db, r.id)
+            ok, llm = await _llm_agrees(r.name, r.name_latin, best, ctx)
+            if ok:
+                return "relatin", best, f"iNaturalist и модель ({llm.get('conf')}): {hints.get(best)}", cands
+            return "review", None, (f"iNaturalist даёт {best}, второго подтверждения нет "
+                                    f"(модель: {llm.get('latin')}, {llm.get('conf')})"), cands
+        return "review", None, f"только народное название GBIF: {best} ({hints.get(best)})", cands
+    # Поиск по имени пуст: вид предлагает модель, а принимается он, только если имя карточки
+    # есть среди народных названий предложенного вида (как в mismatch).
+    async with async_session() as db:
+        ctx = await _mismatch_context(db, r.id)
+    prop = await _llm_propose(r.name, None, ctx)
+    acc = None
+    if prop.get("latin") and prop.get("conf", 0) >= 80:
+        acc = await _gbif_species(client, prop["latin"], r.kingdom, exact_only=True)
+    if acc and acc.split()[0].lower() != genus.lower():
+        hit = next((v for v in await vern.names(acc) if _name_match(head, v)), None)
+        if hit:
+            return "relatin", acc, f"модель ({prop['conf']}), народное название вида: {hit}", [acc]
+    # Вида нет: род по первому слову имени, если слово называет один род.
+    words = _ru_words(r.name)
+    adjective_first = bool(words) and re.search(r"(ая|яя|ый|ий|ой|ое|ее|ые|ие)$", words[0]) is not None
+    if words and not adjective_first and words[0] not in _POLYSEMOUS_GENUS_WORDS:
+        ru_genus = await _genus_by_ru_word(client, words[0], r.kingdom)
+        if ru_genus and ru_genus[0].lower() != genus.lower():
+            return "genus", ru_genus[0], f"вид не найден, род по первому слову имени: {ru_genus[1]} = {ru_genus[0]}", []
+    return "review", None, (f"вид не найден (модель: {prop.get('latin')}, {prop.get('conf')}), "
+                            "род по первому слову имени не установлен"), []
+
+
+async def run_aliengenus(apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
+    """Видовые карточки на латыни чужого рода (alien_genus_cards). Вид ищется по русскому
+    имени в iNaturalist и народных названиях GBIF и подтверждается GBIF как вид того же
+    царства. Пишется, если у вида есть второе свидетельство: второй справочник, бином в
+    цитатах самой карточки, таксоспайн Черепанова или согласие модели от 80. Вида нет, но
+    первое слово имени однозначно называет другой род: ставится этот род. Остальное
+    пишется находкой identity.alien_genus на ручной разбор. Новый бином, который уже стоит
+    у другой карточки с тем же первым словом имени, сливается с ней; при другом первом
+    слове карточка остаётся на разбор. У изменённых сбрасывается уровень безопасности:
+    после --apply запустить scripts/edible_safety_run.py."""
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
+        vern = Vernacular(client)
+        async with async_session() as db:
+            cards, by_genus = await alien_genus_cards(db, vern)
+        if limit:
+            cards = cards[:limit]
+        c = {"step": "aliengenus", "apply": apply, "cards": len(cards), "relatin": 0, "genus": 0, "merged": 0,
+             "review": 0, "deferred": 0, "by_genus": by_genus, "items": []}
+        for n, (r, genus) in enumerate(cards, 1):
+            try:
+                decision, latin, why, cands = await _alien_decide(client, vern, r, genus)
+            except InatUnavailable:
+                decision, latin, why, cands = "deferred", None, "iNaturalist не ответил, карточка отложена", []
+            item = {"id": str(r.id), "name": r.name, "old": r.name_latin, "level": r.safety_level,
+                    "decision": decision, "new": latin, "why": why, "candidates": cands}
+            if apply and decision in ("relatin", "genus"):
+                async with async_session() as db:
+                    await _audit(db, "site-aliengenus", "relatin", r.id, r.name, r.name_latin,
+                                 extra={"new_latin": latin, "why": why, "decision": decision})
+                    # Таксон iNaturalist был от чужого рода: без него слияние не примет эту
+                    # карточку за подтверждённую.
+                    await db.execute(text("UPDATE plants SET name_latin = :new, safety_level = NULL, "
+                                          "inat_taxon_id = NULL WHERE id = :id AND name_latin = :old"),
+                                     {"new": latin, "id": r.id, "old": r.name_latin})
+                    merged = await _merge_into_same_latin(db, r.id, latin, "site-aliengenus") \
+                        if decision == "relatin" else None
+                    if merged and merged.get("skipped_incompatible"):
+                        await db.rollback()
+                        decision = "review"
+                        why = f"{latin} уже у карточки «{merged['twin_name']}», первое слово имени другое"
+                        item |= {"decision": decision, "why": why}
+                    else:
+                        await db.commit()
+                if decision != "review":
+                    item["merge"] = merged
+                    if merged and merged.get("merged_into"):
+                        c["merged"] += 1
+                    else:
+                        item["photo"] = await _refresh_taxon_data(client, r.id, latin, r.kingdom)
+                        async with async_session() as db:
+                            await db.execute(text("""
+                                UPDATE data_quality_findings SET status = 'fixed', resolved_by = 'identity-site',
+                                       resolved_at = now(), note = :note
+                                WHERE check_id = :c AND entity_id = :e AND status = 'open'"""),
+                                {"c": CHECK_ALIEN, "e": str(r.id), "note": f"{latin}: {why}"[:300]})
+                            await db.commit()
+            if apply and decision == "review":
+                async with async_session() as db:
+                    await _finding(db, CHECK_ALIEN, r.id,
+                                   f"«{r.name}»: латынь чужого рода ({r.name_latin}), вид не установлен",
+                                   {"name": r.name, "latin": r.name_latin, "why": why, "candidates": cands})
+                    await db.commit()
+            c[decision] += 1
+            c["items"].append(item)
+            if progress and n % 5 == 0:
+                progress({k: v for k, v in c.items() if k not in ("items", "by_genus")} | {"done": n})
+    return c
+
+
 STEPS = {"stale": run_stale, "oldspell": run_oldspell, "genuslatin": run_genuslatin,
          "sametaxon": run_sametaxon, "junkname": run_junkname, "mismatch": run_mismatch, "drift": run_drift,
-         "driftreview": run_driftreview, "driftmanual": run_driftmanual, "aliasjunk": run_aliasjunk}
+         "driftreview": run_driftreview, "driftmanual": run_driftmanual, "aliasjunk": run_aliasjunk,
+         "aliengenus": run_aliengenus}
 
 
 async def run_site_step(step: str, apply: bool, limit: int = 0, progress: Progress | None = None) -> dict:
     fn = STEPS[step]
-    if step in ("genuslatin", "sametaxon", "mismatch", "drift", "driftreview", "driftmanual", "aliasjunk"):
+    if step in ("genuslatin", "sametaxon", "mismatch", "drift", "driftreview", "driftmanual", "aliasjunk",
+                "aliengenus"):
         return await fn(apply=apply, limit=limit, progress=progress)
     return await fn(apply=apply, progress=progress)
