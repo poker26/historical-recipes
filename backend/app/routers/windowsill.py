@@ -72,6 +72,12 @@ async def add_plant(device_key: uuid.UUID, body: AddPlant, db: AsyncSession = De
     await db.execute(text("""
         INSERT INTO windowsill_plants (device_key, plant_id) VALUES (:dk, :p)
         ON CONFLICT DO NOTHING"""), {"dk": device_key, "p": body.plant_id})
+    # Отсчёт напоминаний идёт с первого растения: человек только что сам видел
+    # советы на этот сезон, и пуш о нём назавтра был бы лишним.
+    await db.execute(text("""
+        INSERT INTO windowsill_prefs (device_key, last_season, last_reminder_at)
+        VALUES (:dk, :s, now()) ON CONFLICT (device_key) DO NOTHING"""),
+        {"dk": device_key, "s": season_of(date.today())})
     await db.commit()
     return await windowsill_view(db, device_key)
 
