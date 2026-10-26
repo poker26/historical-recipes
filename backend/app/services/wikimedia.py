@@ -279,6 +279,15 @@ async def fill_card_photos(db, limit: int = 0, apply: bool = False,
                         "WHERE id = :id"),
                         {"url": photo["photo_url"], "who": photo["photo_attribution"],
                          "id": by_latin[latin]})
+                    # Приложение читает снимок из монографа. Без этого шага найденный
+                    # снимок ждал пересборки карточек: 26.10 так висели 78 снимков.
+                    await db.execute(text(
+                        "UPDATE plant_reader_monograph SET monograph = monograph "
+                        "|| jsonb_build_object('photo_url', CAST(:url AS text), "
+                        "'photo_attribution', CAST(:who AS text)) "
+                        "WHERE plant_id = :id AND coalesce(monograph->>'photo_url', '') = ''"),
+                        {"url": photo["photo_url"], "who": photo["photo_attribution"] or "",
+                         "id": by_latin[latin]})
             if apply:
                 await db.commit()
             out["no_photo"] += len(chunk) - len(found)
