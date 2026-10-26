@@ -1773,6 +1773,13 @@ async def run_aliengenus(apply: bool, limit: int = 0, progress: Progress | None 
         vern = Vernacular(client)
         async with async_session() as db:
             cards, by_genus = await alien_genus_cards(db, vern)
+            if apply:
+                # Возобновление после перезапуска воркера: исправленная карточка из выборки уже
+                # выпала, а отложенная на разбор (открытая находка) второй раз не разбирается.
+                held = set((await db.execute(text(
+                    "SELECT entity_id FROM data_quality_findings WHERE check_id = :c AND status = 'open'"),
+                    {"c": CHECK_ALIEN})).scalars().all())
+                cards = [(r, g) for r, g in cards if str(r.id) not in held]
         if limit:
             cards = cards[:limit]
         c = {"step": "aliengenus", "apply": apply, "cards": len(cards), "relatin": 0, "genus": 0, "merged": 0,
