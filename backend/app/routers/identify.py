@@ -139,6 +139,8 @@ def _plant_card(p: Plant) -> dict:
         "kingdom": p.kingdom,
         "photo_url": p.photo_url,
         "photo_attribution": p.photo_attribution,
+        # «houseplant» показывает в результате кнопку «На мой подоконник»
+        "origin": p.origin,
     }
 
 
