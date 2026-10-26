@@ -830,6 +830,18 @@ async def extract_article(article: str, page: int | None = None,
         if not care and not problems:
             continue
         taxon = dict(block.get("taxon") or {})
+        abbreviated = re.match(r"([A-Z])\.\s+(\S.*)", taxon.get("latin") or "")
+        if abbreviated and allowed_genera is not None:
+            # Модель оставила род буквой. Раскрываем сами, если на странице ровно
+            # один заголовок рода на эту букву. Если такого нет, а перенесённый
+            # род начинается на другую («C. arborescens» под Tetranema), заголовок
+            # своего рода не узнан, и класть уход на чужой род нельзя.
+            letter, rest = abbreviated.groups()
+            same = [g for g in allowed_genera if g.startswith(letter)]
+            if len(same) == 1:
+                taxon["latin"] = f"{same[0]} {rest}"
+            elif fallback_latin and not fallback_latin.startswith(letter):
+                continue
         latin = verify_latin(taxon.get("latin") or "", taxon.get("ru") or "", source_text)
         if latin and allowed_genera is not None and latin.split(" ")[0].capitalize() not in allowed_genera:
             # Справочник в две колонки: род берётся только из заголовка этой

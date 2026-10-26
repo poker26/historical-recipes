@@ -725,10 +725,12 @@ def test_genus_heading_of_two_column_handbook():
         "Ховея Форстера — Howea forsteriana",
         "Хойя — Hoya R. Br.",
         "Хлорофитум — Chlorophytum",
+        "Тетранема мексиканская — Tetranema",
+        "Акка, фейхоа — Feijoa Berg.",
         "Родина — Ю. Африка",
         "Растения содержат зимой при 14 °С. Уход — см. Финик.",
     ])
-    assert _GENUS_HEADING_RE.findall(page) == ["Howea", "Hoya", "Chlorophytum"]
+    assert _GENUS_HEADING_RE.findall(page) == ["Howea", "Hoya", "Chlorophytum", "Feijoa"]
 
 
 def test_two_column_page_keeps_genus_from_its_own_headings(monkeypatch):
@@ -755,3 +757,27 @@ def test_two_column_page_keeps_genus_from_its_own_headings(monkeypatch):
     found = asyncio.run(hc.extract_article(page, page=396, fallback_latin="Hoya",
                                            allowed_genera={"Hoya"}))
     assert [p["taxon"]["latin"] for p in found] == ["Hoya"]
+
+
+def test_abbreviated_genus_never_falls_to_a_carried_genus(monkeypatch):
+    # Стр. 366 Головкина: уход толстянки («Т. древовидная — C. arborescens»)
+    # после неузнанного заголовка лёг на перенесённую тетранему.
+    import asyncio
+    from app.services import houseplant_care as hc
+
+    quote = "Растение содержат зимой при температуре 8—12 °С."
+    page = "Т. древовидная — C. arborescens Willd. Суккулент.\n" + quote
+
+    def answer(latin):
+        async def fake_llm(messages, **kwargs):
+            return {"plants": [{"taxon": {"latin": latin, "ru": "Т. древовидная", "rank": "species"},
+                                "care": [{"field": "temperature", "quote": quote, "text": quote}]}]}
+        return fake_llm
+
+    monkeypatch.setattr(hc, "verify_latin", lambda latin, ru, text: latin if len(latin.split()[0]) > 3 else "")
+    monkeypatch.setattr(hc, "chat_completion_json", answer("C. arborescens"))
+    assert asyncio.run(hc.extract_article(page, page=366, fallback_latin="Tetranema",
+                                          allowed_genera={"Tetranema"})) == []
+    found = asyncio.run(hc.extract_article(page, page=366, fallback_latin="Tetranema",
+                                           allowed_genera={"Tetranema", "Crassula"}))
+    assert [p["taxon"]["latin"] for p in found] == ["Crassula arborescens"]
