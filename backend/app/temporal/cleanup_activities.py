@@ -736,6 +736,10 @@ async def edible_safety_activity() -> dict:
     # объявляла смертельным по роду.
     async with async_session() as db:
         fungi = await fungi_safety.fix_fungi_cards(db, apply=True)
+    # Растениям тоже: модель писала «болиголов» сотне карточек, в том числе ядовитым.
+    from app.services.plant_lookalikes import fix_plant_twins
+    async with async_session() as db:
+        plant_twins = await fix_plant_twins(db, apply=True)
     # is_toxic производное от уровня (RFC-edible-safety). Слияния складывали флаги, и у
     # части карточек он разошёлся с уровнем: выравниваем у всех посчитанных.
     async with async_session() as db:
@@ -745,4 +749,5 @@ async def edible_safety_activity() -> dict:
         await db.commit()
     return {"phase": "edible_safety", "done": done, "deterministic": det, "llm": llm,
             "reset_stale": stale, "reset_inedible": inedible, "reset_deadly_name": len(by_name),
-            "is_toxic_aligned": aligned, "fungi_fixed": len(fungi["changed"])}
+            "is_toxic_aligned": aligned, "fungi_fixed": len(fungi["changed"]),
+            "plant_twins_fixed": len(plant_twins["changed"])}

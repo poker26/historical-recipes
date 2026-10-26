@@ -335,9 +335,17 @@ def lookalikes(name: str | None, latin: str | None, rank: str | None = None) -> 
 
 # Фразы очерка, где модель пересказала прежнего двойника: «Опасный двойник —
 # бледная поганка, не перепутай».
-_TWIN_SENTENCE = re.compile(r"двойник|не перепута", re.I)
-# Хвост фразы с двойником: «Условно съедобен; опасный двойник — X, не перепутай.»
-_TWIN_TAIL = re.compile(r"\s*[;,—–-]?\s*(?:[а-яё]+\s+){0,2}двойник\b.*$", re.I)
+_TWIN_SENTENCE = re.compile(r"двойник|не перепута|перепутать", re.I)
+# Часть фразы до двойника обрезается по последней запятой, точке с запятой, двоеточию
+# или тире перед ним: «Сныть съедобна, но корни ядовиты, а при сборе важно не
+# перепутать с опасным двойником — болиголовом» → «Сныть съедобна, но корни ядовиты».
+_CLAUSE_END = re.compile(r"[,;:—–]")
+
+
+def _cut_twin(s: str) -> str:
+    m = _TWIN_SENTENCE.search(s)
+    cuts = [c.start() for c in _CLAUSE_END.finditer(s, 0, m.start())]
+    return s[:cuts[-1]].rstrip(" ,;:—–-") if cuts else ""
 _SAYS_DEADLY = re.compile(r"смертельн|есть нельзя|употреблять нельзя|ядовит|несъедоб|"
                           r"съедобность исключена", re.I)
 _SAYS_SAFE = re.compile(r"съедоб|безопас", re.I)
@@ -354,7 +362,7 @@ def fix_text(t: str | None, level: int, level_changed: bool) -> str:
     keep = []
     for s in _sentences(t or ""):
         if _TWIN_SENTENCE.search(s):
-            head = _TWIN_TAIL.sub("", s).rstrip(" ,;:—–-")
+            head = _cut_twin(s)
             if len(head) < 15 or _TWIN_SENTENCE.search(head):
                 continue
             s = head + "."
