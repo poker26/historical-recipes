@@ -57,7 +57,7 @@ from app.database import async_session
 from app.models.plant import Plant
 from app.services.identity_cleanup import (
     FACTS_SCORE, GBIF_PACE, GBIF_SPECIES, _audit, _kingdom_ok, _merge_into_same_latin, _purge_qdrant,
-    gbif_accepted, gbif_match, merge_card,
+    gbif_accepted, gbif_match, merge_card, names_compatible, ru_head,
 )
 from app.services import site_cache
 from app.services.identity_resolve import Vernacular, inat_taxa
@@ -1746,6 +1746,37 @@ async def _in_backbone(db, latin: str) -> bool:
         "OR EXISTS (SELECT 1 FROM taxon_synonym WHERE syn_key = :k)"), {"k": key})).scalar())
 
 
+def _latin_alias(latin: str):
+    """Имя двойника записано латынью этого вида кириллицей: «Орлайя» = Orlaya,
+    «Бульбокодиум» = Colchicum bulbocodium. Такое имя не мешает слиянию."""
+    words = [w for w in re.findall(r"[a-z]+", (latin or "").lower()) if len(w) >= 4]
+
+    def ok(name: str | None) -> bool:
+        head = ru_head(name)
+        return bool(head) and any(_translit_genus(head, w) for w in words)
+    return ok
+
+
+async def _twin_preview(db, pid, latin: str) -> str | None:
+    """Для сухого прогона: «» если у бинома нет другой карточки, имя двойника, если слияние
+    пройдёт, иначе None (имена несовместимы, карточка уйдёт на разбор)."""
+    from app.services.plant_matching import _latin_key
+    key = _latin_key(latin)
+    if not key:
+        return ""
+    me = (await db.execute(text("SELECT name FROM plants WHERE id = :id"), {"id": pid})).scalar()
+    rows = (await db.execute(text(
+        f"SELECT p.name, p.name_latin, {FACTS_SCORE} AS score, (p.inat_taxon_id IS NOT NULL) AS has_taxon "
+        "FROM plants p WHERE p.id <> :id AND p.name_latin IS NOT NULL AND lower(p.name_latin) LIKE :g"),
+        {"id": pid, "g": key.split()[0] + " %"})).all()
+    twins = [t for t in rows if _latin_key(t.name_latin) == key]
+    if not twins:
+        return ""
+    # Тот же выбор двойника, что у _merge_into_same_latin.
+    twin = max(twins, key=lambda t: (t.has_taxon, t.score))
+    return twin.name if names_compatible(me, twin.name) or _latin_alias(latin)(twin.name) else None
+
+
 async def _alien_decide(client: httpx.AsyncClient, vern: Vernacular, r, genus: str) -> tuple[str, str | None, str, list]:
     """(решение, латынь, почему, кандидаты). Решения: relatin (вид), genus (только род),
     review (на ручной разбор), deferred (iNaturalist не ответил)."""
@@ -1838,20 +1869,23 @@ async def run_aliengenus(apply: bool, limit: int = 0, progress: Progress | None 
     цитатах самой карточки, таксоспайн Черепанова или согласие модели от 80. Вида нет, но
     первое слово имени однозначно называет другой род: ставится этот род. Остальное
     пишется находкой identity.alien_genus на ручной разбор. Новый бином, который уже стоит
-    у другой карточки с тем же первым словом имени, сливается с ней; при другом первом
-    слове карточка остаётся на разбор. У изменённых сбрасывается уровень безопасности:
+    у другой карточки с тем же первым словом имени (или с именем-латынью кириллицей,
+    «Орлайя»), сливается с ней; при другом первом слове карточка остаётся на разбор.
+    Сухой прогон показывает, с кем будет слияние. У изменённых сбрасывается уровень безопасности:
     после --apply запустить scripts/edible_safety_run.py."""
     async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "historical-recipes/1.0 (site identity)"}) as client:
         vern = Vernacular(client)
         async with async_session() as db:
             cards, by_genus = await alien_genus_cards(db, vern)
-            if apply:
-                # Возобновление после перезапуска воркера: исправленная карточка из выборки уже
-                # выпала, а отложенная на разбор (открытая находка) второй раз не разбирается.
-                held = set((await db.execute(text(
-                    "SELECT entity_id FROM data_quality_findings WHERE check_id = :c AND status = 'open'"),
-                    {"c": CHECK_ALIEN})).scalars().all())
-                cards = [(r, g) for r, g in cards if str(r.id) not in held]
+            # Возобновление после перезапуска воркера: исправленная карточка из выборки уже
+            # выпала, а отложенная на разбор (открытая находка) второй раз не разбирается.
+            # Исключение: карточки, отложенные из-за двойника с тем же биномом, разбираются
+            # снова, правило слияния с тех пор узнаёт «ё», «Семейство» и латынь кириллицей.
+            held = set((await db.execute(text(
+                "SELECT entity_id FROM data_quality_findings WHERE check_id = :c AND status = 'open' "
+                "AND coalesce(evidence->>'why', '') NOT LIKE '% уже у карточки %'"),
+                {"c": CHECK_ALIEN})).scalars().all())
+            cards = [(r, g) for r, g in cards if str(r.id) not in held]
         if limit:
             cards = cards[:limit]
         c = {"step": "aliengenus", "apply": apply, "cards": len(cards), "relatin": 0, "genus": 0, "merged": 0,
@@ -1863,6 +1897,14 @@ async def run_aliengenus(apply: bool, limit: int = 0, progress: Progress | None 
                 decision, latin, why, cands = "deferred", None, "iNaturalist не ответил, карточка отложена", []
             item = {"id": str(r.id), "name": r.name, "old": r.name_latin, "level": r.safety_level,
                     "decision": decision, "new": latin, "why": why, "candidates": cands}
+            if not apply and decision == "relatin":
+                async with async_session() as db:
+                    twin = await _twin_preview(db, r.id, latin)
+                if twin is None:
+                    decision = "review"
+                    item |= {"decision": decision, "why": f"{latin} уже у другой карточки, первое слово имени другое"}
+                elif twin:
+                    item["merge"] = {"preview_into": twin}
             if apply and decision in ("relatin", "genus"):
                 async with async_session() as db:
                     await _audit(db, "site-aliengenus", "relatin", r.id, r.name, r.name_latin,
@@ -1872,7 +1914,8 @@ async def run_aliengenus(apply: bool, limit: int = 0, progress: Progress | None 
                     await db.execute(text("UPDATE plants SET name_latin = :new, safety_level = NULL, "
                                           "inat_taxon_id = NULL WHERE id = :id AND name_latin = :old"),
                                      {"new": latin, "id": r.id, "old": r.name_latin})
-                    merged = await _merge_into_same_latin(db, r.id, latin, "site-aliengenus") \
+                    merged = await _merge_into_same_latin(db, r.id, latin, "site-aliengenus",
+                                                          alias_ok=_latin_alias(latin)) \
                         if decision == "relatin" else None
                     if merged and merged.get("skipped_incompatible"):
                         await db.rollback()

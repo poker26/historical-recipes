@@ -112,11 +112,14 @@ def binomial_core(latin: str | None) -> str | None:
 
 def ru_head(name: str | None) -> str | None:
     """Первое слово русского имени в нижнем регистре: «Ромашка лекарственная» → «ромашка».
-    Для латинского или битого имени ``None``."""
+    Для латинского или битого имени ``None``. «Смолёвка» и «смолевка» дают одно слово,
+    приставка «Семейство» из заголовка книги пропускается."""
     if not name or not _CYR.search(name):
         return None
-    tok = re.split(r"[\s,;()]+", name.strip().lower())
-    return tok[0] if tok and tok[0] else None
+    tok = [t for t in re.split(r"[\s,;()]+", name.strip().lower().replace("ё", "е")) if t]
+    if len(tok) > 1 and tok[0] == "семейство":
+        tok = tok[1:]
+    return tok[0] if tok else None
 
 
 def names_compatible(source_name: str | None, target_name: str | None) -> bool:
@@ -261,9 +264,11 @@ async def _find_hub(db, latin_genus: str | None, first_word: str | None) -> dict
     return None
 
 
-async def _merge_into_same_latin(db, pid, latin: str, step: str) -> dict | None:
+async def _merge_into_same_latin(db, pid, latin: str, step: str, alias_ok=None) -> dict | None:
     """Если после починки латыни у карточки появился двойник с тем же биномом,
-    сливает более бедную в более богатую. Возвращает описание слияния."""
+    сливает более бедную в более богатую. Возвращает описание слияния.
+    ``alias_ok(name)`` разрешает слияние при разных первых словах, когда имя двойника
+    это латынь вида кириллицей («Орлайя», «Сиум»)."""
     key = _latin_key(latin)
     if not key:
         return None
@@ -278,7 +283,7 @@ async def _merge_into_same_latin(db, pid, latin: str, step: str) -> dict | None:
     me = (await db.execute(text(f"SELECT p.id, p.name, p.name_latin, {FACTS_SCORE} AS score, (p.inat_taxon_id IS NOT NULL) AS has_taxon "
                                 f"FROM plants p WHERE p.id = :id"), {"id": pid})).first()
     twin = max(twins, key=lambda o: (o.has_taxon, o.score))
-    if not names_compatible(me.name, twin.name):
+    if not names_compatible(me.name, twin.name) and not (alias_ok and alias_ok(twin.name)):
         # Одна латынь, разные русские имена: не сливаем автоматически, оставляем на просмотр.
         return {"skipped_incompatible": str(twin.id), "twin_name": twin.name}
     if (twin.has_taxon, twin.score) >= (me.has_taxon, me.score):
