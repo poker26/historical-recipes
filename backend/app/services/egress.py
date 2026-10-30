@@ -66,7 +66,8 @@ def parse_hops(raw: str, hostname: str) -> list[Hop]:
     return hops
 
 
-def hop_client(proxy_url: str, hop: Hop | None, timeout: float = 60) -> httpx.AsyncClient:
+def hop_client(proxy_url: str, hop: Hop | None,
+               timeout: float | httpx.Timeout = 60) -> httpx.AsyncClient:
     """Клиент, который ходит наружу через указанный выход.
 
     Без выхода это обычный клиент с прокси из настроек — тот же путь, что был

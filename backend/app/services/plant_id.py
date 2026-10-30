@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 # связи и не заставляют человека ждать дольше десяти секунд.
 PROXY_ATTEMPTS = 4
 PROXY_PAUSE = 1.0
+# На соединение с выходом даём пять секунд, на сам ответ движка по-прежнему 60.
+# 30 октября 2026 старый выход в Нидерландах перестал отвечать: соединение с ним
+# висело все 60 секунд, и только потом мы шли к запасному. Человек ждал ответа
+# по минуте, приложение не дожидалось и обрывало запрос, 12 снимков за полчаса.
+PROXY_TIMEOUT = httpx.Timeout(60.0, connect=5.0)
 
 MAX_IMAGES = 5
 # Organ tags the engine understands; "auto" lets it detect per image.
@@ -121,7 +126,7 @@ async def identify(
         try:
             # Route through the configured proxy when set (prod egress to PlantNet's
             # host is network-blocked; the trusttunnel proxy provides the path).
-            async with hop_client(settings.plantnet_proxy, hop, timeout=60) as client:
+            async with hop_client(settings.plantnet_proxy, hop, timeout=PROXY_TIMEOUT) as client:
                 if images:
                     files = [("images", (f"img{i}.jpg", b, "image/jpeg")) for i, b in enumerate(sources)]
                     # httpx wants form fields as a dict; a list value emits repeated
