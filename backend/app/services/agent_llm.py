@@ -1,4 +1,5 @@
-"""LLM primitives for the consumer agent: tool-calling + streaming over OpenAI.
+"""LLM primitives for the consumer agent: tool-calling + streaming over an
+OpenAI-compatible API (Qwen Cloud when ``QWEN_API_KEY`` is set, else OpenAI).
 
 Kept SEPARATE from ``llm.py`` on purpose: the shared client there returns only a
 content string and treats empty content as a retryable error, which is wrong for
@@ -10,6 +11,10 @@ reads ``settings`` directly, takes an explicit model id) so it adds no coupling 
 Prod egress to ``api.openai.com`` is geo-blocked from RU datacenters — requests
 go through the fleet trusttunnel HTTPS proxy (``tt.begemot26.ru:4431``, server 7).
 Set ``AGENT_LLM_PROXY`` in ``.env`` (same URL shape as ``PLANTNET_PROXY``).
+
+С 30.10.2026 агент, как и разбор книг в ``llm.py``, ходит в Qwen Cloud: туннель
+ему не нужен, и вся текстовая работа проекта идёт через одного провайдера.
+OpenAI остаётся запасным путём, когда ключа Qwen нет (например, в разработке).
 """
 
 import asyncio
@@ -31,19 +36,26 @@ class _Retry(Exception):
     """Internal: a transient failure worth retrying."""
 
 
+def _qwen() -> bool:
+    return bool(settings.qwen_api_key)
+
+
 def _proxy() -> str | None:
     """Trusttunnel forward-proxy for OpenAI. Falls back to PLANTNET_PROXY when the
-    agent-specific var is unset — prod uses the same ``tt.begemot26.ru:4431`` URL."""
+    agent-specific var is unset. Qwen Cloud is reached directly, without it."""
+    if _qwen():
+        return None
     url = (settings.agent_llm_proxy or settings.plantnet_proxy or "").strip()
     return url or None
 
 
 def _headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {settings.openai_api_key}"}
+    key = settings.qwen_api_key if _qwen() else settings.openai_api_key
+    return {"Authorization": f"Bearer {key}"}
 
 
 def _completions_url() -> str:
-    base = settings.openai_base_url.rstrip("/")
+    base = (settings.qwen_base_url if _qwen() else settings.openai_base_url).rstrip("/")
     return f"{base}/chat/completions"
 
 
@@ -57,6 +69,10 @@ def _body(model: str, messages: list[dict], tools, tool_choice,
     }
     if stream:
         body["stream"] = True
+    if _qwen():
+        # Как в llm.py: без «размышлений» перед ответом, иначе собеседник ждёт
+        # лишние секунды на каждом круге инструментов.
+        body["enable_thinking"] = False
     if tools:
         body["tools"] = tools
     if tool_choice is not None:
