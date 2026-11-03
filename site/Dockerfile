@@ -9,6 +9,10 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# next/font качает шрифты Google при сборке. Из Selectel часть соединений к Google
+# устанавливается дольше 250 мс, и Node 20 обрывает их как ETIMEDOUT ещё до своих
+# повторов (замер 04.11.2026). Без автовыбора адреса ждём обычный таймаут.
+ENV NODE_OPTIONS=--no-network-family-autoselection
 RUN npm run build
 
 FROM node:20-alpine AS runner
