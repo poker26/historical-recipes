@@ -553,6 +553,53 @@ class IdentifyByUrlRequest(BaseModel):
     limit: int = 5
 
 
+_RESTORE_MAX_BYTES = 12 * 1024 * 1024
+
+
+@router.post("/{identification_id}/photo")
+async def restore_identification_photo(identification_id: str, device_key: str = Query(...),
+                                       image: UploadFile = File(...),
+                                       db: AsyncSession = Depends(get_db)):
+    """Вернуть в архив снимок определения, который остался на телефоне.
+
+    Бакет field-uploads погиб вместе с server 2 (авария Бегета, 11.2026): 7700 фото,
+    записи в identifications целы. Журнал приложения хранит JPEG последних 100
+    находок вместе с id записи и тихо присылает их сюда. Кладём файл по прежнему
+    photo_key, чтобы ссылки на него снова работали. Принимаем только снимок своего
+    устройства и не перезаписываем уже лежащий файл. На чужую или удалённую запись
+    отвечаем 200 "unknown", а не 404: клиент считает 404 «сервер ещё не умеет» и
+    повторит позже, а этот снимок больше слать незачем."""
+    ident = await db.get(Identification, _parse_uuid(identification_id))
+    dk = _parse_uuid(device_key)
+    if ident is None or dk is None or ident.device_key != dk:
+        await db.rollback()
+        return {"status": "unknown"}
+    key = ident.photo_key
+    # Транзакцию закрываем до обращений к хранилищу: соединение пулера общее с
+    # Квантами, держать его на время сетевого вызова нельзя.
+    await db.rollback()
+    if not key:
+        return {"status": "skipped"}
+    bucket = settings.minio_field_bucket
+    if await asyncio.to_thread(_field_exists, key):
+        return {"status": "present"}
+    data = await image.read(_RESTORE_MAX_BYTES + 1)
+    if len(data) > _RESTORE_MAX_BYTES or not data.startswith(b"\xff\xd8"):
+        raise HTTPException(400, "jpeg expected")
+    await asyncio.to_thread(minio_svc.ensure_bucket, bucket)
+    await asyncio.to_thread(minio_svc.upload_file, data, key, content_type="image/jpeg", bucket=bucket)
+    logger.info(f"identify photo restored: {identification_id} ({len(data)} B)")
+    return {"status": "restored"}
+
+
+def _field_exists(key: str) -> bool:
+    try:
+        minio_svc.stat_file(key, bucket=settings.minio_field_bucket)
+        return True
+    except Exception:  # noqa: BLE001 — нет объекта (или хранилище молчит) → принимаем снимок
+        return False
+
+
 @router.delete("/{identification_id}")
 async def delete_identification(identification_id: str, device_key: str = Query(...),
                                 db: AsyncSession = Depends(get_db)):
