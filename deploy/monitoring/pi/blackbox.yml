@@ -1,0 +1,14 @@
+modules:
+  http_2xx:
+    prober: http
+    timeout: 15s
+    http:
+      preferred_ip_protocol: ip4
+  # Только TLS: для адресов, которые без клиентского сертификата или пароля
+  # честно отвечают 400/407 (hist, вход туннеля). Проверяем связь и срок сертификата.
+  tls_connect:
+    prober: tcp
+    timeout: 10s
+    tcp:
+      tls: true
+      preferred_ip_protocol: ip4

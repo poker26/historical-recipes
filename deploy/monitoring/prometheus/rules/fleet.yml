@@ -1,0 +1,43 @@
+groups:
+  - name: fleet
+    rules:
+      - alert: СерверНеОтвечает
+        expr: up{job="node"} == 0
+        for: 3m
+        labels: {severity: critical}
+        annotations: {summary: "Сервер {{ $labels.host }} не отдаёт метрики уже 3 минуты"}
+
+      - alert: СлужбаНедоступна
+        expr: probe_success{job=~"blackbox_internal_.*"} == 0
+        for: 3m
+        labels: {severity: critical}
+        annotations: {summary: "Внутренняя служба {{ $labels.instance }} не отвечает 3 минуты"}
+
+      - alert: СайтНедоступен
+        expr: probe_success{job="blackbox_external"} == 0
+        for: 3m
+        labels: {severity: critical}
+        annotations: {summary: "{{ $labels.instance }} не открывается снаружи 3 минуты"}
+
+      - alert: НетВнешнихПроверок
+        expr: absent_over_time(probe_success{job="blackbox_external"}[10m])
+        labels: {severity: warning}
+        annotations: {summary: "10 минут нет проверок сайтов с малинки: малинка, её связь или проброс к Prometheus"}
+
+      - alert: СертификатСкороИстекает
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox_external"} - time()) / 86400 < 14
+        for: 1h
+        labels: {severity: warning}
+        annotations: {summary: "Сертификат {{ $labels.instance }} истекает через {{ $value | humanize }} дн."}
+
+      - alert: МалоМестаНаДиске
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes < 0.10
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "{{ $labels.host }}: на {{ $labels.mountpoint }} свободно меньше 10%"}
+
+      - alert: МалоПамяти
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.07
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "{{ $labels.host }}: свободной памяти меньше 7%"}

@@ -1,0 +1,27 @@
+# Внешние проверки сайтов Бегета с малинки (домашняя сеть, вне Selectel), 04.11.2026.
+# blackbox проверяет, Prometheus в режиме агента отправляет результаты на prod-data
+# через SSH-проброс 127.0.0.1:19090 → prod-data 127.0.0.1:9090 (служба promwrite-tunnel).
+services:
+  blackbox:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: pi-blackbox
+    restart: unless-stopped
+    network_mode: host
+    command: [--config.file=/etc/blackbox/blackbox.yml, --web.listen-address=127.0.0.1:9115]
+    volumes: ["./blackbox.yml:/etc/blackbox/blackbox.yml:ro"]
+    mem_limit: 128m
+
+  agent:
+    image: prom/prometheus:v2.55.1
+    container_name: pi-prom-agent
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --config.file=/etc/prometheus/agent.yml
+      - --enable-feature=agent
+      - --storage.agent.path=/agent
+      - --web.listen-address=127.0.0.1:9095
+    volumes:
+      - ./agent.yml:/etc/prometheus/agent.yml:ro
+      - ./data:/agent
+    mem_limit: 256m

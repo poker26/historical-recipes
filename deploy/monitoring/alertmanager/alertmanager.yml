@@ -1,0 +1,14 @@
+route:
+  receiver: telegram
+  group_by: [alertname, instance]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: telegram
+    # Напрямую Telegram из Selectel недоступен, а через вход туннеля Go-клиент не ходит
+    # (HTTP/2 в ответ на CONNECT). Отправляет пересыльщик tg-relay.
+    webhook_configs:
+      - url: http://tg-relay:9087/
+        send_resolved: true

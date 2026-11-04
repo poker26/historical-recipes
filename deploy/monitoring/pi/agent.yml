@@ -1,0 +1,36 @@
+global:
+  scrape_interval: 60s
+  external_labels: {source: pi}
+
+scrape_configs:
+  - job_name: blackbox_external
+    metrics_path: /probe
+    params: {module: [http_2xx]}
+    static_configs:
+      - targets:
+          - https://botanik.fun/
+          - https://flora.begemot26.ru/api/plants/?limit=1
+          - https://nastoiki.pro/
+          - https://xn--80adrir4ab6a5b.xn--p1ai/
+          - https://qq.begemot26.ru/
+          - https://coins.begemot26.ru/health
+          - https://numi26.ru/
+          - https://grafana.begemot26.ru/api/health
+    relabel_configs: &bb
+      - {source_labels: [__address__], target_label: __param_target}
+      - {source_labels: [__param_target], target_label: instance}
+      - {target_label: __address__, replacement: "127.0.0.1:9115"}
+
+  - job_name: blackbox_external_tls
+    metrics_path: /probe
+    params: {module: [tls_connect]}
+    static_configs:
+      - targets: [hist.begemot26.ru:443, tt.begemot26.ru:443]
+    relabel_configs:
+      - {source_labels: [__address__], target_label: __param_target}
+      - {source_labels: [__param_target], target_label: instance}
+      - {target_label: __address__, replacement: "127.0.0.1:9115"}
+      - {target_label: job, replacement: blackbox_external}
+
+remote_write:
+  - url: http://127.0.0.1:19090/api/v1/write

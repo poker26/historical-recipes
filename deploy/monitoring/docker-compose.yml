@@ -1,0 +1,66 @@
+# Мониторинг парка Бегета в Selectel (04.11.2026): Prometheus, Alertmanager и blackbox
+# для внутренних проверок. Сеть supabase_default — та же, что у Grafana (/opt/grafana),
+# поэтому Grafana ходит на http://prometheus:9090. Порты только на 127.0.0.1: Пи
+# присылает результаты внешних проверок через SSH-проброс (пользователь promwrite).
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-remote-write-receiver
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - ./data/prometheus:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    networks: [supabase]
+    mem_limit: 1g
+    cpus: 1
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro
+      - ./data/alertmanager:/alertmanager
+    ports: ["127.0.0.1:9093:9093"]
+    networks: [supabase]
+    mem_limit: 256m
+    cpus: 0.5
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox
+    restart: unless-stopped
+    command: [--config.file=/etc/blackbox/blackbox.yml]
+    volumes: ["./blackbox:/etc/blackbox:ro"]
+    networks: [supabase]
+    mem_limit: 128m
+    cpus: 0.5
+
+  # Тревоги в Telegram: Alertmanager → вебхук → httpx через вход туннеля (см. tg-relay/relay.py).
+  tg-relay:
+    build: ./tg-relay
+    container_name: tg-relay
+    restart: unless-stopped
+    environment:
+      CHAT_ID: "4683166"
+    volumes:
+      - ./alertmanager/bot_token:/run/secrets/bot_token:ro
+      - ./tg-relay/proxy:/run/secrets/proxy:ro
+    networks: [supabase]
+    mem_limit: 128m
+    cpus: 0.25
+
+networks:
+  supabase:
+    external: true
+    name: supabase_default
