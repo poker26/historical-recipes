@@ -1,0 +1,23 @@
+# Разворачивается отдельно от основного compose: /opt/fungi-engine на prod-app.
+# Индексы (fungi_index.npz, kingdom_clf.npz, moss_index.npz, moss_clf.npz, *_universe.json)
+# кладутся в ./work; собираются на dev воркфлоу engine-build (Temporal).
+# FUNGI_ENGINE_TOKEN — в ./.env, тот же, что в .env ботаники.
+services:
+  fungi-engine:
+    build: .
+    container_name: fungi-engine
+    restart: unless-stopped
+    environment:
+      FUNGI_ENGINE_TOKEN: ${FUNGI_ENGINE_TOKEN}
+      NTHREADS: "2"
+    volumes:
+      - ./work:/work:ro
+      - ./hf:/hf
+    mem_limit: 3g
+    cpus: 2
+    networks: [hr]
+
+networks:
+  hr:
+    external: true
+    name: historical-recipes_default
