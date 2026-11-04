@@ -29,7 +29,7 @@ router = APIRouter()
 _log_ready = False
 
 
-async def _log_exchange(device_key: str, question: str, answer: str) -> None:
+async def _log_exchange(device_key: str, question: str, answer: str, source: str) -> None:
     """Fire-and-forget: record what people ask the agent (anonymous, by device).
     Never blocks or breaks the response — best-effort analytics."""
     global _log_ready
@@ -44,12 +44,15 @@ async def _log_exchange(device_key: str, question: str, answer: str) -> None:
                       answer     TEXT,
                       created_at TIMESTAMPTZ DEFAULT now()
                     )"""))
+                # Откуда пришёл вопрос (сайт, приложение, боты): без этого не видно,
+                # какой путь к агенту работает. Добавлено 04.11.2026.
+                await conn.execute(_sql("ALTER TABLE agent_queries ADD COLUMN IF NOT EXISTS source TEXT"))
             _log_ready = True
         async with async_session() as s:
             await s.execute(_sql(
-                "INSERT INTO agent_queries (device_key, question, answer) "
-                "VALUES (:k, :q, :a)"),
-                {"k": device_key[:64], "q": question[:2000], "a": (answer or "")[:8000]})
+                "INSERT INTO agent_queries (device_key, question, answer, source) "
+                "VALUES (:k, :q, :a, :s)"),
+                {"k": device_key[:64], "q": question[:2000], "a": (answer or "")[:8000], "s": source[:32]})
             await s.commit()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"query log failed: {e}")
@@ -77,6 +80,19 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(default_factory=list)
     location: str | None = None
+    # Откуда задан вопрос: "app" — кнопка в карточке «Что растёт» и т.п. Боты его не
+    # шлют, их узнаём по префиксу ключа устройства (tg…, max…).
+    source: str | None = None
+
+
+def _source(req: ChatRequest, key: str) -> str:
+    if req.source:
+        return req.source
+    if key.startswith("tg"):
+        return "telegram"
+    if key.startswith("max"):
+        return "max"
+    return "web"
 
 
 def _rate_limited(key: str) -> bool:
@@ -132,7 +148,8 @@ async def chat(
         )
 
     today = _today_ru()
-    logger.info(f"agent chat: key={key[:16]} msgs={len(history)} loc={req.location!r}")
+    source = _source(req, key)
+    logger.info(f"agent chat: key={key[:16]} src={source} msgs={len(history)} loc={req.location!r}")
 
     question = history[-1]["content"]
 
@@ -148,7 +165,7 @@ async def chat(
             yield _sse({"type": "error", "text": "Что-то пошло не так. Повторите, пожалуйста."})
             yield _sse({"type": "done"})
         finally:
-            asyncio.create_task(_log_exchange(key, question, "".join(answer_parts)))
+            asyncio.create_task(_log_exchange(key, question, "".join(answer_parts), source))
 
     return StreamingResponse(
         gen(),

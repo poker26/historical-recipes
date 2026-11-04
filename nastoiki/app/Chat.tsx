@@ -93,10 +93,33 @@ export default function Chat() {
   const [location, setLocation] = useState<string | null>(null);
   const [geoBusy, setGeoBusy] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  // Откуда пришёл человек: ?from=app у кнопки в карточке «Что растёт». Уходит в журнал
+  // агента вместе с каждым вопросом этого разговора.
+  const sourceRef = useRef<string | null>(null);
+  const askedRef = useRef(false);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [messages, tool]);
+
+  // Ссылка вида /?q=…&from=app#master открывает чат с уже заданным вопросом.
+  // q и from убираем из адреса, чтобы обновление страницы не спрашивало второй раз;
+  // utm-метки оставляем — их читает Метрика.
+  useEffect(() => {
+    if (askedRef.current) return;
+    askedRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    sourceRef.current = params.get("from");
+    const q = params.get("q");
+    if (!q) return;
+    params.delete("q");
+    params.delete("from");
+    const rest = params.toString();
+    window.history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : "") + window.location.hash);
+    document.getElementById("master")?.scrollIntoView({ behavior: "smooth" });
+    send(q.slice(0, 500));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function requestGeo() {
     if (!navigator.geolocation) return;
@@ -138,7 +161,7 @@ export default function Chat() {
       const resp = await fetch(`${API_BASE}/api/agent/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Device-Id": deviceId() },
-        body: JSON.stringify({ messages: history, location }),
+        body: JSON.stringify({ messages: history, location, source: sourceRef.current }),
       });
       if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
 
