@@ -45,7 +45,7 @@ async def chat_completion(
     max_tokens: int = 4096,
     json_mode: bool = False,
 ) -> str:
-    """Send a chat completion request to OpenRouter."""
+    """Send a chat completion request to Qwen Cloud (if QWEN_API_KEY is set) or OpenRouter."""
     model = MODELS.get(task, MODELS["default"])
 
     body = {
@@ -57,6 +57,11 @@ async def chat_completion(
 
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+
+    if settings.qwen_api_key:
+        # Модели Qwen3.x в Qwen Cloud по умолчанию могут «размышлять» перед
+        # ответом; для разбора книг это лишние секунды и токены на каждом куске.
+        body["enable_thinking"] = False
 
     # Log request info
     prompt_chars = sum(len(m.get("content", "")) if isinstance(m.get("content"), str) else 0 for m in messages)
@@ -77,6 +82,12 @@ async def chat_completion(
     raise ValueError(f"LLM request failed after {MAX_RETRIES} attempts: {last_err}")
 
 
+def _proxy() -> str | None:
+    """Тот же туннель, что у агента и определителя (см. agent_llm._proxy).
+    Пусто — идём напрямую, как в разработке."""
+    return ((settings.agent_llm_proxy or settings.plantnet_proxy or "").strip() or None)
+
+
 async def _do_request(body: dict, model: str) -> str:
     """Single OpenRouter call. Raises _RetryableLLMError on transient failures."""
     # Transport-level failures (DNS resolution blips like "Temporary failure in
@@ -84,12 +95,19 @@ async def _do_request(body: dict, model: str) -> str:
     # transient. Without this, httpx.TransportError propagates past the retry
     # loop as fatal and a single network hiccup kills the whole activity.
     try:
-        async with httpx.AsyncClient(timeout=600) as client:
+        # Прямой выход к OpenRouter с прод-сервера отдаёт 403 «Access denied by
+        # security policy» даже на GET /models — это не ответ OpenRouter (форма
+        # чужая), а фильтр на пути. Через наш туннель тот же запрос проходит,
+        # поэтому ходим через него; переменная та же, что у определителя растений.
+        if settings.qwen_api_key:
+            # Qwen Cloud напрямую (с 19.10.2026): сервер достаёт до него без туннеля.
+            base, key, proxy = settings.qwen_base_url, settings.qwen_api_key, None
+        else:
+            base, key, proxy = settings.openrouter_base_url, settings.openrouter_api_key, _proxy()
+        async with httpx.AsyncClient(timeout=600, proxy=proxy, verify=not proxy) as client:
             response = await client.post(
-                f"{settings.openrouter_base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.openrouter_api_key}",
-                },
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
                 json=body,
             )
     except httpx.TransportError as e:

@@ -166,6 +166,14 @@ async def clean_card_latins(db, limit: int = 0, apply: bool = False,
                 await db.execute(text(
                     "UPDATE plants SET name_latin = :latin WHERE id = :id"),
                     {"latin": candidate, "id": row.id})
+                # Приложение читает латынь не из карточки, а из сохранённого монографа.
+                # Первый прогон правил только карточку, и почти три тысячи карточек так и
+                # показывали имя с фамилией ботаника, хотя в базе оно уже было чистым.
+                await db.execute(text(
+                    "UPDATE plant_reader_monograph "
+                    "SET monograph = jsonb_set(monograph, '{name_latin}', to_jsonb(CAST(:latin AS text))) "
+                    "WHERE plant_id = :id AND monograph ? 'name_latin'"),
+                    {"latin": candidate, "id": row.id})
                 await db.commit()
             taken[candidate.lower()] = row.id
             out["cleaned"] += 1

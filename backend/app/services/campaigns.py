@@ -37,9 +37,14 @@ def within_polite_hours(now: datetime | None = None) -> bool:
 
 
 async def silent_devices(db: AsyncSession, campaign: str,
-                         min_age_days: int = MIN_AGE_DAYS) -> list[dict]:
+                         min_age_days: int = MIN_AGE_DAYS,
+                         platform: str | None = None) -> list[dict]:
     """Кому есть смысл писать: токен есть, снимков ноль, не заблокирован, стоит
-    дольше `min_age_days`, и этой кампании ещё не получал."""
+    дольше `min_age_days`, и этой кампании ещё не получал.
+
+    `platform` («apns»/«rustore») нужен, потому что письма разные: владельцу
+    iPhone честно говорим, что вылет починили, а владельцу Android про чужой
+    вылет писать незачем — ему уходит сезонное приглашение."""
     rows = (await db.execute(text("""
         SELECT d.device_key::text AS dk,
                d.created_at::date AS registered,
@@ -49,11 +54,15 @@ async def silent_devices(db: AsyncSession, campaign: str,
         FROM quest_devices d
         WHERE COALESCE(d.blocked, false) = false
           AND d.created_at < now() - (:age || ' days')::interval
-          AND EXISTS (SELECT 1 FROM push_tokens p WHERE p.device_key = d.device_key)
+          AND EXISTS (SELECT 1 FROM push_tokens p WHERE p.device_key = d.device_key
+                        -- CAST обязателен: без него Postgres не может вывести тип
+                        -- параметра в «:plat IS NULL» и падает с AmbiguousParameter.
+                        AND (CAST(:plat AS text) IS NULL OR p.platform = CAST(:plat AS text)))
           AND NOT EXISTS (SELECT 1 FROM identifications i WHERE i.device_key = d.device_key)
           AND NOT EXISTS (SELECT 1 FROM push_campaign_log l
                            WHERE l.campaign = :c AND l.device_key = d.device_key)
-        ORDER BY d.created_at"""), {"age": str(min_age_days), "c": campaign})).all()
+        ORDER BY d.created_at"""),
+        {"age": str(min_age_days), "c": campaign, "plat": platform})).all()
     return [{"device_key": r.dk, "registered": str(r.registered),
              "days": r.days, "platforms": r.platforms} for r in rows]
 
@@ -67,12 +76,13 @@ async def _still_silent(db: AsyncSession, device_key: str) -> bool:
 
 async def run_campaign(db: AsyncSession, campaign: str, title: str, body: str,
                        *, apply: bool = False, limit: int = 100,
+                       platform: str | None = None,
                        ignore_quiet_hours: bool = False) -> dict:
     """Отправить кампанию молчунам. По умолчанию — сухой прогон."""
     if not (ignore_quiet_hours or within_polite_hours()):
         return {"status": "quiet_hours", "now_msk": datetime.now(MSK).strftime("%H:%M"),
                 "window": f"{QUIET_TO_H}:00–{QUIET_FROM_H}:00 МСК"}
-    targets = (await silent_devices(db, campaign))[:limit]
+    targets = (await silent_devices(db, campaign, platform=platform))[:limit]
     out = {"status": "dry_run" if not apply else "sent", "campaign": campaign,
            "targets": len(targets), "sent": 0, "skipped": 0, "failed": 0,
            "title": title, "body": body, "sample": targets[:5]}

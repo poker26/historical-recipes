@@ -271,7 +271,7 @@ async def build_walk(db: AsyncSession, lat: float, lng: float,
 
     # Bridge to corpus (plant_id|null) + theme safety (edible → non-toxic only).
     latins = [s["latin"] for s in recognizable]
-    plant_map = await resolve_latin_to_plants(db, latins)
+    plant_map = await resolve_latin_to_plants(db, include_houseplants=False, latin_names=latins)
 
     items: list[dict] = []
     for s in recognizable:
@@ -326,7 +326,7 @@ async def nearby(db: AsyncSession, lat: float, lng: float, biotope: str | None =
                 used_radius = radius
                 break
 
-    plant_map = await resolve_latin_to_plants(db, [s["latin"] for s in recognizable])
+    plant_map = await resolve_latin_to_plants(db, include_houseplants=False, latin_names=[s["latin"] for s in recognizable])
     # corpus plants whose habitat matches the point's biotope
     match_ids: set[str] = set()
     if bios:
@@ -452,7 +452,7 @@ async def compute_species_set(db: AsyncSession, place_id: str, label: str,
     # CORPUS-ONLY: keep only species we have a monograph for, so every badge species
     # rewards the finder with info (a species we lack gives no extra knowledge). obs_total
     # (density signal) stays over ALL recognizable species; the badge SET is corpus-bridged.
-    plant_map = await resolve_latin_to_plants(db, sset)
+    plant_map = await resolve_latin_to_plants(db, include_houseplants=False, latin_names=sset)
     sset = [k for k in sset if plant_map.get(k)]
     meta = [m for m in meta if plant_map.get(m["key"])]
     min_obs = 0 if force else (_MIN_OBS_FUNGI if taxon_group == "fungi" else _MIN_OBS)
@@ -588,7 +588,7 @@ async def estimate_custom_area(db: AsyncSession, lat: float, lng: float,
     n = len(species)
     confirmed = 0
     if species:
-        plant_map = await resolve_latin_to_plants(db, list(species.keys()))
+        plant_map = await resolve_latin_to_plants(db, include_houseplants=False, latin_names=list(species.keys()))
         confirmed = sum(1 for p in plant_map.values() if p)
     if n >= _EST_MIN_SPECIES:
         viability, reason, min_viable, suggested = "ready", None, None, None
@@ -655,7 +655,7 @@ async def compute_custom_set(db: AsyncSession, place_id: str, label: str,
         e["count"] += c
     obs_total = sum(e["count"] for e in confirmed.values())
     # Corpus-bridge so every badge species rewards the finder with a monograph.
-    plant_map = await resolve_latin_to_plants(db, list(confirmed.keys()))
+    plant_map = await resolve_latin_to_plants(db, include_houseplants=False, latin_names=list(confirmed.keys()))
     confirmed = {k: v for k, v in confirmed.items() if plant_map.get(k)}
 
     # --- Layer 2: «ожидается» (биотоп точки × известные в регионе), если Layer-1 жидкий ---
@@ -698,7 +698,7 @@ async def compute_custom_set(db: AsyncSession, place_id: str, label: str,
                       "name": e.get("name") or (p.name if p else None),
                       "photo": e.get("photo"), "confidence": "confirmed"})
     if expected:
-        exp_plants = await resolve_latin_to_plants(db, list(expected.keys()))
+        exp_plants = await resolve_latin_to_plants(db, include_houseplants=False, latin_names=list(expected.keys()))
         for k, lat_name in expected.items():
             p = exp_plants.get(k)
             if not p:
@@ -1140,7 +1140,7 @@ async def _device_biotope_matches(db, device_key) -> dict[str, set]:
             all_latins.update(lats)
     if not all_latins:
         return {}
-    plant_map = await resolve_latin_to_plants(db, list(all_latins))   # {latin: Plant|None}
+    plant_map = await resolve_latin_to_plants(db, include_houseplants=False, latin_names=list(all_latins))   # {latin: Plant|None}
     pids = [str(p.id) for p in plant_map.values() if p]
     pbio: dict[str, set] = {}
     if pids:
@@ -1782,7 +1782,7 @@ async def place_set(db: AsyncSession, place_id: str, window: str | None = None,
 
     meta = ps.species_meta or [{"key": k} for k in (ps.species_set or [])]
     # Resolve corpus cards for fallback name/photo + the plant_id bridge.
-    plant_map = await resolve_latin_to_plants(db, [m["key"] for m in meta])
+    plant_map = await resolve_latin_to_plants(db, include_houseplants=False, latin_names=[m["key"] for m in meta])
     syn = await synonym_map(db)
     items = []
     for m in meta:
@@ -1864,7 +1864,7 @@ async def place_biotopes(db: AsyncSession, place_id: str, window: str | None = N
         ps = await _set_for(db, place_id, win)
         if ps:
             meta = ps.species_meta or [{"key": k} for k in (ps.species_set or [])]
-            plant_map = await resolve_latin_to_plants(db, [m["key"] for m in meta])
+            plant_map = await resolve_latin_to_plants(db, include_houseplants=False, latin_names=[m["key"] for m in meta])
             pids = [str(p.id) for p in plant_map.values() if p]
             if pids:
                 counts = {b: n for b, n in (await db.execute(text(

@@ -249,6 +249,7 @@ def canonical_key(latin_key: str | None, syn: dict[str, str]) -> str | None:
 async def resolve_latin_to_plants(
     db: AsyncSession,
     latin_names: list[str],
+    include_houseplants: bool = True,
 ) -> dict[str, Plant | None]:
     """Map each incoming latin binomial to a herbarium ``Plant`` via the same
     genus+species :func:`_latin_key` used for herbarium dedup, so an engine result
@@ -257,9 +258,18 @@ async def resolve_latin_to_plants(
     Returns ``{input_latin: Plant | None}`` (None = no taxon in our corpus). Builds
     the key→plant index once from all plants with a latin name; when two of our rows
     share a key (shouldn't after dedupe) the richest-named one wins deterministically.
+
+    ``include_houseplants=False`` оставляет только гербарий. Это нужно полевым
+    механикам: прогулки и витрина «Сейчас в лесу» строятся вокруг того, что
+    растёт снаружи, и восемьсот тропических комнатных им не место. Определение
+    по фото, наоборот, зовёт с обоими: человеку, снявшему горшок, карточка нужна
+    ровно так же.
     """
     syn = await synonym_map(db)
-    rows = (await db.execute(select(Plant).where(Plant.name_latin.isnot(None)))).scalars().all()
+    stmt = select(Plant).where(Plant.name_latin.isnot(None))
+    if not include_houseplants:
+        stmt = stmt.where(Plant.origin != "houseplant")
+    rows = (await db.execute(stmt)).scalars().all()
     index: dict[str, Plant] = {}
     for p in rows:
         key = _latin_key(p.name_latin)

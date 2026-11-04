@@ -110,3 +110,55 @@ async def set_privacy(device_key: uuid.UUID, body: PrivacyUpdate,
 async def list_avatars():
     """The curated avatar slugs (client renders the picker from these)."""
     return {"avatars": sorted(AVATARS)}
+
+
+# ------------------------------------------------- push tokens (RFC-v2 §5)
+
+_PUSH_DDL = """
+CREATE TABLE IF NOT EXISTS push_tokens (
+    device_key uuid NOT NULL,
+    platform text NOT NULL,          -- 'apns' | 'rustore'
+    token text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (device_key, platform)
+)
+"""
+_push_ddl_done = False
+
+
+class PushTokenUpdate(BaseModel):
+    platform: str          # apns | rustore | fcm
+    token: str
+
+
+@router.post("/{device_key}/push-token")
+async def set_push_token(device_key: uuid.UUID, body: PushTokenUpdate,
+                         db: AsyncSession = Depends(get_db)):
+    """Регистрация push-токена девайса (APNs / RuStore Push). Идемпотентно —
+    последний токен платформы побеждает. Пустой token = отписка платформы."""
+    global _push_ddl_done
+    from sqlalchemy import text as sa_text
+    if not _push_ddl_done:
+        await db.execute(sa_text(_PUSH_DDL))
+        await db.commit()
+        _push_ddl_done = True
+    plat = (body.platform or "").strip().lower()
+    if plat not in ("apns", "rustore", "fcm"):
+        raise HTTPException(status_code=422, detail="platform must be apns|rustore|fcm")
+    tok = (body.token or "").strip()
+    if not tok:
+        await db.execute(sa_text(
+            "DELETE FROM push_tokens WHERE device_key=:dk AND platform=:p"),
+            {"dk": str(device_key), "p": plat})
+        await db.commit()
+        return {"ok": True, "unsubscribed": True}
+    if len(tok) > 4096:
+        raise HTTPException(status_code=422, detail="token too long")
+    await db.execute(sa_text("""
+        INSERT INTO push_tokens (device_key, platform, token)
+        VALUES (:dk, :p, :t)
+        ON CONFLICT (device_key, platform)
+        DO UPDATE SET token = EXCLUDED.token, updated_at = now()"""),
+        {"dk": str(device_key), "p": plat, "t": tok})
+    await db.commit()
+    return {"ok": True}
