@@ -21,6 +21,9 @@ GRANT USAGE  ON SCHEMA public      TO grafana_ro;
 GRANT SELECT ON public.quest_devices  TO grafana_ro;
 GRANT SELECT ON public.identifications TO grafana_ro;
 GRANT SELECT ON public.plants          TO grafana_ro;
+-- Quest analytics: place/custom quests + issued badges (progression, custom-quest creation).
+GRANT SELECT ON public.quest_places        TO grafana_ro;
+GRANT SELECT ON public.quest_issued_badges TO grafana_ro;
 
 -- Belt-and-suspenders: make sure it can never write.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM grafana_ro;

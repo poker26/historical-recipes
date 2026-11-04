@@ -127,6 +127,99 @@
       },
       "targets": [ { "refId": "A", "format": "table", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
         "rawQuery": true, "rawSql": "SELECT i.lat, i.lng AS lon, coalesce(p.name, i.top_latin, '(не определено)') AS \"Растение\" FROM identifications i LEFT JOIN plants p ON p.id = i.matched_plant_id WHERE i.lat IS NOT NULL AND i.lng IS NOT NULL AND $__timeFilter(i.created_at) LIMIT 5000" } ]
+    },
+    {
+      "id": 12, "type": "row", "title": "Квесты", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 }, "panels": []
+    },
+    {
+      "id": 13, "type": "stat", "title": "Кастомных квестов создано",
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 41 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none" },
+      "targets": [ { "refId": "A", "format": "table", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+        "rawQuery": true, "rawSql": "SELECT count(*) AS value FROM quest_places WHERE kind = 'custom'" } ]
+    },
+    {
+      "id": 14, "type": "stat", "title": "Прохождений (значков) выдано",
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 41 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none" },
+      "targets": [ { "refId": "A", "format": "table", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+        "rawQuery": true, "rawSql": "SELECT count(*) AS value FROM quest_issued_badges WHERE badge_id NOT LIKE 'biotope:%'" } ]
+    },
+    {
+      "id": 15, "type": "stat", "title": "Устройств проходило квесты",
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 41 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "purple" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none" },
+      "targets": [ { "refId": "A", "format": "table", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+        "rawQuery": true, "rawSql": "SELECT count(DISTINCT device_key) AS value FROM quest_issued_badges WHERE badge_id NOT LIKE 'biotope:%'" } ]
+    },
+    {
+      "id": 16, "type": "stat", "title": "Значков биотопов",
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 41 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none" },
+      "targets": [ { "refId": "A", "format": "table", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+        "rawQuery": true, "rawSql": "SELECT count(*) AS value FROM quest_issued_badges WHERE badge_id LIKE 'biotope:%'" } ]
+    },
+    {
+      "id": 17, "type": "timeseries", "title": "Прохождения квестов в день (по тиру)",
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 45 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 70, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "showLegend": true, "placement": "right" } },
+      "targets": [ { "refId": "A", "format": "time_series", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+        "rawQuery": true, "rawSql": "SELECT $__timeGroup(issued_at,'1d') AS time, CASE tier WHEN 1 THEN 'Новичок' WHEN 2 THEN 'Любитель' WHEN 3 THEN 'Мастер' ELSE 'тир '||tier END AS metric, count(*) AS value FROM quest_issued_badges WHERE badge_id NOT LIKE 'biotope:%' AND $__timeFilter(issued_at) GROUP BY 1, tier ORDER BY 1" } ]
+    },
+    {
+      "id": 18, "type": "timeseries", "title": "Кастомные квесты созданы в день",
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 45 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60 }, "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "legend": { "showLegend": false } },
+      "targets": [ { "refId": "A", "format": "time_series", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+        "rawQuery": true, "rawSql": "SELECT $__timeGroupAlias(created_at,'1d'), count(*) AS \"Кастомные квесты\" FROM quest_places WHERE kind = 'custom' AND $__timeFilter(created_at) GROUP BY 1 ORDER BY 1" } ]
+    },
+    {
+      "id": 19, "type": "piechart", "title": "Прохождения по тиру",
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 53 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": true }, "pieType": "donut", "legend": { "showLegend": true, "placement": "right", "values": ["value", "percent"] } },
+      "targets": [ { "refId": "A", "format": "table", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+        "rawQuery": true, "rawSql": "SELECT CASE tier WHEN 1 THEN 'Новичок' WHEN 2 THEN 'Любитель' WHEN 3 THEN 'Мастер' ELSE 'тир '||tier END AS \"тир\", count(*) AS \"значков\" FROM quest_issued_badges WHERE badge_id NOT LIKE 'biotope:%' AND $__timeFilter(issued_at) GROUP BY tier ORDER BY tier" } ]
+    },
+    {
+      "id": 20, "type": "table", "title": "Топ проходимых квестов",
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "gridPos": { "h": 9, "w": 16, "x": 8, "y": 53 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [ { "refId": "A", "format": "table", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+        "rawQuery": true, "rawSql": "SELECT p.name AS \"Квест\", CASE WHEN p.kind = 'custom' THEN 'кастом' ELSE COALESCE(p.kind, 'место') END AS \"Тип\", count(*) AS \"Значков\", count(DISTINCT b.device_key) AS \"Устройств\", count(*) FILTER (WHERE b.tier = 3) AS \"Мастеров\" FROM quest_issued_badges b JOIN quest_places p ON b.badge_id LIKE (p.id::text || ':%') WHERE $__timeFilter(b.issued_at) GROUP BY p.id, p.name, p.kind ORDER BY 3 DESC LIMIT 25" } ]
+    },
+    {
+      "id": 21, "type": "geomap", "title": "Где заказывают кастомные квесты",
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 62 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "view": { "id": "coords", "lat": 55, "lon": 50, "zoom": 3 },
+        "basemap": { "type": "default", "name": "Layer 0" },
+        "layers": [ { "type": "markers", "name": "Кастомные квесты", "location": { "mode": "auto" },
+          "config": { "showLegend": false, "style": { "size": { "fixed": 6 }, "color": { "fixed": "orange" }, "opacity": 0.6,
+            "text": { "field": "Квест", "fixed": "" }, "textConfig": { "fontSize": 11, "offsetY": -8, "textAlign": "center", "textBaseline": "bottom" } } } } ],
+        "tooltip": { "mode": "details" },
+        "controls": { "showZoom": true, "mouseWheelZoom": true, "showAttribution": true }
+      },
+      "targets": [ { "refId": "A", "format": "table", "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+        "rawQuery": true, "rawSql": "SELECT ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon, name AS \"Квест\" FROM quest_places WHERE kind = 'custom' AND geom IS NOT NULL AND $__timeFilter(created_at) LIMIT 2000" } ]
     }
   ]
 }
