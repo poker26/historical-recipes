@@ -1,0 +1,35 @@
+# Воркеры Temporal ботаники на dev (Selectel, с 04.11.2026). Код — каталог backend из
+# рабочей копии historical-recipes; .env — копия прод-.env с адресами для dev
+# (Temporal, nginx ботаники и сайт; см. README.txt рядом).
+x-worker: &worker
+  build: ./backend
+  env_file: .env
+  restart: unless-stopped
+
+services:
+  worker:
+    <<: *worker
+    command: python -m app.temporal.worker
+    environment:
+      DB_POOL_SIZE: "4"
+      DB_MAX_OVERFLOW: "2"
+    mem_limit: 4g
+    cpus: 4
+
+  dispatcher:
+    <<: *worker
+    command: python -m app.temporal.dispatcher_worker
+    environment:
+      DB_POOL_SIZE: "3"
+      DB_MAX_OVERFLOW: "2"
+    mem_limit: 1536m
+    cpus: 2
+
+  klex-worker:
+    <<: *worker
+    command: python -m app.temporal.klex_worker
+    environment:
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "1"
+    mem_limit: 1g
+    cpus: 1

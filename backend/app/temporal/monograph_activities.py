@@ -24,8 +24,10 @@ from app.services import site_cache
 
 logger = logging.getLogger(__name__)
 
-# Same-network internal base; the backend serves the aggregation we distill.
-_BACKEND = getattr(settings, "internal_backend_url", None) or "http://backend:8000"
+# The backend serves the aggregation we distill. Внутри compose это backend:8000, а
+# воркеры на dev (Selectel, 11.2026) ходят через nginx ботаники по приватной сети —
+# адрес задаёт INTERNAL_API_URL, как у ботов и MCP.
+_BACKEND = settings.internal_api_url.rstrip("/")
 
 
 @activity.defn
