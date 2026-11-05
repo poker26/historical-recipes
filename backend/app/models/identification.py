@@ -32,6 +32,8 @@ class Identification(Base):
     device_key: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
 
     photo_key: Mapped[str | None] = mapped_column(Text)          # MinIO object key in the field bucket
+    # Снимок вернулся в архив с телефона после гибели field-uploads (11.2026, миграция 043).
+    photo_restored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     engine: Mapped[str | None] = mapped_column(String(30))       # identification engine, e.g. "plantnet"
     organ: Mapped[str | None] = mapped_column(String(20))        # leaf/flower/fruit/bark/auto (first organ)
 

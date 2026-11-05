@@ -588,6 +588,10 @@ async def restore_identification_photo(identification_id: str, device_key: str =
         raise HTTPException(400, "jpeg expected")
     await asyncio.to_thread(minio_svc.ensure_bucket, bucket)
     await asyncio.to_thread(minio_svc.upload_file, data, key, content_type="image/jpeg", bucket=bucket)
+    # Отметка для дашборда «Что растёт»: сколько снимков вернулось и когда.
+    await db.execute(sa_text("UPDATE identifications SET photo_restored_at = now() WHERE id = :id"),
+                     {"id": str(ident.id)})
+    await db.commit()
     logger.info(f"identify photo restored: {identification_id} ({len(data)} B)")
     return {"status": "restored"}
 
