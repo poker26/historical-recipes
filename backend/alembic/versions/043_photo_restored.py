@@ -5,14 +5,14 @@
 POST /api/identify/{id}/photo. Время возврата нужно дашборду «Что растёт», чтобы
 видеть, сколько уже вернулось и как быстро.
 
-Revision ID: 043_identification_photo_restored
+Revision ID: 043_photo_restored
 Revises: 042_windowsill
 Create Date: 2026-11-06
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "043_identification_photo_restored"
+revision = "043_photo_restored"
 down_revision = "042_windowsill"
 branch_labels = None
 depends_on = None
